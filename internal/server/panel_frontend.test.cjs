@@ -122,6 +122,14 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  await ids.get('accountsBody').onclick({ target: { closest: () => ({ dataset: { accountAction: 'delete', uid: 'u1' } }) } });
  assert(ids.get('deleteDialog').open); assert.equal(requests.length, beforeDelete, 'opening delete dialog must not delete');
  await ids.get('confirmDelete').onclick(); assert.equal(requests.filter(r => r.url.endsWith('/accounts/delete')).length, 1);
+ // 零账号：模型目录返回空列表时，面板显示空态而不是残留旧数据。
+ context.fetch = (url, opts) => url.replace('/admin/api/', '').startsWith('models') ? { ok: true, status: 200, json: async () => ({ data: [] }) } : originalFetch(url, opts);
+ context.location.hash = '#accounts'; events.hashchange(); await tick(); await tick();
+ context.location.hash = '#models'; events.hashchange(); await tick(); await tick();
+ assert.equal(ids.get('modelCount').textContent, 0);
+ assert(ids.get('modelsBody').innerHTML.includes('模型目录为空'));
+ assert(!ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
+ context.fetch = originalFetch;
  ids.get('logoutButton').onclick(); assert(ids.get('loginDialog').open); assert.equal(context.sessionStorage.getItem('codearts2api-panel.admin-key'), undefined);
  console.log('PASS: five views, OAuth link generation/copy/reset and visible callback, escaped API content, session-key login, secret redaction, restart notice and explicit deletion gate.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

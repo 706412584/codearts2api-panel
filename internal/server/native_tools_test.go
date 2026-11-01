@@ -183,7 +183,9 @@ func TestChatCompletionsRetriesEmbeddedCodeArtsQueueLimit(t *testing.T) {
 	}
 }
 
-func TestModelsAdvertisesOnlyVerifiedNewCodeArtsModels(t *testing.T) {
+// 零账号时 /v1/models 必须是空列表：不再有硬编码的「实测可用」快照，
+// 否则客户端会把模型列出来、随后每次调用都失败。
+func TestModelsEmptyWithoutAccounts(t *testing.T) {
 	p, err := pool.New(nil, pool.Config{}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -198,32 +200,32 @@ func TestModelsAdvertisesOnlyVerifiedNewCodeArtsModels(t *testing.T) {
 
 	var payload struct {
 		Data []struct {
-			ID            string `json:"id"`
-			ContextLength int    `json:"context_length"`
+			ID string `json:"id"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	// 静态兜底只列实测确认可用的模型；未注册的（GLM-5.2-ArkTS-SPARK /
-	// OpenPangu-2.0-Pro/Flash）不得出现，否则等于把 404 写进兜底路径。
-	for _, bad := range []string{"GLM-5.2-ArkTS-SPARK", "OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash"} {
-		for _, model := range payload.Data {
-			if model.ID == bad {
-				t.Fatalf("unregistered model %s must not be advertised; body=%s", bad, rec.Body.String())
-			}
-		}
+	if len(payload.Data) != 0 {
+		t.Fatalf("没有账号时不应宣告任何模型，got=%s", rec.Body.String())
 	}
-	want := map[string]int{"Qwen3-VL-235B": 131072, "GLM-5.2": 202752}
-	for _, model := range payload.Data {
-		if expected, ok := want[model.ID]; ok {
-			if model.ContextLength != expected {
-				t.Fatalf("model %s context_length=%d, want %d", model.ID, model.ContextLength, expected)
-			}
-			delete(want, model.ID)
-		}
+}
+
+// 零账号时聊天接口报 no_accounts：让调用方知道是没配置账号，而不是账号被禁用/冷却。
+func TestChatWithoutAccountsReportsNoAccounts(t *testing.T) {
+	p, err := pool.New(nil, pool.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(want) != 0 {
-		t.Fatalf("missing models from /v1/models: %#v; body=%s", want, rec.Body.String())
+	h := NewHandler(Config{Pool: p, DefaultModel: "glm-5.2"})
+	body := `{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"no_accounts"`) {
+		t.Fatalf("错误码应为 no_accounts，got=%s", rec.Body.String())
 	}
 }

@@ -62,26 +62,6 @@ var dynamicModelsCache struct {
 	lastFail time.Time
 }
 
-// staticModel 静态兜底模型：动态发现失败时 /v1/models 仍能列出实测可用模型。
-type staticModel struct {
-	ID            string
-	ContextWindow int64
-}
-
-// staticModels 静态兜底表：**只放实测确认可用的模型**。
-//
-// 上游的模型发现（agent-center / builtin）会列出当前账号未注册的模型，静态表
-// 若照抄发现结果，就等于把 404 写进了兜底路径。以下清单来自 2026-09-15 真实账号
-// 逐个调用验证（见 docs/reverse-engineering.md §7）：
-//
-//	✅ GLM-5.2、glm-5.2-sft-harmony、Qwen3-VL-235B
-//	❌ GLM-5.2-ArkTS-SPARK、OpenPangu-2.0-Pro、OpenPangu-2.0-Flash（002002009.404）
-var staticModels = []staticModel{
-	{ID: "GLM-5.2", ContextWindow: 202752},
-	{ID: "glm-5.2-sft-harmony", ContextWindow: 131072},
-	{ID: "Qwen3-VL-235B", ContextWindow: 131072},
-}
-
 const (
 	dynamicModelsTTL        = time.Hour
 	modelsFetchFailCooldown = 5 * time.Minute
@@ -509,13 +489,15 @@ func (h *Handler) modelKnownUnusable(model string) bool {
 	return anyKnown && allUnusable
 }
 
-// modelEntries 把账号模型目录 + 静态兜底包装成 OpenAI /v1/models 条目。
+// modelEntries 把账号模型目录包装成 OpenAI /v1/models 条目。
 //
 // 上游模型 ID 区分大小写：既列精确 ID（GLM-5.2），也补一条小写别名（glm-5.2，
 // 老客户端习惯用小写），聊天时由 CanonicalModel 归一回精确 ID。
-// 静态表只在动态目录缺失该 ID 时补位，顺序固定（动态已排序，静态按表序）。
+//
+// 目录为空就返回空列表：没有账号时客户端应该看到「这里没有模型」，
+// 而不是一张硬编码的、没经过任何上游确认的模型表。
 func modelEntries(infos []upstream.ModelInfo) []map[string]any {
-	out := make([]map[string]any, 0, len(infos)+len(staticModels))
+	out := make([]map[string]any, 0, len(infos))
 	seen := map[string]bool{}
 	add := func(mi upstream.ModelInfo) {
 		if mi.ID == "" || seen[mi.ID] {
@@ -571,9 +553,6 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 	}
 	for _, mi := range infos {
 		addAlias(mi)
-	}
-	for _, sm := range staticModels {
-		addAlias(upstream.ModelInfo{ID: sm.ID, ContextWindow: sm.ContextWindow})
 	}
 	return out
 }
@@ -733,6 +712,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	event := reqlog.Event{Time: started, RequestID: reqlog.NewRequestID(), Path: r.URL.Path}
 	h.cfg.RequestLog.Begin()
 	defer func() { h.finishRequest(event, observed, started) }()
+	// 池里一个账号都没有：直接给出明确错误，别走完选号流程再报成「账号都不可用」。
+	// 客户端拿到 no_accounts 才知道是运维侧没配置账号，而不是账号被禁用/冷却。
+	if h.cfg.Pool == nil || len(h.cfg.Pool.Accounts()) == 0 {
+		writeOpenAIError(w, http.StatusServiceUnavailable, "no_accounts", "no accounts configured; add one in the panel")
+		return
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())

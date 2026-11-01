@@ -58,7 +58,7 @@ func TestPickAccountPrefersAccountWithModel(t *testing.T) {
 	}
 }
 
-func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
+func TestModelEntriesAliasesAndMetadata(t *testing.T) {
 	hidden, vision := false, true
 	entries := modelEntries([]upstream.ModelInfo{
 		{ID: "GLM-5.2", Name: "GLM 5.2", Desc: "最新旗舰模型", Notice: "错峰时段5折优惠", Tag: "闲时折扣", DisplayEnabled: &hidden, SupportsImages: &vision, ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
@@ -73,7 +73,7 @@ func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 		byID[id] = e
 	}
 
-	for _, want := range []string{"GLM-5.2", "glm-5.2", "deepseek-v4-pro-0813", "Qwen3-VL-235B", "qwen3-vl-235b"} {
+	for _, want := range []string{"GLM-5.2", "glm-5.2", "deepseek-v4-pro-0813"} {
 		if byID[want] == nil {
 			t.Errorf("缺少模型条目 %q，got=%v", want, keysOf(byID))
 		}
@@ -102,28 +102,14 @@ func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	plain := byID["deepseek-v4-pro-0813"]
 	for _, key := range []string{"model_tag", "display_enabled", "supports_images"} {
 		if _, ok := plain[key]; ok {
+			// 上游没给 display_enabled（nil）不得被当成 false，否则会被标成「隐藏模型」。
 			t.Errorf("上游没有表态时不应输出 %s，got=%v", key, plain)
 		}
 	}
-	// 上游没给 display_enabled（nil）不得当作「隐藏模型」。
-	if _, ok := byID["Qwen3-VL-235B"]["display_enabled"]; ok {
-		t.Errorf("未知的 display_enabled 不应输出 false，got=%v", byID["Qwen3-VL-235B"])
-	}
 
-	fallback := modelEntries(nil)
-	if len(fallback) < len(staticModels) {
-		t.Fatalf("静态兜底条目过少: %d", len(fallback))
-	}
-	seen := map[string]bool{}
-	for _, e := range fallback {
-		id, _ := e["id"].(string)
-		if seen[id] {
-			t.Fatalf("静态兜底出现重复 ID: %s", id)
-		}
-		seen[id] = true
-	}
-	if !seen["GLM-5.2"] || !seen["glm-5.2"] {
-		t.Errorf("静态兜底也要给大写 ID 补小写别名，got=%v", keysOf(seen))
+	// 没有目录就没有条目：不再有硬编码兜底表，空输入必须返回空列表。
+	if empty := modelEntries(nil); len(empty) != 0 {
+		t.Errorf("空目录不应产生任何模型条目，got=%v", empty)
 	}
 }
 
