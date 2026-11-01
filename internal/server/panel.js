@@ -119,8 +119,12 @@
       const uid = String(a.uid || a.name || '');
       const state = a.disabled ? ['bad', '已禁用'] : a.cooling ? ['warn', '冷却中'] : ['ok', '可用'];
       const button = (action, label, danger = false) => '<button class="button small' + (danger ? ' danger' : '') + '" data-account-action="' + action + '" data-uid="' + esc(uid) + '">' + label + '</button>';
+      // 签到按自然日只领一次：了结后按钮变「已签」，点击只是回放本地结果，不再打上游。
+      const checkinButton = a.checkin_done
+        ? '<button class="button small done" data-account-action="checkin" data-uid="' + esc(uid) + '" title="' + esc((a.checkin && a.checkin.message ? a.checkin.message + ' · ' : '') + '今日已签到，每天只领一次') + '">已签</button>'
+        : button('checkin', '签到');
       const expiry = a.permanent === true || a.credential_type === 'permanent' ? '永久凭据' : date(a.expires_at);
-      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span><span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + button('checkin', '签到') + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('delete', '删除', true) + '</div></td></tr>';
+      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span><span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + checkinButton + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('delete', '删除', true) + '</div></td></tr>';
     }).join('') || emptyRow(6, query ? '没有匹配的账户。' : '还没有账户。点击“添加账户”完成首次接入。');
   }
   function actionMessage(data, fallback) {

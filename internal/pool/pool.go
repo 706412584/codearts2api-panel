@@ -40,6 +40,9 @@ type Account struct {
 	refreshMu           sync.Mutex
 	checkinMu           sync.Mutex
 	checkin             *CheckinStatus
+	lastCheckinDay      string // 每日签到已了结的本地日期（"2006-01-02"），跨零点自然失效
+	checkinClaimed      bool   // 该日真的签到成功/已领；只有它为真才显示「已签」
+	newUserSettled      bool   // 新手注册活动已了结，单账号只领一次
 	balanceMu           sync.Mutex
 	creditBalance       *upstream.CreditBalance
 	balanceUpdatedAt    time.Time
@@ -182,6 +185,7 @@ func (p *Pool) List() []map[string]any {
 	defer p.mu.Unlock()
 	out := make([]map[string]any, 0, len(p.accounts))
 	now := time.Now()
+	today := checkinDay(now)
 	for _, a := range p.accounts {
 		a.mu.Lock()
 		cooling := !a.disabled && now.Before(a.coolUntil)
@@ -222,6 +226,9 @@ func (p *Pool) List() []map[string]any {
 			"refreshable":           a.Auth.Refreshable(),
 			"credential_type":       credentialType,
 			"checkin":               a.checkin,
+			"checkin_done":          a.lastCheckinDay == today && a.checkinClaimed,
+			"last_checkin_day":      a.lastCheckinDay,
+			"new_user_settled":      a.newUserSettled,
 			"disabled":              a.disabled,
 			"cooling":               cooling,
 			"until":                 until,
@@ -975,6 +982,12 @@ func (p *Pool) loadState() {
 		LastErr   string                   `json:"last_error"`
 		Credit    *upstream.CreditBalance  `json:"credit_balance"`
 		BalanceAt time.Time                `json:"balance_updated_at"`
+		// 签到账本：重启后仍要知道「今天已签」「新手已领」，否则重启即重复打上游。
+		// checkin_claimed 用指针读：更早的账本只有日期（写入即代表已签），不能因缺字段
+		// 把已签的账号在升级当天显示成未签。
+		LastCheckinDay *string `json:"last_checkin_day"`
+		CheckinClaimed *bool   `json:"checkin_claimed"`
+		NewUserSettled bool    `json:"new_user_settled"`
 	}
 	if json.Unmarshal(raw, &data) != nil {
 		return
@@ -989,6 +1002,12 @@ func (p *Pool) loadState() {
 				a.disabledReason = s.Reason
 				a.lastErr = s.LastErr
 				a.creditBalance, a.balanceUpdatedAt = s.Credit, s.BalanceAt
+				a.lastCheckinDay, a.checkinClaimed = "", false
+				if s.LastCheckinDay != nil {
+					a.lastCheckinDay = *s.LastCheckinDay
+					a.checkinClaimed = s.CheckinClaimed == nil || *s.CheckinClaimed
+				}
+				a.newUserSettled = s.NewUserSettled
 				a.mu.Unlock()
 			}
 		}
@@ -1016,6 +1035,10 @@ func (p *Pool) saveStateErr() error {
 		LastErr   string                   `json:"last_error"`
 		Credit    *upstream.CreditBalance  `json:"credit_balance"`
 		BalanceAt time.Time                `json:"balance_updated_at"`
+		// 签到账本：持久化「今日已签」「新手已领」，重启后不重复请求上游。
+		LastCheckinDay string `json:"last_checkin_day,omitempty"`
+		CheckinClaimed bool   `json:"checkin_claimed,omitempty"`
+		NewUserSettled bool   `json:"new_user_settled,omitempty"`
 	}
 	accounts := p.Accounts()
 	out := make([]entry, 0, len(accounts))
@@ -1029,6 +1052,7 @@ func (p *Pool) saveStateErr() error {
 			Reason:    a.disabledReason,
 			LastErr:   a.lastErr,
 			Credit:    a.creditBalance, BalanceAt: a.balanceUpdatedAt,
+			LastCheckinDay: a.lastCheckinDay, CheckinClaimed: a.checkinClaimed, NewUserSettled: a.newUserSettled,
 		})
 		a.mu.Unlock()
 	}

@@ -43,6 +43,17 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  await ids.get('loginForm').onsubmit({ preventDefault() {} }); await tick();
  assert(!ids.get('loginDialog').open); assert.equal(ids.get('loginKey').value, '');
  assert(ids.get('accountsBody').innerHTML.includes('&lt;img')); assert(!ids.get('accountsBody').innerHTML.includes('<img')); assert(ids.get('accountsBody').innerHTML.includes('未知'));
+ // 签到按钮按「今日是否已签」切换：未签显示「签到」，已签显示「已签」并带本地结果提示。
+ const checkinButton = () => /<button[^>]*data-account-action="checkin"[^>]*>(签到|已签)<\/button>/.exec(ids.get('accountsBody').innerHTML);
+ assert.equal(checkinButton()[1], '签到', 'not signed today must show 签到');
+ account.checkin_done = true; account.checkin = { ok: true, message: '领取成功（100 积分）' };
+ ids.get('accountSearch').oninput();
+ const signed = checkinButton();
+ assert.equal(signed[1], '已签', 'signed today must show 已签');
+ assert(signed[0].includes('class="button small done"'), '已签 must carry the done style');
+ assert(signed[0].includes('title="领取成功（100 积分） · 今日已签到，每天只领一次"'), '已签 must explain itself: ' + signed[0]);
+ account.checkin_done = false; account.checkin = undefined; ids.get('accountSearch').oninput();
+ assert.equal(checkinButton()[1], '签到');
  for (const page of ['models', 'usage', 'logs', 'config']) { context.location.hash = '#' + page; events.hashchange(); await tick(); await tick(); assert.equal(ids.get('pageError').hidden, true, 'page failed: ' + page); }
  assert(ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  assert(ids.get('modelsBody').innerHTML.includes('Kimi &lt;K3&gt;'));
