@@ -1,0 +1,167 @@
+name: CI/CD
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# PR code only gets read access. Publishing grants packages:write in its own job.
+permissions:
+  contents: read
+
+# Never cancel a main deployment halfway through. New PR/branch runs supersede
+# older checks, while main releases are serialized (also locked on the server).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25.x'
+          cache: false # Standard-library-only module has no go.sum.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Go tests with race detector
+        run: go test -race ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Embedded frontend checks
+        run: |
+          node --check internal/server/panel.js
+          node --test internal/server/panel_frontend.test.cjs
+      - name: Deployment script regression tests
+        run: |
+          for script in deploy/deploy.sh scripts/*.sh deploy/tests/deploy_test.sh; do
+            bash -n "$script"
+          done
+          bash deploy/tests/deploy_test.sh
+
+  image:
+    name: Image smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build without publishing
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: codearts2api-panel:ci
+          cache-from: type=gha,scope=image-amd64
+          cache-to: type=gha,mode=max,scope=image-amd64
+      - name: Start image with empty data and check health
+        run: bash scripts/smoke-image.sh codearts2api-panel:ci
+      - name: Validate production Compose
+        env:
+          DEPLOY_DIR: /tmp/ca2a-compose-validation
+          IMAGE_REF: ghcr.io/example/codearts2api-panel:ci
+        run: docker compose --env-file /dev/null --file deploy/compose.yml config --quiet
+
+  publish:
+    name: Publish GHCR image
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [test, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.name }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse to publish an outdated main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-main-head.sh
+      - name: Use lowercase GHCR repository name
+        id: image
+        run: printf 'name=ghcr.io/%s\n' "${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in to GHCR with the short-lived workflow token
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish production image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ steps.image.outputs.name }}:prod
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=release
+            type=gha,scope=image-amd64
+          cache-to: type=gha,mode=max,scope=release
+      - name: Show the exact published image
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            printf '### Published production image\n\n'
+            printf '`%s:prod`\n\n' "$IMAGE"
+            printf 'Immutable deployment reference: `%s@%s`\n' "$IMAGE" "$DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy production
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && vars.DEPLOY_ENABLED == 'true'
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refuse to deploy an outdated main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/check-main-head.sh
+      - name: Pull this release and update the server over verified SSH
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          IMAGE_REF: ${{ needs.publish.outputs.image }}@${{ needs.publish.outputs.digest }}
+        run: bash scripts/deploy-remote.sh
