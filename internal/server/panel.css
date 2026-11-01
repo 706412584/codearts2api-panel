@@ -21,3 +21,7 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);
 .checks{display:flex;gap:22px;flex-wrap:wrap;margin:12px 0 2px}
 .check{display:inline-flex;align-items:center;gap:8px;font-weight:500}
 input[type=checkbox]{display:inline-block;width:auto;margin:0}
+/* 配置表单：按可用宽度铺满多列（300px 起），输入框只占自己那格，
+   不再在 1300px 宽的卡片里拉成 700px 长条；窄屏仍回落单列。 */
+.config-body .field-grid{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+@media(max-width:760px){.config-body .field-grid{grid-template-columns:1fr;gap:0}}
