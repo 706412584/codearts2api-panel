@@ -76,6 +76,21 @@ docker run --rm -p 127.0.0.1:7866:7866 \
 
 GitHub Actions 测试构建、GHCR 镜像发布与 Debian SSH 自动更新，见 [部署指南](docs/deployment.md)（部署默认关闭）。
 
+## 下载发布版
+
+从 [GitHub Releases](https://github.com/qwe5283/codearts2api-panel/releases) 下载对应系统和架构的压缩包：Windows x64 使用 `.zip`，Linux x64 / ARM64 使用 `.tar.gz`。解压后进入目录，运行 `codearts2api-panel.exe`（Windows）或 `./codearts2api-panel`（Linux），无需安装 Go 或 Node.js。可用随发布提供的 `SHA256SUMS` 校验下载文件。
+
+首次运行会生成 `config.json`，打开 `http://127.0.0.1:7866/panel` 并使用其中的 `admin_key` 登录。升级前停止旧进程、备份 `config.json`、`auths/` 和 `data/`，只替换程序，不覆盖已有配置和账号数据。面板显示当前程序版本。
+
+版本格式为 `vYY.MM.DD.N`，日期按 `20YY` 解释，`N` 是当日从 1 开始的发布序号，例如 `v26.11.01.1`；序号不使用前导零。维护者在通过测试的提交上创建并推送该标签后，`Release binaries` 工作流会重新测试并发布三个平台的压缩包及校验和：
+
+```sh
+git tag v26.11.01.1
+git push origin v26.11.01.1
+```
+
+每个新版本使用新标签。可在 `docs/releases/<版本>.md` 编写发布说明；未提供时自动生成变更记录。工作流重跑会补传同一 Release 的附件，保留现有发布说明。
+
 ## 快速启动
 
 需要 **Go 1.22 或更新版本**。业务代码仅依赖 Go 标准库；Node.js 仅用于可选的前端测试。

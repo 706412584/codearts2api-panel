@@ -2,8 +2,13 @@ package server
 
 import (
 	_ "embed"
+	"html"
 	"net/http"
+	"strings"
 )
+
+// Version is set by release builds with -ldflags -X.
+var Version = "v26.11.01.1"
 
 //go:embed panel.html
 var panelHTMLRaw string
@@ -30,7 +35,7 @@ func (h *Handler) servePanel(w http.ResponseWriter, r *http.Request) {
 	panelHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(panelHTMLRaw))
+	_, _ = w.Write([]byte(strings.ReplaceAll(panelHTMLRaw, "{{VERSION}}", html.EscapeString(Version))))
 }
 
 func (h *Handler) servePanelAsset(w http.ResponseWriter, r *http.Request) {

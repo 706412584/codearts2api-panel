@@ -1,0 +1,78 @@
+name: Release binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate release version
+        run: bash scripts/check-release-tag.sh "$GITHUB_REF_NAME"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test before publishing
+        run: |
+          go test -race ./...
+          go vet ./...
+          node --check internal/server/panel.js
+          node --test internal/server/panel_frontend.test.cjs
+          for script in scripts/*.sh scripts/tests/*.sh; do bash -n "$script"; done
+          bash scripts/tests/release_test.sh
+      - name: Build Windows and Linux archives
+        run: bash scripts/release.sh "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-assets"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$GITHUB_REF_NAME
+          assets="$RUNNER_TEMP/release-assets"
+          if gh release view "$version" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$version" "$assets"/* --clobber --repo "$GITHUB_REPOSITORY"
+            exit 0
+          fi
+          notes="$RUNNER_TEMP/release-notes.md"
+          previous=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          if [[ -f "docs/releases/$version.md" ]]; then
+            cp -- "docs/releases/$version.md" "$notes"
+          else
+            arguments=(-f "tag_name=$version")
+            if [[ -n $previous ]]; then arguments+=(-f "previous_tag_name=$previous"); fi
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${arguments[@]}" --jq .body > "$notes"
+          fi
+          # Keep one final history link, including when generated notes supply one.
+          sed -i '/^\*\*Full Changelog\*\*:/d' "$notes"
+          if [[ -n $previous ]]; then
+            history="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$previous...$version"
+          else
+            history="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commits/$version"
+          fi
+          printf '\n**Full Changelog**: %s\n' "$history" >> "$notes"
+          gh release create "$version" "$assets"/* --verify-tag --title "$version" \
+            --notes-file "$notes" --repo "$GITHUB_REPOSITORY"
