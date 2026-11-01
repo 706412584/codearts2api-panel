@@ -2,9 +2,19 @@ services:
   codearts2api-panel:
     build: .
     restart: unless-stopped
+    # 容器以 app 用户（uid 10001）运行；宿主机挂载目录属主不同会导致写凭据/状态
+    # permission denied。Linux 宿主机可 PUID=$(id -u) PGID=$(id -g) docker compose up -d，
+    # 或写进 .env（PUID=1000 / PGID=1000）。
+    user: "${PUID:-10001}:${PGID:-10001}"
     ports:
       - "127.0.0.1:7866:7866"
     volumes:
-      - ./runtime:/data
+      - ./auths:/app/auths
+      - ./data:/app/data
+      # 注意：宿主机必须先有 config.json（cp config.example.json config.json）。
+      # 缺失时 Docker 会把挂载点创建成同名目录；容器能正常启动，但程序会识别出
+      # 「配置路径是目录」并以非零码退出，日志里打印 cp / 删除目录的处理办法。
+      # 不挂 :ro：面板「配置」页需要写回此文件（保存后热生效）。
+      - ./config.json:/app/config.json
     environment:
       TZ: Asia/Shanghai

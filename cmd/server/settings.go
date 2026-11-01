@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 )
 
 type fileSettings struct {
@@ -141,7 +143,36 @@ func writeConfigAtomic(path string, raw []byte) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(file.Name(), path)
+	if err := os.Rename(file.Name(), path); err != nil {
+		// 单文件 Docker bind mount 的挂载点无法被 rename 覆盖（Linux 返回 EBUSY）。
+		// 普通文件继续走原子替换，这种部署形态则退回原地截断写入。
+		if !errors.Is(err, syscall.EBUSY) {
+			return err
+		}
+		log.Printf("config: %s 是 bind mount 挂载点，无法原子替换，改为原地写入", path)
+		out, readErr := os.ReadFile(file.Name())
+		if readErr != nil {
+			return readErr
+		}
+		target, openErr := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
+		if openErr != nil {
+			return fmt.Errorf("replace config (bind mount fallback): %w", openErr)
+		}
+		_, writeErr := target.Write(out)
+		if writeErr == nil {
+			writeErr = target.Sync()
+		}
+		closeErr := target.Close()
+		// 写失败时保留 tmp：挂载文件已被 O_TRUNC 清空，tmp 里是完整新内容，可手工恢复。
+		if writeErr != nil {
+			return fmt.Errorf("replace config (bind mount fallback, 完整新内容保留在 %s): %w", file.Name(), writeErr)
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		return nil
+	}
+	return nil
 }
 
 func ensureConfig(path string) error {

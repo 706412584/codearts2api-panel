@@ -87,6 +87,13 @@ func Default() *Config {
 func Load(path string) (*Config, error) {
 	c := Default()
 	if path != "" {
+		// 目录而非文件：Docker 单文件 bind mount 在宿主机缺文件时会创建同名目录。
+		// 直接 ReadFile 只会报 "Incorrect function" 之类的系统错误，这里给出可操作提示。
+		if st, statErr := os.Stat(path); statErr == nil && st.IsDir() {
+			return nil, fmt.Errorf("config %s 是目录而非文件——"+
+				"Docker 部署时若宿主机缺少 config.json，单文件 bind mount 会创建同名目录。"+
+				"请先 `cp config.example.json config.json` 或删除该目录（程序会自动生成配置）", path)
+		}
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			if !os.IsNotExist(err) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -56,6 +57,27 @@ func TestLoadToleratesExampleConfigComments(t *testing.T) {
 	}
 	if cfg.KeepaliveWindow != "10m" {
 		t.Errorf("keepalive_window 未生效: %q", cfg.KeepaliveWindow)
+	}
+}
+
+// 宿主机缺 ./config.json 时，单文件 bind mount 会把挂载点建成同名目录；
+// 直接 ReadFile 只会报系统错误，这里要求给出可操作的提示。
+func TestLoadRejectsConfigPathThatIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CA2A_API_KEY", "test-key")
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("配置路径是目录时应拒绝启动")
+	}
+	for _, want := range []string{"是目录而非文件", "cp config.example.json config.json"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("提示缺少关键信息 %q: %v", want, err)
+		}
 	}
 }
 
