@@ -57,6 +57,8 @@ Linux 宿主机需让容器运行用户能写入这些路径。可用自己的 U
 PUID="$(id -u)" PGID="$(id -g)" docker compose up -d --build
 ```
 
+忘记设置时，容器写 `auths/` 或 `data/` 会被拒；这条报错信息里自带上述解法（改 UID 启动 / `chown 10001` / `user: "0:0"`），不必回头翻文档。
+
 也可单独构建：
 
 ```sh

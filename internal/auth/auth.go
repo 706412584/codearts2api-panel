@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -303,12 +305,12 @@ func LoadDir(dir string) ([]*Auth, error) {
 // SaveNew 把新账号写入 auths 目录。
 func SaveNew(dir string, a *Auth) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return permHint(err)
 	}
 	path := filepath.Join(dir, a.FileName())
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return permHint(err)
 	}
 	if err := file.Close(); err != nil {
 		_ = os.Remove(path)
@@ -321,7 +323,7 @@ func SaveNew(dir string, a *Auth) error {
 	return nil
 }
 
-func saveLocked(path string, v any) error {
+func saveLocked(path string, v any) (err error) {
 	if err := validPath(path); err != nil {
 		return err
 	}
@@ -329,6 +331,8 @@ func saveLocked(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	// 写盘失败统一过 permHint：任一环节 EACCES 都补上 Docker 挂载权限指引。
+	defer func() { err = permHint(err) }()
 	file, err := os.CreateTemp(filepath.Dir(path), ".codearts-*.tmp")
 	if err != nil {
 		return err
@@ -351,6 +355,20 @@ func saveLocked(path string, v any) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// permHint 给权限类写失败补上 Docker bind-mount 的解法指引。
+// 容器内以 uid 10001 运行，宿主机挂载目录属主不同是首次部署最常见的失败点；
+// 裸的 "permission denied" 只说不行、不说改什么，用户只能去翻 README。
+// 非权限错误原样返回，原错误用 %w 包裹，上层仍可用 errors.Is 分类。
+func permHint(err error) error {
+	if err == nil || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	return fmt.Errorf("%w\n（Docker 部署：容器内用户对宿主机挂载目录无写权限。解法任选："+
+		"1) 以本机 uid 运行容器：PUID=$(id -u) PGID=$(id -g) docker compose up -d；"+
+		"2) sudo chown -R 10001:10001 ./auths ./data ./config.json；"+
+		"3) compose 设 user: \"0:0\" 以 root 运行）", err)
 }
 
 func validPath(path string) error {
