@@ -292,7 +292,7 @@ bash "$DEPLOY_PATH/deploy.sh" "$DEPLOY_PATH" \
   "$(cat "$DEPLOY_PATH/.previous-image")" "$DEPLOY_PATH/.previous-compose.yml"
 ```
 
-先确认两个 previous 文件都存在，保留所需 digest 镜像；如果正在排查，先把 `DEPLOY_ENABLED` 改为 `false`，防止下一次发布覆盖手动选择。关闭变量不等于取消已经启动的 job，必要时在 Actions 中取消该次运行。
+先确认两个 previous 文件都存在，保留所需 digest 镜像；如果正在排查，先把 `DEPLOY_ENABLED` 改为 `false`，防止下一次发布覆盖手动选择。关闭变量不等于取消已经启动的 job，必要时在 Actions 中取消该次运行。`previous` 表示上一次成功部署调用，不保证是上一个不同版本；重复部署同一镜像也会更新记录，需要长期保留的回退点应另行保存其镜像引用和 Compose。
 
 **回退只恢复镜像与 Compose，不恢复 `config.json`、`auths/`、`data/`，也不逆转新版已经写入的数据。** 更新前应做好三处敏感数据的独立备份，必要时在停服窗口做一致性备份，恢复也应人工核对版本与权限。脚本不会覆盖这三处，不会执行 `down -v` 或 prune；不要自行清理仍需回退的包/digest。单容器重新创建期间有短暂中断，不能承诺 SSE 保持。
 
