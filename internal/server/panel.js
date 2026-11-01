@@ -74,7 +74,9 @@
   const post = (path, body = {}) => api(path, { method: 'POST', body: JSON.stringify(body) });
   function applyTheme() {
     document.documentElement.dataset.theme = theme;
-    $('themeButton').textContent = theme === 'dark' ? '☀' : '☾';
+    // 图标指示「当前已是哪个主题」：深色显示太阳，浅色显示月亮。
+    $('themeIconSun').hidden = theme !== 'dark';
+    $('themeIconMoon').hidden = theme !== 'light';
     $('themeButton').setAttribute('aria-label', theme === 'dark' ? '切换浅色主题' : '切换深色主题');
   }
   $('themeButton').onclick = () => { theme = theme === 'dark' ? 'light' : 'dark'; writeStorage(localStorage, THEME_STORAGE, theme); applyTheme(); };
