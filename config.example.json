@@ -1,0 +1,30 @@
+{
+  "listen": ":7866",
+  "api_key": "",
+  "admin_key": "",
+  "auth_dir": "./auths",
+  "state_file": "./data/state.json",
+  "default_model": "glm-5.2",
+  "oauth_callback_host": "",
+  "login_client_id": "codearts-agent",
+  "cooldown": {
+    "soft_rate": "60s",
+    "err_threshold": 3,
+    "err_cooldown": "10m"
+  },
+  "max_concurrent": 1,
+  "keepalive_window": "10m",
+  "queue_retry_seconds": 10,
+  "queue_max_attempts": 30,
+  "benefit_auto_claim": true,
+  "credits_auto_claim": true,
+  "watch": {
+    "enabled": true,
+    "poll_minutes": 30,
+    "refresh_skew_minutes": 30,
+    "keepalive_interval_minutes": 15
+  },
+  "upstream": {
+    "timeout_seconds": 120
+  }
+}

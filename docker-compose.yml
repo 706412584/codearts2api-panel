@@ -1,0 +1,10 @@
+services:
+  codearts2api-panel:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7866:7866"
+    volumes:
+      - ./runtime:/data
+    environment:
+      TZ: Asia/Shanghai

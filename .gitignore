@@ -1,0 +1,17 @@
+/references/
+/auths/
+/data/
+/runtime/
+/bin/
+/config.json
+*.exe
+*.test
+*.tmp
+*.log
+*.key
+*.pem
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store

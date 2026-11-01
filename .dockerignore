@@ -1,0 +1,14 @@
+.git
+references
+auths
+data
+runtime
+bin
+config.json
+*.exe
+*.test
+*.log
+*.key
+*.pem
+.env
+.env.*
