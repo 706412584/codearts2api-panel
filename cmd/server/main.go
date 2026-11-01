@@ -61,6 +61,7 @@ func main() {
 		Pool:              p,
 		Enabled:           cfg.Watch.Enabled,
 		CreditsAutoClaim:  cfg.CreditsAutoClaim,
+		CheckinHours:      cfg.CheckinHours,
 		PollInterval:      time.Duration(cfg.Watch.PollMinutes) * time.Minute,
 		RefreshSkew:       time.Duration(cfg.Watch.RefreshSkewM) * time.Minute,
 		KeepaliveInterval: time.Duration(cfg.Watch.KeepaliveInterval) * time.Minute,

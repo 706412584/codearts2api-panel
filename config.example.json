@@ -17,6 +17,7 @@
   "queue_retry_seconds": 10,
   "queue_max_attempts": 30,
   "credits_auto_claim": true,
+  "checkin_hours": [9, 21],
   "watch": {
     "enabled": true,
     "poll_minutes": 30,

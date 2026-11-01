@@ -217,7 +217,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 - 页面普通刷新读取余额缓存，不会每次轮询都领取积分。模型页「重新获取」可主动刷新模型目录。
 - 「签到」处理 CodeArts 的活动领取与确认：按活动 `type` 选每日签到（`USER_LOGIN`）和新手（`NEW_USER_REGISTER`），不按 `campaignId` —— 活动 ID 会随投放批次变化；活动资格和金额来自当前账号的活动列表。
 - **领取次数由本地记账兜住**：每日签到按自然日只领一次（跨零点自动失效），新手活动每个账号只领一次。已经了结的账号不再向上游发请求——`data/state.json` 里的 `last_checkin_day` / `checkin_claimed` / `new_user_settled` 就是这份账本，重启后仍然生效。只有上游真的给了答复（领到、已领取、没有该活动）才算「了结」；网络失败、待确认（`CLAIMED` 未 `CONFIRMED`）会留到下一轮继续。
-- `credits_auto_claim:true` 时，后台轮询会尝试签到及新用户活动；已了结的账号在轮询里是零请求。
+- **签到按本地时点执行**：`credits_auto_claim:true` 时，进程在 `checkin_hours`（默认 `[9, 21]`，本地时间整点）各领一次每日签到和新手活动，与 `watch.poll_minutes` 的 token 轮询互不相干。启动时若今天已经过了最近一个时点却还没签，会立刻补一次（已签的账号由账本短路，零上游请求）。
 - `watch.enabled:true` 时，后台校验登录态并按条件续期；关闭后仍可手动操作。
 
 自动生成的默认配置开启活动积分领取与凭据看护；如希望只手动操作，将 `credits_auto_claim` 或 `watch.enabled` 设为 false 后重启。
@@ -240,12 +240,13 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 | `queue_retry_seconds` | `10` | 排队重试间隔；缺省/0 使用内部默认值 |
 | `queue_max_attempts` | `30` | 排队重试上限；缺省/0 使用内部默认值 |
 | `upstream.timeout_seconds` | `120` | 上游客户端超时配置 |
-| `credits_auto_claim` | `true` | 后台活动积分领取 |
+| `credits_auto_claim` | `true` | 后台活动积分领取（按 `checkin_hours` 时点） |
+| `checkin_hours` | `[9, 21]` | 每日签到时点（本地小时 0-23）；空数组/非法值回落默认 |
 | `watch.enabled` | `true` | 后台凭据看护 |
 | `watch.poll_minutes` | `30` | 后台轮询间隔 |
 | `watch.refresh_skew_minutes` | `30` | 临近到期续期窗口 |
 
-环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
+环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
 面板「服务配置」不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**所有在线配置修改均需重启生效**。环境变量覆盖的配置仍需修改部署环境后重启。
 

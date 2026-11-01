@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -50,8 +51,11 @@ type Config struct {
 	// QueueMaxAttempts 排队重试次数上限（默认 30，约 5 分钟）。
 	QueueMaxAttempts int `json:"queue_max_attempts"`
 
-	// CreditsAutoClaim 每次 watchdog 轮询领取每日签到和新手活动积分（默认 true）。
+	// CreditsAutoClaim 在 checkin_hours 的时点领取每日签到和新手活动积分（默认 true）。
 	CreditsAutoClaim bool `json:"credits_auto_claim"`
+	// CheckinHours 每日签到时点（本地小时 0-23，默认 [9, 21]）。空值或全部非法时回落默认。
+	// 轮询看护（watch.poll_minutes）与它无关：轮询管 token，时点管签到。
+	CheckinHours []int `json:"checkin_hours"`
 
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"`
@@ -80,6 +84,7 @@ func Default() *Config {
 	c.KeepaliveWindow = "10m"      // 新增：保活窗口 10 分钟
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
+	c.CheckinHours = []int{9, 21}
 	return c
 }
 
@@ -240,6 +245,39 @@ func applyEnv(c *Config) {
 	if v := os.Getenv("CA2A_CREDITS_AUTO_CLAIM"); v != "" {
 		c.CreditsAutoClaim = v == "1" || strings.EqualFold(v, "true")
 	}
+	if v := os.Getenv("CA2A_CHECKIN_HOURS"); v != "" {
+		if hours, ok := parseHours(v); ok {
+			c.CheckinHours = hours
+		}
+	}
+}
+
+// parseHours 解析 "9,21" 形式的时点列表；没有任何合法值时报 not ok。
+func parseHours(raw string) ([]int, bool) {
+	nums := make([]int, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			nums = append(nums, n)
+		}
+	}
+	hours := validHours(nums)
+	return hours, len(hours) > 0
+}
+
+// validHours 过滤 0-23 之外的值、去重并升序（scheduler 侧有同义的规范化，
+// 但配置要在面板里就呈现出最终生效的值，不能等调度器再改）。
+func validHours(hours []int) []int {
+	seen := make(map[int]bool, len(hours))
+	out := make([]int, 0, len(hours))
+	for _, h := range hours {
+		if h < 0 || h > 23 || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	sort.Ints(out)
+	return out
 }
 
 func (c *Config) validate() error {
@@ -312,6 +350,12 @@ func (c *Config) normalize() error {
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 1 // 上游并发会话释放慢，单账号串行最稳
+	}
+	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
+	if hours := validHours(c.CheckinHours); len(hours) > 0 {
+		c.CheckinHours = hours
+	} else {
+		c.CheckinHours = []int{9, 21}
 	}
 	return nil
 }
