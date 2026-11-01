@@ -24,4 +24,7 @@ input[type=checkbox]{display:inline-block;width:auto;margin:0}
 /* 配置表单：按可用宽度铺满多列（300px 起），输入框只占自己那格，
    不再在 1300px 宽的卡片里拉成 700px 长条；窄屏仍回落单列。 */
 .config-body .field-grid{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+/* 表单里的 input 与 label 是兄弟节点，全局只有 `label input` 那条宽度规则，
+   不补这行就会退回浏览器默认 ~180px，行与行之间留下大片空白。 */
+.config-body .field-grid input,.config-body .field-grid select{width:100%;max-width:100%;margin-top:6px}
 @media(max-width:760px){.config-body .field-grid{grid-template-columns:1fr;gap:0}}
