@@ -154,7 +154,14 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(!ids.get('configEditor').value.includes('server-secret')); assert(!ids.get('configEditor').value.includes('api-secret'));
  ids.get('newAdminKey').value = 'rotated-secret'; ids.get('newAPIKey').value = 'new-api-secret';
  await ids.get('saveConfigButton').onclick();
- assert.equal(ids.get('newAdminKey').value, ''); assert.equal(ids.get('newAPIKey').value, ''); assert(!ids.get('configEditor').value.includes('rotated-secret')); assert(ids.get('configNotice').textContent.includes('需重启服务') && ids.get('configNotice').textContent.includes('listen'), '需重启字段要回显具体名字: ' + ids.get('configNotice').textContent);
+ assert.equal(ids.get('newAdminKey').value, ''); assert.equal(ids.get('newAPIKey').value, ''); assert(!ids.get('configEditor').value.includes('rotated-secret')); assert(ids.get('configNotice').textContent.includes('需重启'), '保存后横幅要说明有字段需重启: ' + ids.get('configNotice').textContent);
+ // 只有这四项需要重启，标记写在各自 label 后面（非强调色），横幅不再罗列字段名。
+for (const [id, text] of [['cfgListen', '监听地址'], ['cfgAuthDir', '凭据目录'], ['cfgStateFile', '状态文件'], ['cfgTimeoutSeconds', '上游超时（秒）']]) {
+  assert(html.includes('<label for="' + id + '">' + text + ' <span class="muted">（需重启）</span></label>'), id + ' must be labelled 需重启');
+}
+assert(!html.includes('listen、auth_dir、state_file'), '横幅不得再罗列重启字段');
+assert(!script.includes("restart.length + ' 项'"), '保存成功的 toast 不得再带数量');
+assert(!/<label for="cfg(DefaultModel|SoftRate|ErrThreshold|ErrCooldown|MaxConcurrent)">[^<]*<span class="muted">（需重启）/.test(html), '热生效字段不得标需重启');
  // 密钥热改后本次会话立刻换新 key，旧 key 只出现在保存之前/保存当次的请求里。
  for (const req of requests) { assert(!req.url.includes('secret')); assert(['Bearer test-admin-secret', 'Bearer rotated-secret'].includes(req.opts.headers.get('Authorization'))); }
  context.location.hash = '#models'; events.hashchange(); await tick(); await tick();

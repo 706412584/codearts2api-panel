@@ -424,9 +424,9 @@
       markConfigClean();
       const restart = Array.isArray(data.restart_required) ? data.restart_required.filter(Boolean) : [];
       $('configNotice').textContent = restart.length
-        ? '配置已保存并热生效；以下字段仍需重启服务：' + restart.join('、') + '。'
+        ? '配置已保存并热生效；标有「需重启」的字段需重启服务后生效。'
         : '配置已保存并立即生效。';
-      toast(restart.length ? '配置已保存并热生效，' + restart.length + ' 项需重启后生效' : '配置已保存并立即生效');
+      toast(restart.length ? '配置已保存并热生效，标有「需重启」的字段待重启服务后生效' : '配置已保存并立即生效');
     } catch (error) { toast(error.message, true); }
     finally { $('saveConfigButton').disabled = false; }
   };

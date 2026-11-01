@@ -269,7 +269,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 
 环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
-面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`；保存后页面会列出仍需重启的字段名。环境变量覆盖的配置仍需修改部署环境后重启。
+面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
 
 ## 数据与日志
 
