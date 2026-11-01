@@ -67,20 +67,33 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  ids.get('themeButton').onclick();
  assert.equal(ids.get('themeIconSun').hidden, false); assert.equal(ids.get('themeIconMoon').hidden, true);
  assert(ids.get('usageChart').innerHTML.includes('<svg'));
- // 重启后进程指标为 0：用量页要回看本地归档（history），而不是显示空态。
+ // 用量页：本地归档（data/requests）与进程内记录合并去重 —— 重启后要有历史，
+ // 本进程跑过请求之后也不能塌成一条。
  const liveUsage = { ...usage, recent: [...usage.recent] };
+ const archivedRow = (i, model, ok) => ({ time: new Date(Date.now() - (i + 10) * 60e3).toISOString(), request_id: 'arch-' + i, model, ok, status: ok ? 200 : 500, total_tokens: 10, duration_ms: 100 });
+ const archivedRows = [archivedRow(1, 'archived-a', true), archivedRow(2, 'archived-b', false)];
  usage.completed = 0; usage.succeeded = 0; usage.failed = 0; usage.recent = [];
- usage.history = { from: new Date(Date.now() - 3600e3).toISOString(), to: new Date().toISOString(), completed: 7, succeeded: 6, failed: 1, avg_duration_ms: 250,
-  recent: [{ time: new Date(Date.now() - 60e3).toISOString(), model: 'archived-model', ok: true, status: 200, total_tokens: 50, duration_ms: 250 }] };
+ usage.history = { recent: archivedRows };
  context.location.hash = '#accounts'; events.hashchange(); await tick();
  context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
- assert.equal(ids.get('usageCompleted').textContent, '7', 'archive totals must feed the cards');
- assert.equal(ids.get('usageSuccess').textContent, '85.7%');
- assert.equal(ids.get('usageCompletedNote').textContent, '来自本地归档（重启前的记录）');
- assert(ids.get('usageChartNote').textContent.includes('本地归档'));
- assert(ids.get('usageModelsBody').innerHTML.includes('archived-model'), 'archive rows must feed the model table');
+ assert.equal(ids.get('usageCompleted').textContent, '2', 'archive rows must feed the cards');
+ assert.equal(ids.get('usageSuccess').textContent, '50.0%');
+ assert(ids.get('usageCompletedNote').textContent.includes('归档'));
+ assert(ids.get('usageChartNote').textContent.includes('归档'));
+ assert(ids.get('usageModelsBody').innerHTML.includes('archived-a'), 'archive rows must feed the model table');
+ // 本进程跑过一条请求：归档仍然要在，页面上是「进程 + 归档」的并集。
+ usage.recent = [liveUsage.recent[0]];
+ context.location.hash = '#accounts'; events.hashchange(); await tick();
+ context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
+ assert.equal(ids.get('usageCompleted').textContent, '3', 'live + archived rows must merge, not replace');
+ assert(ids.get('usageModelsBody').innerHTML.includes('archived-a') && ids.get('usageModelsBody').innerHTML.includes('test-model'), 'merged rows must feed the model table');
+ // 同一条请求既在进程里又在归档里：只算一次。
+ usage.history = { recent: [usage.recent[0], ...archivedRows] };
+ context.location.hash = '#accounts'; events.hashchange(); await tick();
+ context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
+ assert.equal(ids.get('usageCompleted').textContent, '3', 'duplicate rows must be dropped');
  context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
- assert(ids.get('requestLogsBody').innerHTML.includes('archived-model'), 'archive rows must feed the request log');
+ assert(ids.get('requestLogsBody').innerHTML.includes('archived-a'), 'archive rows must feed the request log');
  Object.assign(usage, liveUsage); delete usage.history;
  context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
  assert(ids.get('runtimeLogs').innerHTML.includes('&lt;script&gt;'));

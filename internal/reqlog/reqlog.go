@@ -111,8 +111,8 @@ type ArchiveStats struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
-// HistoryLimit 面板回看归档时的默认条数上限（与 ReadArchive 的上限一致）。
-const HistoryLimit = 500
+// HistoryLimit 面板回看归档时的默认条数（一个页面窗口的量，不必读全部历史）。
+const HistoryLimit = 200
 
 // History 归档回看窗口：进程内指标随重启清零，磁盘归档仍在，面板据此在重启后
 // 继续显示用量。各计数只覆盖 Recent 这一批记录，不是整个归档的累计。
@@ -256,9 +256,9 @@ func (r *Recorder) ReadArchive(limit int, filter Filter) ([]Event, error) {
 }
 
 // historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档最多保留
-// 7 天，不能每次都重扫目录。回看只在「进程还没有任何请求」时发生，那段时间不会
-// 有新事件落盘，因此 30 秒的缓存不会让操作者看到过期信息。
-const historyTTL = 30 * time.Second
+// 7 天，不能每次都重扫目录。缓存只挡重复扫描 —— 取值要与轮询间隔同量级，否则
+// 刚落盘的请求要等缓存过期才出现。
+const historyTTL = 5 * time.Second
 
 // History 从归档回看最近 limit 条请求（事件时间倒序），汇总成与进程指标同形的数字，
 // 供面板在重启后继续显示用量。归档未启用或没有任何记录时返回 nil。

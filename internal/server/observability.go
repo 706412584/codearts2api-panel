@@ -82,11 +82,10 @@ func (h *Handler) adminLogs(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) adminUsage(w http.ResponseWriter, r *http.Request) {
 	snap := h.cfg.RequestLog.Snapshot()
-	// 进程内指标随重启清零，但归档（data/requests）还在：此时带上归档回看，
-	// 页面才不会在每次重启后变成空态。进程已有数据时不回看，省掉一次目录扫描。
-	if snap.Completed == 0 {
-		snap.History = h.cfg.RequestLog.History(reqlog.HistoryLimit)
-	}
+	// 进程内指标随重启清零，归档（data/requests）才是能跨重启的那本账：
+	// 只要归档里有记录就带上，页面据此一直显示历史 —— 不能只在「本进程还没请求」
+	// 时才回看，否则重启后跑一条请求，整页就塌成一条。
+	snap.History = h.cfg.RequestLog.History(reqlog.HistoryLimit)
 	writeJSON(w, http.StatusOK, snap)
 }
 

@@ -196,13 +196,25 @@
     if (event.total_tokens !== undefined && event.total_tokens !== null) return Number(event.total_tokens) || 0;
     return (Number(event.prompt_tokens) || 0) + (Number(event.completion_tokens) || 0);
   }
-  // 进程内指标重启即清零。此时后端会带 history（本地归档 data/requests 的回看），
-  // 页面优先用它，否则每次重启后都只剩空态。
+  // 进程指标随重启清零，归档（data/requests）才是跨重启的账本：两者合并去重后展示，
+  // 归档里还没落盘的新请求也照样出现在列表里。没有归档时才退回纯进程数据。
+  function usageTotals(recent) {
+    let succeeded = 0, duration = 0;
+    for (const row of recent) { succeeded += Number(eventOK(row)); duration += Number(row.duration_ms) || 0; }
+    return { completed: recent.length, succeeded, failed: recent.length - succeeded, avg_duration_ms: recent.length ? duration / recent.length : 0 };
+  }
   function usageView(data) {
-    const recent = Array.isArray(data.recent) ? data.recent : [];
-    const history = data.history && Array.isArray(data.history.recent) ? data.history : null;
-    if (!recent.length && history && history.recent.length) return { fromArchive: true, recent: history.recent, totals: history };
-    return { fromArchive: false, recent, totals: data };
+    const live = Array.isArray(data.recent) ? data.recent : [];
+    const archived = data.history && Array.isArray(data.history.recent) ? data.history.recent : [];
+    if (!archived.length) return { fromArchive: false, recent: live, totals: data };
+    const seen = new Set(), merged = [];
+    for (const row of [...live, ...archived]) {
+      const key = row.request_id || [row.time, row.model, row.status, row.duration_ms].join('|');
+      if (seen.has(key)) continue;
+      seen.add(key); merged.push(row);
+    }
+    merged.sort((a, b) => new Date(b.time) - new Date(a.time));
+    return { fromArchive: true, recent: merged, totals: usageTotals(merged) };
   }
   function renderUsage(data) {
     const view = usageView(data), recent = view.recent, totals = view.totals;
@@ -211,9 +223,9 @@
     $('usageOutcomes').textContent = '成功 ' + number(totals.succeeded) + ' · 失败 ' + number(totals.failed);
     $('usageDuration').textContent = duration(totals.avg_duration_ms);
     $('usageTokens').textContent = recent.length ? number(recent.reduce((sum, row) => sum + tokenTotal(row), 0)) : '—';
-    $('usageCompletedNote').textContent = view.fromArchive ? '来自本地归档（重启前的记录）' : '当前服务进程累计';
+    $('usageCompletedNote').textContent = view.fromArchive ? '本地归档 data/requests（含重启前的记录）' : '当前服务进程累计';
     $('usageChartNote').textContent = view.fromArchive
-      ? '来自本地归档 data/requests：最近 ' + recent.length + ' 条记录按小时聚合' + (totals.from ? '，覆盖 ' + date(totals.from) + ' 起。' : '。')
+      ? '本地归档 data/requests 最近 ' + recent.length + ' 条记录按小时聚合，新请求落盘后自动计入。'
       : '基于最近 ' + recent.length + ' 条记录，按小时聚合；进程重启后指标重新累计。';
     const grouped = new Map();
     recent.forEach(row => { const id = row.model || '未知模型'; const g = grouped.get(id) || { requests: 0, succeeded: 0, tokens: 0, duration: 0 }; g.requests++; g.succeeded += Number(eventOK(row)); g.tokens += tokenTotal(row); g.duration += Number(row.duration_ms) || 0; grouped.set(id, g); });

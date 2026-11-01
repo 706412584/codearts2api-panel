@@ -231,9 +231,9 @@ type usagePayload struct {
 	History   *reqlog.History `json:"history"`
 }
 
-// 进程指标随重启清零，但 data/requests 里的归档还在：/admin/api/usage 必须回看它，
-// 否则面板用量页每次重启都变成空态。
-func TestUsageFallsBackToArchiveAfterRestart(t *testing.T) {
+// 进程指标随重启清零，但 data/requests 里的归档还在：/admin/api/usage 始终带上它，
+// 否则重启后只要跑过一条请求，用量页就塌成一条（本地进程数据不是完整账本）。
+func TestUsageAlwaysIncludesArchive(t *testing.T) {
 	dir := t.TempDir()
 	before := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, RetentionDays: 7})
 	before.Record(reqlog.Event{
@@ -259,14 +259,31 @@ func TestUsageFallsBackToArchiveAfterRestart(t *testing.T) {
 		t.Fatalf("usage did not read the archive: %s", raw.Body.String())
 	}
 
-	// 本进程有数据后就不再回看归档（省掉目录扫描），页面用实时指标。
+	// 本进程跑过请求之后归档仍然要在：页面据此保留历史，而不是只剩这一条。
 	fresh.Record(reqlog.Event{RequestID: "live", Path: "/v1/chat/completions", Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess})
 	body = usagePayload{}
 	raw = panelRequest(h, http.MethodGet, "/admin/api/usage", "", "")
 	if err := json.Unmarshal(raw.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if body.History != nil || body.Completed != 1 || len(body.Recent) != 1 || body.Recent[0].RequestID != "live" {
-		t.Fatalf("live process must not read the archive: %s", raw.Body.String())
+	if body.Completed != 1 || len(body.Recent) != 1 || body.Recent[0].RequestID != "live" {
+		t.Fatalf("process counters must stay live: %s", raw.Body.String())
+	}
+	if body.History == nil || len(body.History.Recent) == 0 || body.History.Recent[0].RequestID != "persisted" {
+		t.Fatalf("archive must stay attached once the process has data: %s", raw.Body.String())
+	}
+}
+
+// 归档关闭时不能凭空造 history：页面退回纯进程数据。
+func TestUsageWithoutArchiveHasNoHistory(t *testing.T) {
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p})
+	var body usagePayload
+	raw := panelRequest(h, http.MethodGet, "/admin/api/usage", "", "")
+	if err := json.Unmarshal(raw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.History != nil {
+		t.Fatalf("history without an archive: %s", raw.Body.String())
 	}
 }
