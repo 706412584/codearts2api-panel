@@ -36,6 +36,12 @@ type ModelInfo struct {
 	Desc          string `json:"desc,omitempty"`
 	// Notice 上游的模型级提示（如闲时折扣说明），面板作为 tooltip 第二行展示。
 	Notice string `json:"notice,omitempty"`
+	// Tag 上游模型标签（如「闲时折扣」），面板以紫色徽标展示；空串表示无标签。
+	Tag string `json:"model_tag,omitempty"`
+	// DisplayEnabled / SupportsImages 保留上游原始布尔值：nil 表示上游没给这个字段，
+	// 面板据此决定是否显示「隐藏模型」「视觉理解」徽标（nil 时都不显示）。
+	DisplayEnabled *bool `json:"display_enabled,omitempty"`
+	SupportsImages *bool `json:"supports_images,omitempty"`
 }
 
 // 内置模型种子（大小写归一用）。
@@ -179,6 +185,15 @@ func richerModel(cur, next ModelInfo) ModelInfo {
 	if keep.Notice == "" {
 		keep.Notice = drop.Notice
 	}
+	if keep.Tag == "" {
+		keep.Tag = drop.Tag
+	}
+	if keep.DisplayEnabled == nil {
+		keep.DisplayEnabled = drop.DisplayEnabled
+	}
+	if keep.SupportsImages == nil {
+		keep.SupportsImages = drop.SupportsImages
+	}
 	return keep
 }
 
@@ -238,12 +253,15 @@ func (c *Client) fetchAgentModels(cred SignCredential) ([]ModelInfo, error) {
 				ModelName  string `json:"model_name"`
 				ModelID    string `json:"model_id"`
 				// Notice 与 model_parameters 同级：空字符串表示无提示。
-				Notice string `json:"notice"`
-				Params struct {
-					ContextWindow int64  `json:"context_window"`
-					MaxTokens     int64  `json:"max_tokens"`
-					ModelID       string `json:"model_id"`
-					ModelDesc     string `json:"model_desc"`
+				Notice   string `json:"notice"`
+				ModelTag string `json:"model_tag"`
+				Params   struct {
+					ContextWindow  int64  `json:"context_window"`
+					MaxTokens      int64  `json:"max_tokens"`
+					ModelID        string `json:"model_id"`
+					ModelDesc      string `json:"model_desc"`
+					DisplayEnabled *bool  `json:"display_enabled"`
+					SupportsImages *bool  `json:"supports_images"`
 				} `json:"model_parameters"`
 			} `json:"models"`
 		} `json:"gpts"`
@@ -262,12 +280,15 @@ func (c *Client) fetchAgentModels(cred SignCredential) ([]ModelInfo, error) {
 			continue
 		}
 		out = append(out, ModelInfo{
-			ID:            id,
-			Name:          firstNonEmpty(m.ModelName, id),
-			ContextWindow: m.Params.ContextWindow,
-			MaxTokens:     m.Params.MaxTokens,
-			Desc:          m.Params.ModelDesc,
-			Notice:        strings.TrimSpace(m.Notice),
+			ID:             id,
+			Name:           firstNonEmpty(m.ModelName, id),
+			ContextWindow:  m.Params.ContextWindow,
+			MaxTokens:      m.Params.MaxTokens,
+			Desc:           m.Params.ModelDesc,
+			Notice:         strings.TrimSpace(m.Notice),
+			Tag:            strings.TrimSpace(m.ModelTag),
+			DisplayEnabled: m.Params.DisplayEnabled,
+			SupportsImages: m.Params.SupportsImages,
 		})
 	}
 	return out, nil
@@ -343,12 +364,14 @@ func (c *Client) fetchBuiltinModels(accountID string, cred SignCredential) ([]Mo
 	}
 	var out struct {
 		BuiltinModels []struct {
-			ModelID       string `json:"model_id"`
-			ModelName     string `json:"model_name"`
-			ModelDesc     string `json:"model_desc"`
-			ContextWindow int64  `json:"context_window"`
-			MaxTokens     int64  `json:"max_tokens"`
-			Credit        []struct {
+			ModelID        string `json:"model_id"`
+			ModelName      string `json:"model_name"`
+			ModelDesc      string `json:"model_desc"`
+			ContextWindow  int64  `json:"context_window"`
+			MaxTokens      int64  `json:"max_tokens"`
+			DisplayEnabled *bool  `json:"display_enabled"`
+			SupportsImages *bool  `json:"supports_images"`
+			Credit         []struct {
 				RatioDisplay string `json:"ratio_display"`
 			} `json:"credit"`
 		} `json:"builtinModels"`
@@ -364,7 +387,7 @@ func (c *Client) fetchBuiltinModels(accountID string, cred SignCredential) ([]Mo
 		if id == "" {
 			continue
 		}
-		mi := ModelInfo{ID: id, Name: firstNonEmpty(m.ModelName, id), ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc}
+		mi := ModelInfo{ID: id, Name: firstNonEmpty(m.ModelName, id), ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc, DisplayEnabled: m.DisplayEnabled, SupportsImages: m.SupportsImages}
 		if len(m.Credit) > 0 {
 			mi.RatioDisplay = m.Credit[0].RatioDisplay
 		}

@@ -549,6 +549,16 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if mi.Notice != "" {
 			entry["notice"] = mi.Notice
 		}
+		// 徽标数据：标签原文，加上两个只在上游明确表态时才出现的布尔值。
+		if mi.Tag != "" {
+			entry["model_tag"] = mi.Tag
+		}
+		if mi.DisplayEnabled != nil && !*mi.DisplayEnabled {
+			entry["display_enabled"] = false
+		}
+		if mi.SupportsImages != nil && *mi.SupportsImages {
+			entry["supports_images"] = true
+		}
 		out = append(out, entry)
 	}
 	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。

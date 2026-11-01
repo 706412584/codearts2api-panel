@@ -59,8 +59,9 @@ func TestPickAccountPrefersAccountWithModel(t *testing.T) {
 }
 
 func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
+	hidden, vision := false, true
 	entries := modelEntries([]upstream.ModelInfo{
-		{ID: "GLM-5.2", Name: "GLM 5.2", Desc: "最新旗舰模型", Notice: "错峰时段5折优惠", ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
+		{ID: "GLM-5.2", Name: "GLM 5.2", Desc: "最新旗舰模型", Notice: "错峰时段5折优惠", Tag: "闲时折扣", DisplayEnabled: &hidden, SupportsImages: &vision, ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
 		{ID: "deepseek-v4-pro-0813", ContextWindow: 1048576},
 	})
 	byID := map[string]map[string]any{}
@@ -92,6 +93,21 @@ func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	}
 	if _, ok := byID["deepseek-v4-pro-0813"]["model_desc"]; ok {
 		t.Errorf("没有描述时不应输出 model_desc，got=%v", byID["deepseek-v4-pro-0813"])
+	}
+	// 面板徽标数据源：标签、隐藏模型、视觉理解。
+	glm := byID["GLM-5.2"]
+	if glm["model_tag"] != "闲时折扣" || glm["display_enabled"] != false || glm["supports_images"] != true {
+		t.Errorf("徽标字段应传给面板，got=%v", glm)
+	}
+	plain := byID["deepseek-v4-pro-0813"]
+	for _, key := range []string{"model_tag", "display_enabled", "supports_images"} {
+		if _, ok := plain[key]; ok {
+			t.Errorf("上游没有表态时不应输出 %s，got=%v", key, plain)
+		}
+	}
+	// 上游没给 display_enabled（nil）不得当作「隐藏模型」。
+	if _, ok := byID["Qwen3-VL-235B"]["display_enabled"]; ok {
+		t.Errorf("未知的 display_enabled 不应输出 false，got=%v", byID["Qwen3-VL-235B"])
 	}
 
 	fallback := modelEntries(nil)

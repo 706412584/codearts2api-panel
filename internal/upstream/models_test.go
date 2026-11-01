@@ -75,12 +75,12 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 			if r.URL.Query().Get("agent_id") != "a2" {
 				t.Errorf("应选中 CodeAgent，got=%s", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `{"gpts":{"models":[{"model_name":"GLM 5.2","notice":"错峰时段5折优惠","model_parameters":{"context_window":202752,"max_tokens":8192,"model_desc":"最新旗舰模型"}}]}}`)
+			_, _ = io.WriteString(w, `{"gpts":{"models":[{"model_name":"GLM 5.2","notice":"错峰时段5折优惠","model_tag":"闲时折扣","model_parameters":{"context_window":202752,"max_tokens":8192,"model_desc":"最新旗舰模型","display_enabled":false,"supports_images":true}}]}}`)
 		case "/v1/model/builtin":
 			if r.Header.Get("Agent-Type") != "PromptCenter" {
 				t.Errorf("builtin 接口需带 Agent-Type: PromptCenter，got=%q", r.Header.Get("Agent-Type"))
 			}
-			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"OpenPangu-2.0-Pro","context_window":524288,"credit":[{"ratio_display":"0.7x"}]}]}`)
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"OpenPangu-2.0-Pro","context_window":524288,"display_enabled":true,"supports_images":false,"credit":[{"ratio_display":"0.7x"}]}]}`)
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -110,6 +110,14 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 	}
 	if byID["glm-5.2"].Desc != "最新旗舰模型" || byID["glm-5.2"].Notice != "错峰时段5折优惠" {
 		t.Errorf("模型描述或提示未解析：%+v", byID["glm-5.2"])
+	}
+	glm := byID["glm-5.2"]
+	if glm.Tag != "闲时折扣" || glm.DisplayEnabled == nil || *glm.DisplayEnabled || glm.SupportsImages == nil || !*glm.SupportsImages {
+		t.Errorf("模型标签或徽标布尔值未解析：%+v", glm)
+	}
+	pangu := byID["openpangu-2.0-pro"]
+	if pangu.DisplayEnabled == nil || !*pangu.DisplayEnabled || pangu.SupportsImages == nil || *pangu.SupportsImages {
+		t.Errorf("builtin 的 display_enabled / supports_images 未解析：%+v", pangu)
 	}
 	if byID["openpangu-2.0-pro"].RatioDisplay != "0.7x" {
 		t.Errorf("积分倍率未解析：%+v", byID["openpangu-2.0-pro"])
