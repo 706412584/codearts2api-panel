@@ -14,7 +14,7 @@
   const writeStorage = (storage, name, value) => { try { value ? storage.setItem(name, value) : storage.removeItem(name); } catch { /* Session can still run in memory. */ } };
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
   let authenticated = false, authEpoch = 0, refreshID = 0;
-  let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [];
+  let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
   let theme = readStorage(localStorage, THEME_STORAGE) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 
@@ -247,8 +247,15 @@
   }
   function renderRequestLogs(data) {
     const view = usageView(data);
-    const recent = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
-    $('requestLogsBody').innerHTML = recent.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, view.fromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
+    requestRows = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
+    requestRowsFromArchive = view.fromArchive;
+    paintRequestLogs();
+  }
+  // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
+  function paintRequestLogs() {
+    const filter = $('requestOutcome').value;
+    const rows = filter ? requestRows.filter(row => eventOK(row) === (filter === 'ok')) : requestRows;
+    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
   }
   function renderRuntimeLogs() {
     const box = $('runtimeLogs');
@@ -259,6 +266,7 @@
     if (atEnd) box.scrollTop = box.scrollHeight;
   }
   $('logChannel').onchange = renderRuntimeLogs;
+  $('requestOutcome').onchange = paintRequestLogs;
   async function loadLogs() {
     if (logsLoading) return;
     logsLoading = true;

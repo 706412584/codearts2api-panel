@@ -111,6 +111,16 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  logPoll.cb(); await tick(); await tick();
  assert.equal(requests.length, beforePoll + 2, 'each visible log poll fetches logs and usage once');
  assert(ids.get('requestLogsBody').innerHTML.includes('live stream failed'));
+ // 最近请求的结果筛选只过滤已取回的这一批记录，不发新请求。
+ const outcome = ids.get('requestOutcome'), beforeFilter = requests.length;
+ outcome.value = 'ok'; outcome.onchange();
+ assert(ids.get('requestLogsBody').innerHTML.includes('test-model'), '成功筛选必须保留成功记录');
+ assert(!ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '成功筛选必须隐藏失败记录');
+ outcome.value = 'fail'; outcome.onchange();
+ assert(ids.get('requestLogsBody').innerHTML.includes('live stream failed') && !ids.get('requestLogsBody').innerHTML.includes('test-model'), '失败筛选只显示失败记录');
+ outcome.value = ''; outcome.onchange();
+ assert(ids.get('requestLogsBody').innerHTML.includes('test-model') && ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '全部筛选恢复所有记录');
+ assert.equal(requests.length, beforeFilter, '筛选不得触发额外请求');
  document.hidden = true; beforePoll = requests.length; logPoll.cb(); await tick();
  assert.equal(requests.length, beforePoll, 'hidden tabs must not poll');
  document.hidden = false;
