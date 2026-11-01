@@ -296,7 +296,7 @@
   };
   document.querySelectorAll('[data-close]').forEach(button => { button.onclick = () => $(button.dataset.close).close(); });
   function stopOAuth() { if (oauthTimer) clearInterval(oauthTimer); oauthTimer = null; oauthSession = ''; }
-  function clearAdd() { stopOAuth(); $('callbackURL').value = ''; $('importJSON').value = ''; $('importFile').value = ''; $('akskForm').reset(); $('oauthLink').removeAttribute('href'); $('oauthReady').hidden = true; fieldError('addError', ''); }
+  function clearAdd() { stopOAuth(); $('callbackURL').value = ''; $('importJSON').value = ''; $('importFile').value = ''; $('akskForm').reset(); $('oauthStart').textContent = '生成授权链接'; $('oauthCopy').hidden = true; $('oauthLink').hidden = true; $('oauthLink').removeAttribute('href'); $('oauthReady').hidden = true; fieldError('addError', ''); }
   $('addDialog').addEventListener('close', clearAdd);
   $('addAccountButton').onclick = () => { clearAdd(); $('addDialog').showModal(); };
   document.querySelectorAll('[data-add-mode]').forEach(button => { button.onclick = () => { const mode = button.dataset.addMode; document.querySelectorAll('[data-add-mode]').forEach(b => { b.classList.toggle('active', b === button); }); ['oauth', 'json', 'aksk'].forEach(name => { $(name === 'aksk' ? 'akskForm' : 'add-' + name).hidden = name !== mode; }); fieldError('addError', ''); }; });
@@ -304,10 +304,19 @@
     const url = new URL(value);
     if (url.protocol !== 'https:' || !url.hostname.endsWith('.huaweicloud.com')) throw new Error('服务返回了不受支持的授权地址。');
     $('oauthLink').href = url.href;
+    $('oauthCopy').hidden = false;
+    $('oauthLink').hidden = false;
   }
+  $('oauthCopy').onclick = async () => {
+    const url = $('oauthLink').href;
+    if (!url) return;
+    try { await navigator.clipboard.writeText(url); toast('授权链接已复制'); }
+    catch { toast('浏览器无法访问剪贴板，请右键“在新标签页打开授权页”复制链接。', true); }
+  };
   $('oauthStart').onclick = async () => {
     $('oauthStart').disabled = true; fieldError('addError', ''); stopOAuth();
-    try { const data = await post('oauth/start'); if (data.ok === false) throw new Error(data.message || '无法发起授权'); setAuthURL(data.auth_url); oauthSession = data.session_id; $('oauthReady').hidden = false; $('oauthStatus').textContent = '等待在浏览器完成授权…'; oauthTimer = setInterval(() => pollOAuth(), 3500); }
+    $('oauthCopy').hidden = true; $('oauthLink').hidden = true; $('oauthLink').removeAttribute('href'); $('oauthReady').hidden = true;
+    try { const data = await post('oauth/start'); if (data.ok === false) throw new Error(data.message || '无法发起授权'); setAuthURL(data.auth_url); oauthSession = data.session_id; $('oauthStart').textContent = '重新生成授权链接'; $('oauthReady').hidden = false; $('oauthStatus').textContent = '等待在浏览器完成授权…'; oauthTimer = setInterval(() => pollOAuth(), 3500); }
     catch (error) { fieldError('addError', error.message); }
     finally { $('oauthStart').disabled = false; }
   };
@@ -321,7 +330,7 @@
     const session = oauthSession;
     oauthBusy = true;
     try { const data = await post('oauth/poll', { session_id: session }); if (session === oauthSession) await oauthResult(data); }
-    catch (error) { stopOAuth(); fieldError('addError', error.message); }
+    catch (error) { if (session === oauthSession) { stopOAuth(); fieldError('addError', error.message); } }
     finally { oauthBusy = false; }
   }
   $('oauthPoll').onclick = pollOAuth;

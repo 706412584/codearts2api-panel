@@ -39,7 +39,20 @@
 </div>
 <dialog id="loginDialog" class="login-dialog" aria-labelledby="loginTitle"><form id="loginForm"><div class="brand-mark">CA</div><div class="eyebrow">WELCOME BACK</div><h2 id="loginTitle">连接控制台</h2><p class="muted">输入服务的管理密钥，管理 CodeArts 账户与模型。</p><label for="loginKey">管理密钥</label><input id="loginKey" type="password" autocomplete="current-password" required placeholder="输入管理密钥"><p id="loginError" class="field-error" role="alert" hidden></p><button class="button primary full-width" type="submit" id="loginSubmit">连接服务</button><small class="muted">密钥只保存在本标签页会话中，通过请求头发送。</small></form></dialog>
 <dialog id="addDialog" aria-labelledby="addTitle"><div class="dialog-header"><div><h2 id="addTitle">添加 CodeArts 账户</h2><p>浏览器授权或导入已有凭据。</p></div><button class="icon-button" data-close="addDialog" aria-label="关闭添加账户">×</button></div><div class="dialog-body"><div class="tabs" role="group" aria-label="添加方式"><button class="tab active" data-add-mode="oauth">浏览器授权</button><button class="tab" data-add-mode="json">导入 JSON</button><button class="tab" data-add-mode="aksk">AK / SK</button></div>
-  <div id="add-oauth"><p class="muted">完成华为云登录后，凭据会保存到服务端并加入账号池。</p><button class="button primary" id="oauthStart">生成授权链接</button><div id="oauthReady" hidden><p><a id="oauthLink" class="external-link" target="_blank" rel="noreferrer noopener">在浏览器中打开授权页 ↗</a></p><p id="oauthStatus" role="status">等待授权…</p><button class="button small" id="oauthPoll">我已授权，检查状态</button><details><summary>远程部署：提交浏览器回调地址</summary><p class="muted">如果授权后浏览器无法打开 127.0.0.1，请复制完整回调地址并提交。若返回下一步授权链接，请继续在浏览器打开。</p><label for="callbackURL">回调地址</label><input id="callbackURL" type="url" autocomplete="off" placeholder="http://127.0.0.1:端口/oauth/callback?…"><button class="button small" id="oauthCallback">提交回调</button></details></div></div>
+  <div id="add-oauth">
+    <p class="muted">完成华为云登录后，凭据会保存到服务端并加入账号池。</p>
+    <div class="button-group oauth-actions">
+      <button class="button primary" id="oauthStart">生成授权链接</button>
+      <button class="button" id="oauthCopy" hidden>复制授权链接</button>
+      <a id="oauthLink" class="button" target="_blank" rel="noreferrer noopener" hidden>在新标签页打开授权页</a>
+    </div>
+    <div id="oauthReady" hidden><p id="oauthStatus" role="status">等待授权…</p><button class="button small" id="oauthPoll">我已授权，检查状态</button></div>
+    <div class="oauth-callback">
+      <h3>提交浏览器回调地址</h3>
+      <p class="muted">如果授权后浏览器无法打开 127.0.0.1，请复制完整回调地址并提交。若返回下一步授权链接，请继续在浏览器打开。</p>
+      <label for="callbackURL">回调地址</label><input id="callbackURL" type="url" autocomplete="off" placeholder="http://127.0.0.1:端口/oauth/callback?…"><button class="button small" id="oauthCallback">提交回调</button>
+    </div>
+  </div>
   <div id="add-json" hidden><p class="muted">支持单个凭据对象或对象数组。导入后清空输入内容。</p><label for="importFile">选择 JSON 文件</label><input id="importFile" type="file" accept=".json,application/json"><label for="importJSON">凭据 JSON</label><textarea id="importJSON" class="code-editor short" spellcheck="false" placeholder='{"user_id":"账户UID","access_key_id":"AK","secret_access_key":"SK"}'></textarea><button class="button primary" id="importJSONButton">导入凭据</button></div>
   <form id="akskForm" hidden><div class="field-grid"><label>账户 UID<input name="user_id" required autocomplete="off"></label><label>显示名称<input name="user_name" autocomplete="off"></label></div><label>Access Key<input name="access_key_id" type="password" required autocomplete="off"></label><label>Secret Key<input name="secret_access_key" type="password" required autocomplete="off"></label><label>Security Token <span class="muted">（永久 AK/SK 可留空）</span><input name="cloud_dragon_token" type="password" autocomplete="off"></label><label>到期时间 <span class="muted">（临时凭据，RFC3339 格式）</span><input name="expiration" placeholder="2026-11-01T12:00:00Z" autocomplete="off"></label><button class="button primary" type="submit">保存账户</button></form><p id="addError" class="field-error" role="alert" hidden></p>
 </div></dialog>
