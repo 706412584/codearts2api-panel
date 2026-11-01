@@ -166,8 +166,7 @@
     $('modelCount').textContent = filtered.length;
     $('modelsBody').innerHTML = filtered.map(m => {
       const benefit = m.benefit || m.channel === 'benefit';
-      const vision = m.supports_images ?? m.vision ?? m.supports_vision;
-      return '<tr><td class="mono">' + esc(m.id) + '</td><td><span class="pill ' + (benefit ? 'info' : '') + '">' + (benefit ? '免费额度' : '常规模型') + '</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td>' + (vision === undefined ? '<span class="muted">未知</span>' : vision ? '支持' : '不支持') + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
+      return '<tr><td class="mono">' + esc(m.id) + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill ' + (benefit ? 'info' : '') + '">' + (benefit ? '免费额度' : '常规模型') + '</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
     }).join('') || emptyRow(6, query || channel ? '没有符合条件的模型。' : '模型目录为空，请添加账户后刷新。');
   }
   $('modelSearch').oninput = renderModels; $('modelChannel').onchange = renderModels;

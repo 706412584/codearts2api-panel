@@ -43,6 +43,7 @@ type ModelInfo struct {
 	Name          string `json:"name"`
 	ContextWindow int64  `json:"contextWindow,omitempty"`
 	MaxTokens     int64  `json:"maxTokens,omitempty"`
+	RatioDisplay  string `json:"ratio_display,omitempty"`
 	// Benefit 限时福利（免费套餐）模型：聊天需带 maas_type: benefit 头。
 	Benefit bool   `json:"benefit,omitempty"`
 	Desc    string `json:"desc,omitempty"`
@@ -272,6 +273,9 @@ func richerModel(cur, next ModelInfo) ModelInfo {
 	if keep.MaxTokens == 0 {
 		keep.MaxTokens = drop.MaxTokens
 	}
+	if keep.RatioDisplay == "" {
+		keep.RatioDisplay = drop.RatioDisplay
+	}
 	if keep.Desc == "" {
 		keep.Desc = drop.Desc
 	}
@@ -448,6 +452,9 @@ func (c *Client) fetchBuiltinModels(accountID string, cred SignCredential) ([]Mo
 			ModelDesc     string `json:"model_desc"`
 			ContextWindow int64  `json:"context_window"`
 			MaxTokens     int64  `json:"max_tokens"`
+			Credit        []struct {
+				RatioDisplay string `json:"ratio_display"`
+			} `json:"credit"`
 		} `json:"builtinModels"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -461,7 +468,11 @@ func (c *Client) fetchBuiltinModels(accountID string, cred SignCredential) ([]Mo
 		if id == "" {
 			continue
 		}
-		infos = append(infos, ModelInfo{ID: id, Name: id, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc})
+		mi := ModelInfo{ID: id, Name: id, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc}
+		if len(m.Credit) > 0 {
+			mi.RatioDisplay = m.Credit[0].RatioDisplay
+		}
+		infos = append(infos, mi)
 	}
 	return infos, nil
 }

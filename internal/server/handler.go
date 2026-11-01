@@ -523,7 +523,7 @@ func (h *Handler) modelKnownUnusable(model string) bool {
 func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 	out := make([]map[string]any, 0, len(infos)+len(staticModels))
 	seen := map[string]bool{}
-	add := func(id string, ctx, maxOut int64, benefit bool) {
+	add := func(id string, ctx, maxOut int64, benefit bool, ratioDisplay string) {
 		if id == "" || seen[id] {
 			return
 		}
@@ -544,20 +544,23 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if benefit {
 			entry["benefit"] = true
 		}
+		if ratioDisplay != "" {
+			entry["ratio_display"] = ratioDisplay
+		}
 		out = append(out, entry)
 	}
 	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。
-	addAlias := func(id string, ctx, maxOut int64, benefit bool) {
-		add(id, ctx, maxOut, benefit)
+	addAlias := func(id string, ctx, maxOut int64, benefit bool, ratioDisplay string) {
+		add(id, ctx, maxOut, benefit, ratioDisplay)
 		if lower := strings.ToLower(id); lower != id {
-			add(lower, ctx, maxOut, benefit)
+			add(lower, ctx, maxOut, benefit, ratioDisplay)
 		}
 	}
 	for _, mi := range infos {
-		addAlias(mi.ID, mi.ContextWindow, mi.MaxTokens, mi.Benefit)
+		addAlias(mi.ID, mi.ContextWindow, mi.MaxTokens, mi.Benefit, mi.RatioDisplay)
 	}
 	for _, sm := range staticModels {
-		addAlias(sm.ID, sm.ContextWindow, 0, sm.Benefit)
+		addAlias(sm.ID, sm.ContextWindow, 0, sm.Benefit, "")
 	}
 	return out
 }
