@@ -542,6 +542,13 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if mi.Name != "" {
 			entry["model_name"] = mi.Name
 		}
+		// 模型描述与上游提示：面板在模型 ID 列的原生 tooltip 里展示（desc，必要时追加 notice 一行）。
+		if mi.Desc != "" {
+			entry["model_desc"] = mi.Desc
+		}
+		if mi.Notice != "" {
+			entry["notice"] = mi.Notice
+		}
 		out = append(out, entry)
 	}
 	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。

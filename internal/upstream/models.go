@@ -34,6 +34,8 @@ type ModelInfo struct {
 	MaxTokens     int64  `json:"maxTokens,omitempty"`
 	RatioDisplay  string `json:"ratio_display,omitempty"`
 	Desc          string `json:"desc,omitempty"`
+	// Notice 上游的模型级提示（如闲时折扣说明），面板作为 tooltip 第二行展示。
+	Notice string `json:"notice,omitempty"`
 }
 
 // 内置模型种子（大小写归一用）。
@@ -174,6 +176,9 @@ func richerModel(cur, next ModelInfo) ModelInfo {
 	if keep.Desc == "" {
 		keep.Desc = drop.Desc
 	}
+	if keep.Notice == "" {
+		keep.Notice = drop.Notice
+	}
 	return keep
 }
 
@@ -232,7 +237,9 @@ func (c *Client) fetchAgentModels(cred SignCredential) ([]ModelInfo, error) {
 				ModelAlias string `json:"model_alias"`
 				ModelName  string `json:"model_name"`
 				ModelID    string `json:"model_id"`
-				Params     struct {
+				// Notice 与 model_parameters 同级：空字符串表示无提示。
+				Notice string `json:"notice"`
+				Params struct {
 					ContextWindow int64  `json:"context_window"`
 					MaxTokens     int64  `json:"max_tokens"`
 					ModelID       string `json:"model_id"`
@@ -246,7 +253,11 @@ func (c *Client) fetchAgentModels(cred SignCredential) ([]ModelInfo, error) {
 	}
 	out := make([]ModelInfo, 0, len(detail.Gpts.Models))
 	for _, m := range detail.Gpts.Models {
-		id := firstNonEmpty(m.ModelID, m.ModelAlias, m.Params.ModelID, m.ModelName)
+		id := firstNonEmpty(m.ModelID, m.ModelAlias, m.Params.ModelID)
+		if id == "" {
+			// 只剩展示名可当 ID：上游 ID 不写空格（GLM 5.2 → GLM-5.2），带空格直接拿来调用是 404。
+			id = strings.ReplaceAll(strings.TrimSpace(m.ModelName), " ", "-")
+		}
 		if id == "" {
 			continue
 		}
@@ -256,6 +267,7 @@ func (c *Client) fetchAgentModels(cred SignCredential) ([]ModelInfo, error) {
 			ContextWindow: m.Params.ContextWindow,
 			MaxTokens:     m.Params.MaxTokens,
 			Desc:          m.Params.ModelDesc,
+			Notice:        strings.TrimSpace(m.Notice),
 		})
 	}
 	return out, nil

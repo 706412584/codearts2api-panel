@@ -60,7 +60,7 @@ func TestPickAccountPrefersAccountWithModel(t *testing.T) {
 
 func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	entries := modelEntries([]upstream.ModelInfo{
-		{ID: "GLM-5.2", Name: "GLM 5.2", ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
+		{ID: "GLM-5.2", Name: "GLM 5.2", Desc: "最新旗舰模型", Notice: "错峰时段5折优惠", ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
 		{ID: "deepseek-v4-pro-0813", ContextWindow: 1048576},
 	})
 	byID := map[string]map[string]any{}
@@ -85,6 +85,13 @@ func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	}
 	if byID["GLM-5.2"]["model_name"] != "GLM 5.2" {
 		t.Errorf("模型名称应传给面板，got=%v", byID["GLM-5.2"])
+	}
+	// 面板 tooltip 数据源：描述 + 上游提示。
+	if byID["GLM-5.2"]["model_desc"] != "最新旗舰模型" || byID["GLM-5.2"]["notice"] != "错峰时段5折优惠" {
+		t.Errorf("模型描述与提示应传给面板，got=%v", byID["GLM-5.2"])
+	}
+	if _, ok := byID["deepseek-v4-pro-0813"]["model_desc"]; ok {
+		t.Errorf("没有描述时不应输出 model_desc，got=%v", byID["deepseek-v4-pro-0813"])
 	}
 
 	fallback := modelEntries(nil)
