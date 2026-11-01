@@ -14,7 +14,7 @@ import (
 // adminOverview 面板总览。
 func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 	total, healthy, disabled, cooling, credits := h.cfg.Pool.Stats()
-	models := h.modelList()
+	models := h.modelList(false)
 	ids := make([]map[string]any, 0, len(models))
 	for _, m := range models {
 		ids = append(ids, map[string]any{"id": m["id"]})

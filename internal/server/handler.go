@@ -445,13 +445,13 @@ func firstNonEmpty(vals ...string) string {
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
-		"data":   h.modelList(),
+		"data":   h.modelList(r.URL.Query().Get("refresh") == "1"),
 	})
 }
 
 // modelList 动态获取模型列表并包装成 OpenAI 格式。
-func (h *Handler) modelList() []map[string]any {
-	entries := modelEntries(h.fetchDynamicModels())
+func (h *Handler) modelList(force bool) []map[string]any {
+	entries := modelEntries(h.fetchDynamicModels(force))
 	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404 / benefit not
 	// found，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
 	// 只在动态结果上过滤会让被下架的模型又从静态表冒出来。
@@ -563,18 +563,19 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 }
 
 // fetchDynamicModels 刷新各账号模型目录并返回合并后的展示列表，缓存 1h。
+// force=true 用于面板显式重新获取：跳过全局缓存与账号目录缓存。
 //
 // 目录按账号存放（限时福利按账号授予，账号之间不能互相污染），因此这里逐个健康
 // 账号发现并写入其目录；发现失败的账号沿用旧目录或冷启动种子。
-func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
+func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	dynamicModelsCache.RLock()
-	if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
+	if !force && len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
 		out := dynamicModelsCache.ids
 		dynamicModelsCache.RUnlock()
 		return out
 	}
 	// 失败负缓存：冷却期内不再请求上游。
-	if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
+	if !force && !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
 		dynamicModelsCache.RUnlock()
 		return nil
 	}
@@ -585,7 +586,7 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 		if acct.Auth == nil || !h.cfg.Pool.Healthy(acct.Name) {
 			continue
 		}
-		if !upstream.AccountCatalogStale(acct.UID) {
+		if !force && !upstream.AccountCatalogStale(acct.UID) {
 			if infos, ok := upstream.AccountModels(acct.UID); ok {
 				sets = append(sets, infos)
 				continue

@@ -249,21 +249,23 @@
     } catch (error) { toast(error.message, true); }
     finally { $('saveConfigButton').disabled = false; }
   };
-  async function refresh() {
+  async function refresh(forceModels = false) {
     if (!authenticated) return;
     const id = ++refreshID, page = currentPage;
     $('pageError').hidden = true; $('pageLoading').hidden = false; $('refreshButton').disabled = true;
+    if (page === 'models' && forceModels) { $('refreshModelsButton').disabled = true; $('refreshModelsButton').textContent = '正在获取…'; }
     try {
       if (page === 'accounts') renderOverview(await api('overview'));
-      else if (page === 'models') { const data = await api('models'); models = data.data || []; renderModels(); }
+      else if (page === 'models') { const data = await api('models' + (forceModels ? '?refresh=1' : '')); models = data.data || []; renderModels(); if (forceModels) toast('模型目录已重新获取'); }
       else if (page === 'usage') renderUsage(await api('usage'));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') { const [logs, usage] = await Promise.all([api('logs'), api('usage')]); runtimeLogs = logs.entries || []; renderRuntimeLogs(); renderRequestLogs(usage); }
       if (id === refreshID) $('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
     } catch (error) { if (id === refreshID && authenticated) { $('pageError').textContent = error.message + '。点击右上角刷新重试。'; $('pageError').hidden = false; } }
-    finally { if (id === refreshID) { $('pageLoading').hidden = true; $('refreshButton').disabled = false; } }
+    finally { if (id === refreshID) { $('pageLoading').hidden = true; $('refreshButton').disabled = false; $('refreshModelsButton').disabled = false; $('refreshModelsButton').textContent = '重新获取'; } }
   }
   $('refreshButton').onclick = () => { if (currentPage === 'config' && $('configEditor').dataset.dirty === 'true') { toast('配置含未保存的编辑，请先保存；切换页面不会丢失编辑。'); return; } refresh(); };
+  $('refreshModelsButton').onclick = () => refresh(true);
   $('loginDialog').addEventListener('cancel', event => event.preventDefault());
   $('loginForm').onsubmit = async event => {
     event.preventDefault();

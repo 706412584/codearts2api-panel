@@ -25,7 +25,7 @@ const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', credit_ba
 const overview = { stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
 const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, recent: [{ time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, total_tokens: 25, duration_ms: 500 }] };
 const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} } };
-const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async () => {} } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path === 'models') data = { data: [{ id: '<model>', benefit: true, context_length: 1000 }] }; else if (path === 'usage') data = usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: true } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
+const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async () => {} } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', benefit: true, context_length: 1000 }] }; else if (path === 'usage') data = usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: true } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  vm.runInContext(script, context);
@@ -43,6 +43,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  await ids.get('saveConfigButton').onclick();
  assert.equal(ids.get('newAdminKey').value, ''); assert.equal(ids.get('newAPIKey').value, ''); assert(!ids.get('configEditor').value.includes('rotated-secret')); assert(ids.get('configNotice').textContent.includes('重启'));
  for (const req of requests) { assert(!req.url.includes('test-admin-secret')); assert.equal(req.opts.headers.get('Authorization'), 'Bearer test-admin-secret'); }
+ context.location.hash = '#models'; events.hashchange(); await tick(); await tick();
+ const beforeModelRefresh = requests.length;
+ await ids.get('refreshModelsButton').onclick();
+ assert.equal(requests.length, beforeModelRefresh + 1); assert(requests.at(-1).url.endsWith('/models?refresh=1'));
+ assert.equal(ids.get('refreshModelsButton').disabled, false); assert.equal(ids.get('refreshModelsButton').textContent, '重新获取');
+ assert(ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  const beforeDelete = requests.length;
  await ids.get('accountsBody').onclick({ target: { closest: () => ({ dataset: { accountAction: 'delete', uid: 'u1' } }) } });
  assert(ids.get('deleteDialog').open); assert.equal(requests.length, beforeDelete, 'opening delete dialog must not delete');
