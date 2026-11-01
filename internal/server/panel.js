@@ -16,6 +16,7 @@
   let authenticated = false, authEpoch = 0, refreshID = 0;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
+  let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
   let theme = readStorage(localStorage, THEME_STORAGE) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 
   function esc(value) {
@@ -32,6 +33,14 @@
     if (!value) return '未知';
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? '未知' : parsed.toLocaleString('zh-CN', { hour12: false });
+  }
+  // 顶栏运行时长，格式与 WorkBuddy 面板一致：运行 3 天 5 时 12 分。
+  function uptimeText(ms) {
+    const up = Math.max(0, Math.floor(ms / 1000));
+    return '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
+  }
+  function renderUptime() {
+    if (serverStartedAt) $('uptime').textContent = uptimeText(Date.now() - serverStartedAt);
   }
   function emptyRow(columns, text) { return '<tr><td class="empty" colspan="' + columns + '">' + esc(text) + '</td></tr>'; }
   function errorText(data, status) {
@@ -100,6 +109,12 @@
   }
   addEventListener('hashchange', navigate);
   function renderOverview(data) {
+    const uptimeSec = Number(data.uptime_sec);
+    if (Number.isFinite(uptimeSec)) {
+      serverStartedAt = Date.now() - uptimeSec * 1000;
+      $('uptime').title = '服务启动于 ' + date(data.started_at);
+      renderUptime();
+    }
     accounts = data.accounts || [];
     const stats = data.stats || {};
     [['statTotal', 'total'], ['statHealthy', 'healthy'], ['statCooling', 'cooling'], ['statDisabled', 'disabled']].forEach(([id, name]) => { $(id).textContent = number(stats[name]); });
@@ -275,7 +290,7 @@
       runtimeLogs = logs.entries || [];
       renderRuntimeLogs();
       renderRequestLogs(usage);
-      $('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
     } finally { logsLoading = false; }
   }
   function configForEditor(config) {
@@ -420,7 +435,7 @@
       else if (page === 'usage') renderUsage(await api('usage'));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') await loadLogs();
-      if (id === refreshID) $('updatedAt').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      if (id === refreshID) $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
     } catch (error) { if (id === refreshID && authenticated) { $('pageError').textContent = error.message + '。点击右上角刷新重试。'; $('pageError').hidden = false; } }
     finally { if (id === refreshID) { $('pageLoading').hidden = true; $('refreshButton').disabled = false; $('refreshModelsButton').disabled = false; $('refreshModelsButton').textContent = '重新获取'; } }
   }
@@ -437,7 +452,7 @@
   };
   $('logoutButton').onclick = () => {
     authEpoch++; refreshID++; adminKey = ''; authenticated = false; writeStorage(sessionStorage, KEY_STORAGE, ''); stopOAuth();
-    accounts = []; models = []; runtimeLogs = [];
+    accounts = []; models = []; runtimeLogs = []; serverStartedAt = 0; $('uptime').textContent = '—';
     $('configEditor').value = ''; $('configEditor').dataset.dirty = 'false'; $('newAPIKey').value = ''; $('newAdminKey').value = '';
     ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
     renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({});
@@ -519,6 +534,8 @@
   setInterval(() => {
     if (authenticated && currentPage === 'logs' && !document.hidden) loadLogs().catch(() => {});
   }, 5000);
+  // 运行时长是本地推算的，30 秒跳一次即可，不必为它增加请求。
+  setInterval(() => { if (authenticated) renderUptime(); }, 30000);
   navigate();
   if (adminKey) {
     api('overview').then(data => { authenticated = true; renderOverview(data); navigate(); }).catch(error => showLogin(error.message));

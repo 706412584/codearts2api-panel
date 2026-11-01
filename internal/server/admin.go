@@ -19,9 +19,12 @@ func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 	for _, m := range models {
 		ids = append(ids, map[string]any{"id": m["id"]})
 	}
+	// 顶栏运行时长：整秒给前端自己跳动，started_at 供悬停提示。
 	writeJSON(w, http.StatusOK, map[string]any{
-		"service": "codearts2api-panel",
-		"region":  "cn",
+		"service":    "codearts2api-panel",
+		"region":     "cn",
+		"uptime_sec": int(time.Since(h.started).Seconds()),
+		"started_at": h.started,
 		"stats": map[string]any{
 			"total":    total,
 			"healthy":  healthy,

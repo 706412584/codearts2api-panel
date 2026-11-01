@@ -71,9 +71,10 @@ const maxBodyBytes = 8 << 20
 
 // Handler 主路由。
 type Handler struct {
-	cfg   Config
-	mux   *http.ServeMux
-	oauth *oauthStore
+	cfg     Config
+	mux     *http.ServeMux
+	oauth   *oauthStore
+	started time.Time // 进程启动时刻，面板顶栏据此显示运行时长
 
 	convMu sync.Mutex
 	chats  map[string]string // account → 最近 chat_id
@@ -134,7 +135,7 @@ func NewHandler(cfg Config) *Handler {
 		cfg.RequestLog = reqlog.New(reqlog.Config{})
 	}
 	h := &Handler{
-		cfg: cfg, mux: http.NewServeMux(), oauth: newOAuthStore(),
+		cfg: cfg, mux: http.NewServeMux(), oauth: newOAuthStore(), started: time.Now(),
 		chats: map[string]string{}, logins: map[string]*pendingLogin{},
 		convAcct: map[string]string{}, logs: NewRing(500),
 	}
