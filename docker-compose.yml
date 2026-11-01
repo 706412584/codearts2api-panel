@@ -12,8 +12,9 @@ services:
       - ./auths:/app/auths
       - ./data:/app/data
       # 注意：宿主机必须先有 config.json（cp config.example.json config.json）。
-      # 缺失时 Docker 会把挂载点创建成同名目录；容器能正常启动，但程序会识别出
-      # 「配置路径是目录」并以非零码退出，日志里打印 cp / 删除目录的处理办法。
+      # 缺失时 Docker 会把挂载点建成同名目录，且每次启动都重建；容器仍能启动，
+      # 但程序识别出「配置路径是目录」后以非零码退出，日志里打印上面的处理办法。
+      # 删掉那个目录没用 —— 下次启动 Docker 会再建回来。
       # 不挂 :ro：面板「配置」页需要写回此文件（保存后热生效）。
       - ./config.json:/app/config.json
     environment:

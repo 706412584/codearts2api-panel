@@ -87,12 +87,15 @@ func Default() *Config {
 func Load(path string) (*Config, error) {
 	c := Default()
 	if path != "" {
-		// 目录而非文件：Docker 单文件 bind mount 在宿主机缺文件时会创建同名目录。
-		// 直接 ReadFile 只会报 "Incorrect function" 之类的系统错误，这里给出可操作提示。
+		// 目录而非文件：Docker 单文件 bind mount 在宿主机缺文件时会创建同名目录，
+		// 且每次启动都会重建，程序没有机会在那里写出配置文件（自动生成只在非挂载
+		// 环境下生效）。直接 ReadFile 只会报 "Incorrect function" 之类的系统错误，
+		// 这里给出真正可操作的一条路径。
 		if st, statErr := os.Stat(path); statErr == nil && st.IsDir() {
-			return nil, fmt.Errorf("config %s 是目录而非文件——"+
-				"Docker 部署时若宿主机缺少 config.json，单文件 bind mount 会创建同名目录。"+
-				"请先 `cp config.example.json config.json` 或删除该目录（程序会自动生成配置）", path)
+			return nil, fmt.Errorf("config %s 是目录而非文件——宿主机缺少 config.json 时，"+
+				"Docker 会把单文件 bind mount 的挂载点建成同名目录，并且每次启动都重建。"+
+				"请在宿主机执行 `cp config.example.json config.json` 再重启容器；"+
+				"只删除该目录无效（挂载点会被重新创建），程序也无法在被挂载的路径上自动生成配置", path)
 		}
 		raw, err := os.ReadFile(path)
 		if err != nil {

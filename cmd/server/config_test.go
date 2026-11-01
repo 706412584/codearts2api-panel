@@ -74,10 +74,14 @@ func TestLoadRejectsConfigPathThatIsDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatal("配置路径是目录时应拒绝启动")
 	}
-	for _, want := range []string{"是目录而非文件", "cp config.example.json config.json"} {
+	for _, want := range []string{"是目录而非文件", "cp config.example.json config.json", "只删除该目录无效"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("提示缺少关键信息 %q: %v", want, err)
 		}
+	}
+	// 挂载点是目录时程序写不进配置：不能再承诺「删掉目录就会自动生成」。
+	if strings.Contains(err.Error(), "会自动生成配置") {
+		t.Errorf("提示不应承诺自动生成配置: %v", err)
 	}
 }
 
