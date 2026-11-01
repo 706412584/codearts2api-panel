@@ -254,7 +254,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 | `auth_dir` | `./auths` | CodeArts 凭据目录 |
 | `state_file` | `./data/state.json` | 账号池状态 |
 | `default_model` | `glm-5.2` | 请求省略模型时的默认值 |
-| `max_concurrent` | `1` | 单账号并发上限 |
+| `max_concurrent` | `2` | 单账号并发上限（上游单账号上限 3，留一个槽位余量） |
 | `cooldown.soft_rate` | `60s` | 临时限流冷却 |
 | `cooldown.err_threshold` | `3` | 连续错误阈值 |
 | `cooldown.err_cooldown` | `10m` | 错误冷却 |

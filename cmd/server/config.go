@@ -80,7 +80,7 @@ func Default() *Config {
 	c.Watch.PollMinutes = 30
 	c.Watch.RefreshSkewM = 30
 	c.Watch.KeepaliveInterval = 15 // 新增：保活间隔 15 分钟
-	c.MaxConcurrent = 1            // 上游单账号最多 3 并发会话但释放慢，串行最稳
+	c.MaxConcurrent = 2            // 上游单账号最多 3 并发会话且释放慢，留一个槽位余量
 	c.KeepaliveWindow = "10m"      // 新增：保活窗口 10 分钟
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
@@ -349,7 +349,7 @@ func (c *Config) normalize() error {
 		c.Watch.KeepaliveInterval = 15 // 默认保活间隔 15 分钟
 	}
 	if c.MaxConcurrent <= 0 {
-		c.MaxConcurrent = 1 // 上游并发会话释放慢，单账号串行最稳
+		c.MaxConcurrent = 2 // 上游单账号并发会话上限 3 且释放慢，留一个槽位余量
 	}
 	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
 	if hours := validHours(c.CheckinHours); len(hours) > 0 {
