@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
 	"codearts2api-panel/internal/scheduler"
@@ -67,12 +68,17 @@ func main() {
 		KeepaliveInterval: time.Duration(cfg.Watch.KeepaliveInterval) * time.Minute,
 	})
 
+	// 运行期配置快照：面板保存后热生效的字段都从这里读（见 internal/livecfg）。
+	live := livecfg.New(liveSnapshot(cfg))
+	settings := &fileSettings{path: *cfgPath}
+
 	h := server.NewHandler(server.Config{
 		Pool:         p,
 		Upstream:     c,
 		APIKey:       cfg.APIKey,
 		AdminKey:     cfg.AdminKey,
-		Settings:     &fileSettings{path: *cfgPath},
+		Settings:     settings,
+		Live:         live,
 		RequestLog:   requestLog,
 		MaxRotate:    3,
 		SoftCooldown: cfg.SoftRateDur,
@@ -103,6 +109,8 @@ func main() {
 		OAuthCallbackHost: cfg.OAuthCallbackHost,
 	})
 	defer h.Close()
+	// 面板保存：校验 → 落盘 → 热应用（settings.update 内串行），返回需重启字段。
+	settings.apply = func(c *Config) []string { return applyHotConfig(c, live, p, sch) }
 	log.SetOutput(io.MultiWriter(os.Stderr, h.LogWriter()))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

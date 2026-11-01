@@ -701,7 +701,7 @@ func (p *Pool) RefreshToken(name string) error {
 		return fmt.Errorf("no DPoP private key available; re-login required")
 	}
 
-	cfg := p.cfg.LoginConfig
+	cfg := p.loginConfig()
 	cfg.ClientID = authz.ClientIDOr(cfg.ClientID)
 	resp, err := acct.Client.RefreshToken(context.Background(), cfg, refreshToken, authz.Verifier(), upstream.DPoPPrivateJWK(dpopPrivateJWK))
 	if err != nil {
@@ -810,11 +810,13 @@ func (p *Pool) CheckKeepalive(name string) bool {
 	if target == nil {
 		return false
 	}
+	// 先取窗口再加锁：与 NeedKeepalive（p.mu → a.mu）保持同一把锁顺序。
+	window := p.keepaliveWindow()
 	target.mu.Lock()
 	defer target.mu.Unlock()
 
 	// 如果超过保活窗口无活动，需要保活
-	needsKeepalive := time.Since(target.keepaliveLastPing) > p.cfg.KeepaliveWindow
+	needsKeepalive := time.Since(target.keepaliveLastPing) > window
 	if needsKeepalive {
 		target.keepaliveLastPing = time.Now()
 	}
@@ -920,11 +922,13 @@ func (p *Pool) NeedsKeepalive(name string) bool {
 		return false
 	}
 
+	// 先取窗口再加锁：与 NeedKeepalive（p.mu → a.mu）保持同一把锁顺序。
+	window := p.keepaliveWindow()
 	target.mu.Lock()
 	defer target.mu.Unlock()
 
 	// 超过窗口期无活动则需保活
-	return time.Since(target.keepaliveLastPing) > p.cfg.KeepaliveWindow
+	return time.Since(target.keepaliveLastPing) > window
 }
 
 // UpdateKeepalive 更新账号的最后保活时间。
@@ -944,6 +948,58 @@ func (p *Pool) UpdateKeepalive(name string) {
 		target.keepaliveLastPing = time.Now()
 		target.mu.Unlock()
 	}
+}
+
+// SetMaxConcurrentAll 热更新单账号并发上限：同步池配置与所有已加载账号，
+// 之后新加入/同步进来的账号也沿用该值（面板保存 max_concurrent 后立即生效）。
+func (p *Pool) SetMaxConcurrentAll(max int) {
+	if max <= 0 {
+		return
+	}
+	p.mu.Lock()
+	p.cfg.MaxConcurrent = max
+	targets := append([]*Account(nil), p.accounts...)
+	p.mu.Unlock()
+	for _, a := range targets {
+		a.mu.Lock()
+		a.maxConcurrent = max
+		a.mu.Unlock()
+	}
+}
+
+// SetKeepaliveWindow 热更新保活窗口（保活判定依据）。
+func (p *Pool) SetKeepaliveWindow(window time.Duration) {
+	if window <= 0 {
+		return
+	}
+	p.mu.Lock()
+	p.cfg.KeepaliveWindow = window
+	p.mu.Unlock()
+}
+
+// SetLoginClientID 热更新 OAuth client_id（token 续期路径使用）。
+// 空值表示"沿用现有值"，与密钥留空的语义一致。
+func (p *Pool) SetLoginClientID(id string) {
+	if id == "" {
+		return
+	}
+	p.mu.Lock()
+	p.cfg.LoginConfig.ClientID = id
+	p.mu.Unlock()
+}
+
+// keepaliveWindow 读当前保活窗口。读方不加锁会与面板热更新竞争，统一走这里。
+func (p *Pool) keepaliveWindow() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.KeepaliveWindow
+}
+
+// loginConfig 当前 OAuth 配置快照（client_id 可热改）。
+func (p *Pool) loginConfig() upstream.LoginConfig {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg.LoginConfig
 }
 
 // SetMaxConcurrent 设置账号的最大并发数。

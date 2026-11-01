@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
 	"codearts2api-panel/internal/upstream"
@@ -53,6 +54,53 @@ type Config struct {
 	LoginConfig upstream.LoginConfig
 	// OAuthCallbackHost 可选：覆盖授权链接回调 host（如 https://oneapi.example.com/codearts）。
 	OAuthCallbackHost string
+	// Live 运行期配置快照：面板保存后热生效的字段从这里读。
+	// 为 nil 时（测试/裸用）回落到上面各字段的启动值。
+	Live *livecfg.Holder
+}
+
+// live 返回请求期配置快照。未注入 holder 时用启动字段拼一个等价快照，
+// 保证直接 NewHandler(Config{...}) 的调用方行为不变。
+func (h *Handler) live() livecfg.Snapshot {
+	if h.cfg.Live != nil {
+		return h.cfg.Live.Load()
+	}
+	return livecfg.Snapshot{
+		APIKey:            h.cfg.APIKey,
+		AdminKey:          h.cfg.AdminKey,
+		DefaultModel:      h.cfg.DefaultModel,
+		SoftCooldown:      h.cfg.SoftCooldown,
+		ErrThreshold:      h.cfg.ErrThreshold,
+		ErrCooldown:       h.cfg.ErrCooldown,
+		QueueRetryDelay:   h.cfg.QueueRetryDelay,
+		QueueMaxAttempts:  h.cfg.QueueMaxAttempts,
+		OAuthCallbackHost: h.cfg.OAuthCallbackHost,
+		LoginClientID:     h.cfg.LoginConfig.ClientID,
+	}
+}
+
+// noteError 用当前（可热改）阈值记一次失败。
+func (h *Handler) noteError(name string) {
+	s := h.live()
+	h.cfg.Pool.NoteError(name, s.ErrThreshold, s.ErrCooldown)
+}
+
+// cooldownErr / cooldownSoft 用当前（可热改）冷却时长处罚账号。
+func (h *Handler) cooldownErr(name, reason string) {
+	h.cfg.Pool.Cooldown(name, pool.CoolErr, h.live().ErrCooldown, reason)
+}
+
+func (h *Handler) cooldownSoft(name, reason string) {
+	h.cfg.Pool.Cooldown(name, pool.CoolSoft, h.live().SoftCooldown, reason)
+}
+
+// loginConfig 当前登录配置：静态端点来自启动配置，client_id 允许热改。
+func (h *Handler) loginConfig() upstream.LoginConfig {
+	cfg := h.cfg.LoginConfig
+	if id := h.live().LoginClientID; id != "" {
+		cfg.ClientID = id
+	}
+	return cfg
 }
 
 var dynamicModelsCache struct {
@@ -177,15 +225,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
-	return h.withKey(h.cfg.APIKey, next)
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.withKey(h.live().APIKey, next)(w, r)
+	}
 }
 
 func (h *Handler) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
-	key := h.cfg.AdminKey
-	if key == "" {
-		key = h.cfg.APIKey
+	return func(w http.ResponseWriter, r *http.Request) {
+		live := h.live()
+		key := live.AdminKey
+		if key == "" {
+			key = live.APIKey
+		}
+		h.withKey(key, next)(w, r)
 	}
-	return h.withKey(key, next)
 }
 
 func (h *Handler) withKey(expected string, next http.HandlerFunc) http.HandlerFunc {
@@ -268,7 +321,7 @@ func (h *Handler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		lastErr error
 	)
 	for _, cand := range candidates {
-		t, err := h.cfg.OAuthClient.ExchangeCode(r.Context(), h.cfg.LoginConfig, code, cand.Verifier, cand.Port, cand.DPoPPrivateKey)
+		t, err := h.cfg.OAuthClient.ExchangeCode(r.Context(), h.loginConfig(), code, cand.Verifier, cand.Port, cand.DPoPPrivateKey)
 		if err == nil {
 			tok, sess, lastErr = t, cand, nil
 			break
@@ -325,7 +378,7 @@ func (h *Handler) saveLoginResult(tok *upstream.TokenResponse, codeVerifier stri
 	a := auth.New(tok.UserID, tok.UserName, tok.DomainID,
 		cred.SecurityToken, cred.AccessKeyID, cred.SecretAccessKey,
 		cred.Expiration, tok.RefreshToken, codeVerifier)
-	a.SetClientID(h.cfg.LoginConfig.ClientID)
+	a.SetClientID(h.loginConfig().ClientID)
 	a.SetDPoPPrivateKey(privateJWK)
 
 	// portal 回调只回传 code，不带身份；user_id 为空会让 auth.FileName() 退化成
@@ -775,7 +828,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	req.ConversationID = conversationIDFor(req, affinity)
 
 	toolsOn := toolsActive(req)
-	model := h.cfg.DefaultModel
+	model := h.live().DefaultModel
 	if req.Model != "" && req.Model != "auto" {
 		model = req.Model
 	}
@@ -884,7 +937,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		var serr error
 		authRetried := false
 		noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
-		for retry := 0; retry < h.cfg.QueueMaxAttempts; retry++ {
+		queueAttempts, queueDelay := h.live().QueueMaxAttempts, h.live().QueueRetryDelay
+		if queueAttempts < 1 {
+			queueAttempts = 1
+		}
+		for retry := 0; retry < queueAttempts; retry++ {
 			event.Attempts++
 			rc, serr = acct.Client.ChatStreamWithOptions(r.Context(), chatID, msgs, "", cred, acct.UserName, model, chatOpts)
 			if serr == nil {
@@ -907,11 +964,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if errors.As(serr, &ae) && isQueueLimitError(ae) {
-				log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, h.cfg.QueueMaxAttempts, acct.Name, h.cfg.QueueRetryDelay)
+				log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, queueAttempts, acct.Name, queueDelay)
 				// 释放锁让其他请求有机会，等待后重新获取
 				h.cfg.Pool.ReleaseLock(acct.Name)
 				select {
-				case <-time.After(h.cfg.QueueRetryDelay):
+				case <-time.After(queueDelay):
 				case <-r.Context().Done():
 					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
 					return
@@ -977,7 +1034,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				event.Error = werr.Error()
 				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
 				if !isParamInvalidError(werr) {
-					h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					h.noteError(acct.Name)
 				}
 			} else {
 				event.OK, event.Outcome = true, reqlog.OutcomeSuccess
@@ -996,7 +1053,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			lastErr = aerr
-			h.cfg.Pool.Cooldown(acct.Name, pool.CoolErr, h.cfg.ErrCooldown, aerr.Error())
+			h.cooldownErr(acct.Name, aerr.Error())
 			continue
 		}
 
@@ -1229,19 +1286,19 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 		case ae.Status == 401 || ae.Code == 401:
 			h.cfg.Pool.Disable(acct.Name, "401 "+ae.Message)
 		case ae.Status == 429:
-			h.cfg.Pool.Cooldown(acct.Name, pool.CoolSoft, h.cfg.SoftCooldown, ae.Error())
+			h.cooldownSoft(acct.Name, ae.Error())
 		case ae.Status == 400 && isConcurrentLimitError(ae.Message):
 			// 并发会话上限（TM.00001041）是瞬时错误：上游会话槽位会被其他请求释放，
 			// 不冷却账号——池的并发锁已防止过载，冷却反而误伤后续请求。
 			log.Printf("upstream concurrent limit (transient) account=%s msg=%s", acct.Name, truncateMsg(ae.Message, 80))
 		case ae.Status >= 500:
-			h.cfg.Pool.Cooldown(acct.Name, pool.CoolErr, h.cfg.ErrCooldown, ae.Error())
+			h.cooldownErr(acct.Name, ae.Error())
 		default:
-			h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+			h.noteError(acct.Name)
 		}
 		return false
 	}
-	h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+	h.noteError(acct.Name)
 	return false
 }
 

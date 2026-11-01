@@ -16,6 +16,9 @@ import (
 type fileSettings struct {
 	mu   sync.Mutex
 	path string
+	// apply 落盘成功后热应用配置并返回仍需重启的字段（由 main 注入）。
+	// 为 nil 表示没有可热应用的组件（测试/裸用），全部按"无需重启"返回。
+	apply func(*Config) []string
 }
 
 func configMap(c *Config) (map[string]any, error) {
@@ -77,18 +80,29 @@ func mergeConfig(base, patch map[string]any) {
 }
 
 func (s *fileSettings) Update(patch map[string]any) (map[string]any, error) {
+	values, _, err := s.update(patch)
+	return values, err
+}
+
+// UpdateLive 保存配置并热应用，返回仍需重启的字段名（面板据此提示）。
+func (s *fileSettings) UpdateLive(patch map[string]any) (map[string]any, []string, error) {
+	return s.update(patch)
+}
+
+// update 校验 → 落盘 → 热应用。校验失败不写盘；热应用只在落盘成功后执行。
+func (s *fileSettings) update(patch map[string]any) (map[string]any, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	values, err := s.readLocked()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Empty redacted keys mean "keep"; null or a non-string is invalid.
 	for _, key := range []string{"api_key", "admin_key"} {
 		if value, present := patch[key]; present {
 			text, ok := value.(string)
 			if !ok {
-				return nil, fmt.Errorf("%s must be a string", key)
+				return nil, nil, fmt.Errorf("%s must be a string", key)
 			}
 			if text == "" {
 				patch[key] = values[key]
@@ -98,20 +112,24 @@ func (s *fileSettings) Update(patch map[string]any) (map[string]any, error) {
 	mergeConfig(values, patch)
 	raw, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	candidate := Default()
 	if err := json.Unmarshal(raw, candidate); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+		return nil, nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	applyEnv(candidate)
 	if err := candidate.validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := writeConfigAtomic(s.path, append(raw, '\n')); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return redactConfig(values), nil
+	var restart []string
+	if s.apply != nil {
+		restart = s.apply(candidate)
+	}
+	return redactConfig(values), restart, nil
 }
 
 func writeConfigAtomic(path string, raw []byte) error {

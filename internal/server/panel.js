@@ -7,7 +7,7 @@
     accounts: ['账号池', '管理凭据、查看账户状态与额度。'],
     models: ['模型目录', '查看模型通道与能力，复制 ID 接入客户端。'],
     usage: ['请求用量', '当前进程的请求指标与近期用量。'],
-    config: ['服务配置', '管理网关配置，保存后重启服务生效。'],
+    config: ['服务配置', '管理网关配置，保存即热生效；装配期字段需重启。'],
     logs: ['运行日志', '检查最近请求、错误与服务运行状态。']
   };
   const readStorage = (storage, name) => { try { return storage.getItem(name) || ''; } catch { return ''; } };
@@ -408,19 +408,25 @@
       try { config = readConfigForm(loadedConfig); }
       catch (error) { toast('表单有无效值：' + error.message, true); return; }
     }
+    const newAdminKey = $('newAdminKey').value.trim();
     config.api_key = $('newAPIKey').value || config.api_key || '';
-    config.admin_key = $('newAdminKey').value || config.admin_key || '';
+    config.admin_key = newAdminKey || config.admin_key || '';
     $('newAPIKey').value = ''; $('newAdminKey').value = '';
     $('saveConfigButton').disabled = true;
     try {
       const data = await api('config', { method: 'PUT', body: JSON.stringify(config) });
       if (data.ok === false) throw new Error(data.message || '保存失败');
+      // 热生效后旧密钥立即失效：本次会话改用新管理密钥，避免下一次轮询被 401。
+      if (newAdminKey) { adminKey = newAdminKey; writeStorage(sessionStorage, KEY_STORAGE, adminKey); }
       loadedConfig = { ...(data.config || config), api_key: '', admin_key: '' };
       $('configEditor').value = configForEditor(loadedConfig);
       fillConfigForm(loadedConfig);
       markConfigClean();
-      $('configNotice').textContent = '配置已保存，重启服务后生效。若修改管理密钥，请在重启后使用新密钥连接。';
-      toast('配置已保存，请重启服务以应用修改。');
+      const restart = Array.isArray(data.restart_required) ? data.restart_required.filter(Boolean) : [];
+      $('configNotice').textContent = restart.length
+        ? '配置已保存并热生效；以下字段仍需重启服务：' + restart.join('、') + '。'
+        : '配置已保存并立即生效。';
+      toast(restart.length ? '配置已保存并热生效，' + restart.length + ' 项需重启后生效' : '配置已保存并立即生效');
     } catch (error) { toast(error.message, true); }
     finally { $('saveConfigButton').disabled = false; }
   };

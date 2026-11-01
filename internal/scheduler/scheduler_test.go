@@ -49,7 +49,7 @@ func TestTickLeavesCheckinToSchedule(t *testing.T) {
 // 每个时点都会触发一次领取；同一天内多次触发由账号池账本收敛成一次真实领取。
 func TestCheckinLoopFiresAtEachSlot(t *testing.T) {
 	c := &countingCheckinClient{}
-	s := New(Config{Pool: newTestPool(t, c), CreditsAutoClaim: true, CheckinHours: []int{9, 21}})
+	s := New(Config{Pool: newTestPool(t, c), Enabled: true, CreditsAutoClaim: true, CheckinHours: []int{9, 21}})
 	waits := 0
 	s.wait = func(context.Context, time.Time) bool {
 		waits++
@@ -68,7 +68,7 @@ func TestCheckinLoopFiresAtEachSlot(t *testing.T) {
 // 时点触发失败不该让循环退出：下一次时点照常尝试。
 func TestCheckinLoopSurvivesFailure(t *testing.T) {
 	c := &failingCheckinClient{}
-	s := New(Config{Pool: newTestPool(t, c), CreditsAutoClaim: true, CheckinHours: []int{9}})
+	s := New(Config{Pool: newTestPool(t, c), Enabled: true, CreditsAutoClaim: true, CheckinHours: []int{9}})
 	waits := 0
 	s.wait = func(context.Context, time.Time) bool {
 		waits++
@@ -207,5 +207,46 @@ func TestRunCheckinNowSkipsDisabledAccounts(t *testing.T) {
 	s.RunCheckinNow(context.Background())
 	if c.calls != 1 {
 		t.Fatalf("disabled account was claimed: calls = %d", c.calls)
+	}
+}
+
+// Reconfigure 热更新：开关、间隔、签到时点立即换成新值，账号池句柄保持不变。
+func TestReconfigureHotUpdatesSchedule(t *testing.T) {
+	p := newTestPool(t, &countingCheckinClient{})
+	s := New(Config{Pool: p, Enabled: false, CheckinHours: []int{9}})
+	s.Reconfigure(Config{
+		Pool:              nil, // 不接受替换
+		Enabled:           true,
+		CreditsAutoClaim:  true,
+		CheckinHours:      []int{10, 22},
+		PollInterval:      5 * time.Minute,
+		RefreshSkew:       90 * time.Minute,
+		KeepaliveInterval: 20 * time.Minute,
+	})
+	cfg := s.config()
+	if !cfg.Enabled || !cfg.CreditsAutoClaim {
+		t.Fatalf("flags not applied: %+v", cfg)
+	}
+	if len(cfg.CheckinHours) != 2 || cfg.CheckinHours[0] != 10 || cfg.CheckinHours[1] != 22 {
+		t.Fatalf("checkin hours = %v", cfg.CheckinHours)
+	}
+	if cfg.PollInterval != 5*time.Minute || cfg.RefreshSkew != 90*time.Minute || cfg.KeepaliveInterval != 20*time.Minute {
+		t.Fatalf("durations not applied: %+v", cfg)
+	}
+	if cfg.Pool != p {
+		t.Fatal("Reconfigure 不得替换账号池句柄")
+	}
+}
+
+// 热关掉 credits_auto_claim 后签到时点不再触发领取（循环空转等待，不退出）。
+func TestReconfigureStopsCheckinWhenDisabled(t *testing.T) {
+	c := &countingCheckinClient{}
+	s := New(Config{Pool: newTestPool(t, c), Enabled: true, CreditsAutoClaim: true, CheckinHours: []int{9}})
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Reconfigure(Config{Pool: s.config().Pool, Enabled: true, CreditsAutoClaim: false, CheckinHours: []int{9}})
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	s.runCheckinLoop(ctx)
+	if c.calls != 0 {
+		t.Fatalf("disabled credits still claimed %d times", c.calls)
 	}
 }

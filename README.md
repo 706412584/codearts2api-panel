@@ -15,7 +15,7 @@
 | 模型目录 | AgentCenter、内置模型发现；显示上下文、积分倍率及已知模型标签和图片能力 |
 | 额度 | 查询 CodeArts 套餐 CREDIT 积分，未知值不显示为 0 |
 | 活动 | 手动签到 / 新用户活动领取：每日一次、新用户一次，已签按钮显示「已签」且不再请求上游；可配置后台周期执行 |
-| 配置 | 表单 / Raw JSON 双模式（切换即重新读取配置文件），保存以当前界面模式为准；密钥脱敏，修改重启后生效 |
+| 配置 | 表单 / Raw JSON 双模式（切换即重新读取配置文件），保存以当前界面模式为准并热生效；密钥脱敏，仅装配期四项需重启 |
 | 可观测 | 进程累计指标、近期请求及 Token 用量（重启后回看 `data/requests` 归档）、最近失败摘要、实时运行日志、脱敏请求 JSONL 归档 |
 | 面板 | 账号、模型、用量、配置、日志五页；明暗主题及移动布局 |
 
@@ -241,7 +241,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 - **签到按本地时点执行**：`credits_auto_claim:true` 时，进程在 `checkin_hours`（默认 `[9, 21]`，本地时间整点）各领一次每日签到和新手活动，与 `watch.poll_minutes` 的 token 轮询互不相干。启动时若今天已经过了最近一个时点却还没签，会立刻补一次（已签的账号由账本短路，零上游请求）。
 - `watch.enabled:true` 时，后台校验登录态并按条件续期；关闭后仍可手动操作。
 
-自动生成的默认配置开启活动积分领取与凭据看护；如希望只手动操作，将 `credits_auto_claim` 或 `watch.enabled` 设为 false 后重启。
+自动生成的默认配置开启活动积分领取与凭据看护；如希望只手动操作，将 `credits_auto_claim` 或 `watch.enabled` 设为 false 并保存即可（热生效，无需重启）。
 
 ## 配置
 
@@ -269,7 +269,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 
 环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
-面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**所有在线配置修改均需重启生效**。环境变量覆盖的配置仍需修改部署环境后重启。
+面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`；保存后页面会列出仍需重启的字段名。环境变量覆盖的配置仍需修改部署环境后重启。
 
 ## 数据与日志
 

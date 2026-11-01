@@ -11,6 +11,24 @@ import (
 	"codearts2api-panel/internal/auth"
 )
 
+// watchInfo 面板展示的调度/池参数：有运行期快照时按快照渲染（保存配置后立即反映），
+// 否则回落到启动时注入的静态值。
+func (h *Handler) watchInfo() map[string]any {
+	if h.cfg.Live == nil {
+		return h.cfg.WatchInfo
+	}
+	s := h.live()
+	return map[string]any{
+		"enabled":              s.WatchEnabled,
+		"credits_auto_claim":   s.CreditsAutoClaim,
+		"poll_minutes":         s.PollMinutes,
+		"refresh_skew_minutes": s.RefreshSkewMinutes,
+		"keepalive_interval":   s.KeepaliveIntervalMinutes,
+		"max_concurrent":       s.MaxConcurrent,
+		"keepalive_window":     s.KeepaliveWindow,
+	}
+}
+
 // adminOverview 面板总览。
 func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 	total, healthy, disabled, cooling, credits := h.cfg.Pool.Stats()
@@ -35,7 +53,7 @@ func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 		"accounts": h.cfg.Pool.List(),
 		"models":   ids,
 		"schedule": map[string]any{
-			"watch": h.cfg.WatchInfo,
+			"watch": h.watchInfo(),
 		},
 	})
 }
