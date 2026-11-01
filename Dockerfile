@@ -1,9 +1,12 @@
-FROM golang:1.25-alpine AS build
+# Compile on the runner's native platform, even for an ARM64 production image.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/codearts2api-panel ./cmd/server
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/codearts2api-panel ./cmd/server
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata wget \
