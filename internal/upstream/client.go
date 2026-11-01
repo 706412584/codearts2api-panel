@@ -23,7 +23,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -108,18 +107,11 @@ type Client struct {
 	streamHTTP *http.Client // SSE 长流，无总超时
 
 	// 上游主机，生产固定为华为云；测试可替换为 httptest 服务。
-	snapBase    string
-	benefitBase string
+	snapBase string
 	// chatURL chat-completions 完整地址覆盖（测试注入用，留空走 snapBase）。
 	chatURL string
 
-	// claimAuto 模型发现时是否自动领取限时福利。
-	// 默认开启：不领取时福利模型一律返回 InferHub.4004.200 benefit not found
-	// （实测 2026-09-15），服务商把「领取」做成幂等操作，官方客户端打开模型
-	// 菜单也会调用；关闭后福利模型列表仍在，但调用必然失败。
-	claimAuto atomic.Bool
-
-	// 分来源失败退避：同一账号的 builtin/福利接口打不通时短期内不再重试，
+	// 分来源失败退避：同一账号的 builtin 接口打不通时短期内不再重试，
 	// 避免每次 /v1/models 刷新都空等超时。
 	srcMu   sync.Mutex
 	srcFail map[string]time.Time
@@ -143,10 +135,8 @@ func New(timeout time.Duration) *Client {
 		http:        &http.Client{Timeout: timeout, Transport: tr},
 		streamHTTP:  &http.Client{Transport: tr},
 		snapBase:    SnapEngineApiHost,
-		benefitBase: BenefitHost,
 		srcFail:     map[string]time.Time{},
 	}
-	c.claimAuto.Store(true)
 	return c
 }
 
@@ -168,18 +158,8 @@ func (c *Client) chatEndpoint() string {
 	return c.snapURL(EpChatV2)
 }
 
-// SetBenefitAutoClaim 设置模型发现时是否自动领取限时福利（默认 false）。
-// 关闭时 /v1/models 只读不写，需要领取请显式调用 ClaimBenefit（cmd/models -claim）。
-func (c *Client) SetBenefitAutoClaim(v bool) { c.claimAuto.Store(v) }
-
-// BenefitAutoClaim 报告是否开启自动领取。
-func (c *Client) BenefitAutoClaim() bool { return c.claimAuto.Load() }
-
 // snapURL 拼接 snap-access 主机地址。
 func (c *Client) snapURL(path string) string { return c.snapBase + path }
-
-// benefitURL 拼接福利网关主机地址。
-func (c *Client) benefitURL(path string) string { return c.benefitBase + path }
 
 // srcBlocked 报告某来源是否处于失败退避窗口内。
 func (c *Client) srcBlocked(key string) bool {
@@ -464,16 +444,14 @@ func ChatHeadersV2(token, traceID, language string) map[string]string {
 // ChatStream 发送 /api/v2/chat/completions（OpenAI 兼容，AK/SK 签名 + x-auth-token）
 // 并返回 SSE 流（调用方负责 Close）。
 //
-// benefit 由调用方按「发起请求的账号」判定（见 IsBenefitModel）：限时福利模型
-// 必须带 maas_type: benefit 头，判定依据是账号自己的模型目录，不能全局共享。
-func (c *Client) ChatStream(ctx context.Context, chatID string, messages []ChatMessage, traceID string, cred SignCredential, userName string, model string, benefit bool) (io.ReadCloser, error) {
-	return c.ChatStreamWithOptions(ctx, chatID, messages, traceID, cred, userName, model, ChatOptions{}, benefit)
+func (c *Client) ChatStream(ctx context.Context, chatID string, messages []ChatMessage, traceID string, cred SignCredential, userName string, model string) (io.ReadCloser, error) {
+	return c.ChatStreamWithOptions(ctx, chatID, messages, traceID, cred, userName, model, ChatOptions{})
 }
 
 // ChatStreamWithOptions 在基础聊天请求上附加推理等级与采样参数。
-func (c *Client) ChatStreamWithOptions(ctx context.Context, chatID string, messages []ChatMessage, traceID string, cred SignCredential, userName string, model string, opts ChatOptions, benefit bool) (io.ReadCloser, error) {
+func (c *Client) ChatStreamWithOptions(ctx context.Context, chatID string, messages []ChatMessage, traceID string, cred SignCredential, userName string, model string, opts ChatOptions) (io.ReadCloser, error) {
 	body := chatBodyV2(chatID, messages, model, opts)
-	return c.sendChatV2(ctx, body, traceID, cred, cred.SecurityToken, chatID, sessionIDFor(chatID), benefit)
+	return c.sendChatV2(ctx, body, traceID, cred, cred.SecurityToken, chatID, sessionIDFor(chatID))
 }
 
 // chatBodyV2 组装 /api/v2/chat/completions 请求体（原生 OpenAI 形状）。
@@ -544,17 +522,14 @@ func sessionIDFor(chatID string) string {
 
 // SendChatV2 发送自定义 OpenAI 兼容 body 到 /api/v2/chat/completions。
 // 鉴权：x-auth-token（STS security token）+ 华为云 SDK-HMAC-SHA256 AK/SK 签名。
-// benefit=true 时追加 maas_type: benefit（限时福利模型路由），该头在签名前设置，
-// 计入 SignedHeaders。
-func (c *Client) SendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken string, benefit bool) (io.ReadCloser, error) {
-	return c.sendChatV2(ctx, body, traceID, cred, userToken, "", "", benefit)
+func (c *Client) SendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken string) (io.ReadCloser, error) {
+	return c.sendChatV2(ctx, body, traceID, cred, userToken, "", "")
 }
 
 // sendChatV2 发送聊天请求并返回 SSE 流。
 //
 // chatID/sessionID 作为请求亲和与 prompt cache 标识（不代替 messages 里的语义历史）。
-// benefit 由调用方按账号判定，maas_type 在签名前写入，计入 SignedHeaders。
-func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken, chatID, sessionID string, benefit bool) (io.ReadCloser, error) {
+func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken, chatID, sessionID string) (io.ReadCloser, error) {
 	raw, _ := json.Marshal(body)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatEndpoint(), bytes.NewReader(raw))
 	if err != nil {
@@ -562,9 +537,6 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 	}
 	for k, v := range ChatHeadersV2(userToken, traceID, "zh-cn") {
 		httpReq.Header.Set(k, v)
-	}
-	if benefit {
-		httpReq.Header.Set(HeaderMaasType, MaasBenefit)
 	}
 	signRequest(httpReq, raw, cred)
 	if chatID != "" {
@@ -640,8 +612,7 @@ func embeddedSSEError(data string) *ApiError {
 	case strings.Contains(low, "429") || strings.Contains(low, "tm.00001041") ||
 		strings.Contains(low, "tpm") || strings.Contains(low, "并发会话"):
 		status = http.StatusTooManyRequests
-	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered") ||
-		strings.Contains(low, "4004.200") || strings.Contains(low, "benefit not found"):
+	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered"):
 		// 模型级错误（该账号用不了这个模型）是客户端问题，不是上游故障。
 		status = http.StatusBadRequest
 	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid"):

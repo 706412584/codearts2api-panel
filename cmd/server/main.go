@@ -49,10 +49,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("build pool: %v", err)
 	}
-	p.SetBenefitAutoClaim(cfg.BenefitAutoClaim)
 
 	c := upstream.New(time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second)
-	c.SetBenefitAutoClaim(cfg.BenefitAutoClaim)
 	requestLog := reqlog.New(reqlog.Config{
 		Dir:     filepath.Join(filepath.Dir(cfg.StateFile), "requests"),
 		Enabled: true, RetentionDays: 7,

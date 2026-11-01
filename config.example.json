@@ -16,7 +16,6 @@
   "keepalive_window": "10m",
   "queue_retry_seconds": 10,
   "queue_max_attempts": 30,
-  "benefit_auto_claim": true,
   "credits_auto_claim": true,
   "watch": {
     "enabled": true,

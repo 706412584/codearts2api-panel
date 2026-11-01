@@ -17,16 +17,15 @@ import (
 // 背景（2026-09-15 实测）：上游 /v1/models 的发现结果 ≠ 账号真能调用的模型。
 // agent-center 与 /v1/model/builtin 会列出未在当前账号注册的模型（实测
 // GLM-5.2-ArkTS-SPARK / OpenPangu-2.0-Pro / OpenPangu-2.0-Flash 全部返回
-// InferHub.002002009.404），福利模型在未领取时返回 InferHub.4004.200
-// benefit not found。只按发现结果列模型，客户端会拿到一堆必然失败的条目。
+// InferHub.002002009.404）。只按发现结果列模型，客户端会拿到一堆必然失败的条目。
 //
 // 因此这里做一次轻量真实探测（一条最小 chat 请求），把结果缓存起来：
 //   - /v1/models 过滤掉已知不可用的模型
 //   - 聊天路由避开不可用模型
-//   - 上游报 not registered / benefit not found 时立即记为不可用（从真实流量学习）
+//   - 上游报 not registered 时立即记为不可用（从真实流量学习）
 
 const (
-	// availabilityTTL 探测结果有效期。套餐/福利变化后最多滞后这么久。
+	// availabilityTTL 探测结果有效期。套餐变化后最多滞后这么久。
 	availabilityTTL = 30 * time.Minute
 	// probeTimeout 单次探测超时。
 	probeTimeout = 45 * time.Second
@@ -141,8 +140,6 @@ func upstreamUnavailableReason(err error) string {
 	switch {
 	case strings.Contains(msg, "002002009") || strings.Contains(msg, "not registered"):
 		return "模型未在当前账号注册"
-	case strings.Contains(msg, "4004.200") || strings.Contains(msg, "benefit not found"):
-		return "限时福利未领取或已过期（可执行 go run ./cmd/models -claim，或打开 benefit_auto_claim）"
 	}
 	return ""
 }
@@ -188,8 +185,7 @@ func (h *Handler) probeModel(acct *pool.Account, model string) {
 		"stream":   true,
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}
-	rc, err := acct.Client.SendChatV2(ctx, body, "", cred, cred.SecurityToken,
-		upstream.IsBenefitModel(acct.UID, model))
+	rc, err := acct.Client.SendChatV2(ctx, body, "", cred, cred.SecurityToken)
 	if err != nil {
 		// 并发上限是暂时的，不代表模型不可用。
 		if strings.Contains(err.Error(), "TM.00001041") {
@@ -233,8 +229,6 @@ func upstreamUnavailableReasonText(s string) string {
 	switch {
 	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered"):
 		return "模型未在当前账号注册"
-	case strings.Contains(low, "4004.200") || strings.Contains(low, "benefit not found"):
-		return "限时福利未领取或已过期（可执行 go run ./cmd/models -claim，或打开 benefit_auto_claim）"
 	}
 	return ""
 }

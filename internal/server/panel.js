@@ -118,12 +118,12 @@
       const state = a.disabled ? ['bad', '已禁用'] : a.cooling ? ['warn', '冷却中'] : ['ok', '可用'];
       const button = (action, label, danger = false) => '<button class="button small' + (danger ? ' danger' : '') + '" data-account-action="' + action + '" data-uid="' + esc(uid) + '">' + label + '</button>';
       const expiry = a.permanent === true || a.credential_type === 'permanent' ? '永久凭据' : date(a.expires_at);
-      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span><span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td>' + balanceCell(a.benefit_balance, 'total_balance', a.benefit_balance_error) + (a.benefit_balance ? '<span class="balance-detail">总额 ' + esc(number(a.benefit_balance.total_quota)) + '</span>' : '') + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + button('checkin', '签到') + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('delete', '删除', true) + '</div></td></tr>';
-    }).join('') || emptyRow(7, query ? '没有匹配的账户。' : '还没有账户。点击“添加账户”完成首次接入。');
+      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span><span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + button('checkin', '签到') + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('delete', '删除', true) + '</div></td></tr>';
+    }).join('') || emptyRow(6, query ? '没有匹配的账户。' : '还没有账户。点击“添加账户”完成首次接入。');
   }
   function actionMessage(data, fallback) {
     const failed = Array.isArray(data.results) ? data.results.filter(r => r.ok === false) : [];
-    const details = failed.map(r => (r.uid || '') + '：' + (r.message || r.credit_balance_error || r.benefit_balance_error || '操作失败')).join('；');
+    const details = failed.map(r => (r.uid || '') + '：' + (r.message || r.credit_balance_error || '操作失败')).join('；');
     return [data.message || fallback, details].filter(Boolean).join(' · ');
   }
   async function accountAction(action, uid, button) {
@@ -161,15 +161,14 @@
   $('deleteDialog').addEventListener('close', () => { deleteUID = ''; $('deleteAccountName').textContent = ''; });
 
   function renderModels() {
-    const query = $('modelSearch').value.toLowerCase().trim(), channel = $('modelChannel').value;
-    const filtered = models.filter(m => String(m.id).toLowerCase().includes(query) && (!channel || (m.benefit || m.channel === 'benefit' ? 'benefit' : 'agent') === channel));
+    const query = $('modelSearch').value.toLowerCase().trim();
+    const filtered = models.filter(m => String(m.id).toLowerCase().includes(query));
     $('modelCount').textContent = filtered.length;
     $('modelsBody').innerHTML = filtered.map(m => {
-      const benefit = m.benefit || m.channel === 'benefit';
-      return '<tr><td class="mono">' + esc(m.id) + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill ' + (benefit ? 'info' : '') + '">' + (benefit ? '免费额度' : '常规模型') + '</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
-    }).join('') || emptyRow(6, query || channel ? '没有符合条件的模型。' : '模型目录为空，请添加账户后刷新。');
+      return '<tr><td class="mono">' + esc(m.id) + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
+    }).join('') || emptyRow(6, query ? '没有符合条件的模型。' : '模型目录为空，请添加账户后刷新。');
   }
-  $('modelSearch').oninput = renderModels; $('modelChannel').onchange = renderModels;
+  $('modelSearch').oninput = renderModels;
   $('modelsBody').onclick = async event => {
     const button = event.target.closest('[data-copy-model]');
     if (!button) return;

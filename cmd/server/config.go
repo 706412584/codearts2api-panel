@@ -50,10 +50,6 @@ type Config struct {
 	// QueueMaxAttempts 排队重试次数上限（默认 30，约 5 分钟）。
 	QueueMaxAttempts int `json:"queue_max_attempts"`
 
-	// BenefitAutoClaim 模型发现时自动领取限时福利（默认 true）。
-	// 领取是幂等操作（官方客户端打开模型菜单即调用），不领取时福利模型一律
-	// 返回 InferHub.4004.200 benefit not found。置 false 可关掉这个写操作。
-	BenefitAutoClaim bool `json:"benefit_auto_claim"`
 	// CreditsAutoClaim 每次 watchdog 轮询领取每日签到和新手活动积分（默认 true）。
 	CreditsAutoClaim bool `json:"credits_auto_claim"`
 
@@ -83,7 +79,6 @@ func Default() *Config {
 	c.MaxConcurrent = 1            // 上游单账号最多 3 并发会话但释放慢，串行最稳
 	c.KeepaliveWindow = "10m"      // 新增：保活窗口 10 分钟
 	c.Upstream.TimeoutSeconds = 120
-	c.BenefitAutoClaim = true // 不领取时福利模型调用必然失败（benefit not found）
 	c.CreditsAutoClaim = true
 	return c
 }
@@ -231,9 +226,6 @@ func applyEnv(c *Config) {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.QueueMaxAttempts = n
 		}
-	}
-	if v := os.Getenv("CA2A_BENEFIT_AUTO_CLAIM"); v != "" {
-		c.BenefitAutoClaim = v == "1" || strings.EqualFold(v, "true")
 	}
 	if v := os.Getenv("CA2A_CREDITS_AUTO_CLAIM"); v != "" {
 		c.CreditsAutoClaim = v == "1" || strings.EqualFold(v, "true")

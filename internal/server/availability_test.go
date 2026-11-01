@@ -18,7 +18,6 @@ func TestUpstreamUnavailableReason(t *testing.T) {
 		want string
 	}{
 		{`codearts error code=InferHub.002002009.404 msg=The model is not registered, please request other model`, "注册"},
-		{`codearts error code=InferHub.4004.200 msg=benefit not found`, "福利"},
 		{`codearts error code=TM.00001041 msg=并发会话数已达上限`, ""},
 		{`dial tcp: i/o timeout`, ""},
 	}
@@ -139,7 +138,7 @@ func TestQueueRetryDefaultBounded(t *testing.T) {
 	}
 }
 
-// 模型级错误（not registered / benefit not found）不得被当成账号故障：
+// 模型级错误（not registered）不得被当成账号故障：
 // 实测线上：调用未注册模型 → 错误被嵌入包装成 5xx → 健康账号被冷却 10 分钟，
 // 之后所有正常请求全部失败。
 func TestModelErrorDoesNotCoolAccount(t *testing.T) {

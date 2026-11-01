@@ -66,7 +66,6 @@ var dynamicModelsCache struct {
 type staticModel struct {
 	ID            string
 	ContextWindow int64
-	Benefit       bool
 }
 
 // staticModels 静态兜底表：**只放实测确认可用的模型**。
@@ -81,10 +80,6 @@ var staticModels = []staticModel{
 	{ID: "GLM-5.2", ContextWindow: 202752},
 	{ID: "glm-5.2-sft-harmony", ContextWindow: 131072},
 	{ID: "Qwen3-VL-235B", ContextWindow: 131072},
-	// 限时福利（需领取；领取后实测可用，聊天自动带 maas_type: benefit）
-	{ID: "deepseek-v4-flash-0731", ContextWindow: 1048576, Benefit: true},
-	{ID: "deepseek-v4-pro-0813", ContextWindow: 1048576, Benefit: true},
-	{ID: "glm-5.3-flash", ContextWindow: 1048576, Benefit: true},
 }
 
 const (
@@ -452,8 +447,7 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 // modelList 动态获取模型列表并包装成 OpenAI 格式。
 func (h *Handler) modelList(force bool) []map[string]any {
 	entries := modelEntries(h.fetchDynamicModels(force))
-	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404 / benefit not
-	// found，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
+	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
 	// 只在动态结果上过滤会让被下架的模型又从静态表冒出来。
 	// 未知（还没探测出结论）的保留：宁可让用户试，也别把可用模型藏起来。
 	if len(entries) > 0 {
@@ -523,7 +517,7 @@ func (h *Handler) modelKnownUnusable(model string) bool {
 func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 	out := make([]map[string]any, 0, len(infos)+len(staticModels))
 	seen := map[string]bool{}
-	add := func(id string, ctx, maxOut int64, benefit bool, ratioDisplay string) {
+	add := func(id string, ctx, maxOut int64, ratioDisplay string) {
 		if id == "" || seen[id] {
 			return
 		}
@@ -541,26 +535,23 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if maxOut > 0 {
 			entry["max_output_tokens"] = maxOut
 		}
-		if benefit {
-			entry["benefit"] = true
-		}
 		if ratioDisplay != "" {
 			entry["ratio_display"] = ratioDisplay
 		}
 		out = append(out, entry)
 	}
 	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。
-	addAlias := func(id string, ctx, maxOut int64, benefit bool, ratioDisplay string) {
-		add(id, ctx, maxOut, benefit, ratioDisplay)
+	addAlias := func(id string, ctx, maxOut int64, ratioDisplay string) {
+		add(id, ctx, maxOut, ratioDisplay)
 		if lower := strings.ToLower(id); lower != id {
-			add(lower, ctx, maxOut, benefit, ratioDisplay)
+			add(lower, ctx, maxOut, ratioDisplay)
 		}
 	}
 	for _, mi := range infos {
-		addAlias(mi.ID, mi.ContextWindow, mi.MaxTokens, mi.Benefit, mi.RatioDisplay)
+		addAlias(mi.ID, mi.ContextWindow, mi.MaxTokens, mi.RatioDisplay)
 	}
 	for _, sm := range staticModels {
-		addAlias(sm.ID, sm.ContextWindow, 0, sm.Benefit, "")
+		addAlias(sm.ID, sm.ContextWindow, 0, "")
 	}
 	return out
 }
@@ -568,8 +559,8 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 // fetchDynamicModels 刷新各账号模型目录并返回合并后的展示列表，缓存 1h。
 // force=true 用于面板显式重新获取：跳过全局缓存与账号目录缓存。
 //
-// 目录按账号存放（限时福利按账号授予，账号之间不能互相污染），因此这里逐个健康
-// 账号发现并写入其目录；发现失败的账号沿用旧目录或冷启动种子。
+// 目录按账号存放，因此这里逐个健康账号发现并写入其目录；
+// 发现失败的账号沿用旧目录或静态兜底。
 func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	dynamicModelsCache.RLock()
 	if !force && len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
@@ -768,7 +759,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	msgs := buildUpstreamMessages(req, toolsOn)
 
 	// 已经确认「所有健康账号都用不了这个模型」时直接快速失败：不必再打上游、
-	// 也不必把账号轮转一遍（轮转只会拿到同样的 not registered / benefit not found）。
+	// 也不必把账号轮转一遍（轮转只会拿到同样的 not registered）。
 	if h.modelKnownUnusable(model) {
 		writeOpenAIError(w, http.StatusNotFound, "model_not_available",
 			"model "+model+" is not available on any configured account")
@@ -848,12 +839,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		var rc io.ReadCloser
 		var serr error
 		authRetried := false
-		// 限时福利路由按「本次实际使用的账号」判定：账号池里套餐可能不同。
-		benefit := upstream.IsBenefitModel(acct.UID, model)
 		noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
 		for retry := 0; retry < h.cfg.QueueMaxAttempts; retry++ {
 			event.Attempts++
-			rc, serr = acct.Client.ChatStreamWithOptions(r.Context(), chatID, msgs, "", cred, acct.UserName, model, chatOpts, benefit)
+			rc, serr = acct.Client.ChatStreamWithOptions(r.Context(), chatID, msgs, "", cred, acct.UserName, model, chatOpts)
 			if serr == nil {
 				break
 			}
@@ -1183,7 +1172,7 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 	var ae *upstream.ApiError
 	if errors.As(err, &ae) {
 		// 「模型对这个账号不可用」是账号能力问题，不是账号故障，必须在状态码分支
-		// **之前**判断：not registered / benefit not found 会被嵌入错误包装成
+		// **之前**判断：not registered 会被嵌入错误包装成
 		// 5xx，落到下面的 `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测
 		// 调用一个未注册模型，整个账号被冷却，后续正常请求全部失败。
 		if reason := upstreamUnavailableReason(err); reason != "" {

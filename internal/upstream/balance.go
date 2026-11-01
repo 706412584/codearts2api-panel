@@ -10,7 +10,6 @@ import (
 )
 
 const EpPackageInfo = "/snap-manager/v1/statistics/plugin"
-const EpBenefitBalance = "/api/v1/user/tokens/balance"
 
 type CreditPackage struct {
 	Name           string   `json:"name"`
@@ -20,7 +19,7 @@ type CreditPackage struct {
 	ExpiringAmount *float64 `json:"expiring_amount,omitempty"`
 }
 
-// CreditBalance is the CREDIT ledger, independent of free-model Token quotas.
+// CreditBalance is the CREDIT ledger.
 type CreditBalance struct {
 	Total          float64         `json:"total"`
 	Packages       []CreditPackage `json:"packages"`
@@ -29,12 +28,6 @@ type CreditBalance struct {
 	Status         string          `json:"status"`
 	EndDate        string          `json:"end_date"`
 	ExpiringAmount *float64        `json:"expiring_amount,omitempty"`
-}
-
-type BenefitBalance struct {
-	TotalQuota   float64 `json:"total_quota"`
-	TotalBalance float64 `json:"total_balance"`
-	UsedAmount   float64 `json:"used_amount"`
 }
 
 // balanceGet signs the exact empty payload. PromptCenter routing headers on the
@@ -128,30 +121,4 @@ func (c *Client) FetchAccountInfo(ctx context.Context, cred SignCredential) (*Cr
 		out.Total = *total
 	}
 	return out, nil
-}
-
-func (c *Client) FetchBenefitBalance(ctx context.Context, cred SignCredential) (*BenefitBalance, error) {
-	raw, err := c.balanceGet(ctx, c.benefitURL(EpBenefitBalance), cred, false)
-	if err != nil {
-		return nil, err
-	}
-	var response struct {
-		ErrorCode    string `json:"error_code"`
-		ErrorMessage string `json:"error_msg"`
-		Result       *struct {
-			TotalQuota   *float64 `json:"total_quota"`
-			TotalBalance *float64 `json:"total_balance"`
-			UsedAmount   *float64 `json:"used_amount"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &response); err != nil {
-		return nil, fmt.Errorf("parse benefit balance: %w", err)
-	}
-	if response.ErrorCode != "0000" {
-		return nil, fmt.Errorf("benefit balance %s: %s", response.ErrorCode, response.ErrorMessage)
-	}
-	if response.Result == nil || response.Result.TotalQuota == nil || response.Result.TotalBalance == nil || response.Result.UsedAmount == nil {
-		return nil, fmt.Errorf("benefit response missing balance fields")
-	}
-	return &BenefitBalance{TotalQuota: *response.Result.TotalQuota, TotalBalance: *response.Result.TotalBalance, UsedAmount: *response.Result.UsedAmount}, nil
 }

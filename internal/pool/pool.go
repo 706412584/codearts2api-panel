@@ -42,10 +42,8 @@ type Account struct {
 	checkin             *CheckinStatus
 	balanceMu           sync.Mutex
 	creditBalance       *upstream.CreditBalance
-	benefitBalance      *upstream.BenefitBalance
 	balanceUpdatedAt    time.Time
 	creditBalanceError  string
-	benefitBalanceError string
 	removed             bool
 	lastValidated       time.Time
 	errCount            int
@@ -70,7 +68,6 @@ type Config struct {
 	LoginConfig      upstream.LoginConfig // OAuth/refresh 端点；零值使用生产默认
 	CheckinClient    CheckinClient        // 可选活动客户端；nil 使用账号 Client
 	BalanceClient    BalanceClient
-	BenefitAutoClaim bool
 }
 
 // Pool 账号池。
@@ -118,8 +115,7 @@ func New(auths []*auth.Auth, cfg Config, stateFile string) (*Pool, error) {
 			maxConcurrent:     cfg.MaxConcurrent,
 			keepaliveLastPing: time.Now(),
 		}
-		acct.Client.SetBenefitAutoClaim(cfg.BenefitAutoClaim)
-		p.accounts = append(p.accounts, acct)
+			p.accounts = append(p.accounts, acct)
 	}
 	p.loadState()
 	return p, nil
@@ -156,7 +152,6 @@ func (p *Pool) AddAccount(a *auth.Auth) *Account {
 		keepaliveLastPing: time.Now(),
 	}
 	p.mu.Lock()
-	acct.Client.SetBenefitAutoClaim(p.cfg.BenefitAutoClaim)
 	for i, existing := range p.accounts {
 		if existing.Name == acct.Name {
 			existing.mu.Lock()
@@ -222,10 +217,8 @@ func (p *Pool) List() []map[string]any {
 			"default_model":         a.DefaultModel,
 			"credits":               credit,
 			"credit_balance":        a.creditBalance,
-			"benefit_balance":       a.benefitBalance,
 			"balance_updated_at":    optionalTime(a.balanceUpdatedAt),
 			"credit_balance_error":  a.creditBalanceError,
-			"benefit_balance_error": a.benefitBalanceError,
 			"refreshable":           a.Auth.Refreshable(),
 			"credential_type":       credentialType,
 			"checkin":               a.checkin,
@@ -331,7 +324,6 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 				maxConcurrent:     p.cfg.MaxConcurrent,
 				keepaliveLastPing: time.Now(),
 			}
-			acct.Client.SetBenefitAutoClaim(p.cfg.BenefitAutoClaim)
 			next = append(next, acct)
 		}
 	}
@@ -982,7 +974,6 @@ func (p *Pool) loadState() {
 		Reason    string                   `json:"reason"`
 		LastErr   string                   `json:"last_error"`
 		Credit    *upstream.CreditBalance  `json:"credit_balance"`
-		Benefit   *upstream.BenefitBalance `json:"benefit_balance"`
 		BalanceAt time.Time                `json:"balance_updated_at"`
 	}
 	if json.Unmarshal(raw, &data) != nil {
@@ -997,7 +988,7 @@ func (p *Pool) loadState() {
 				a.disabled = s.Disabled
 				a.disabledReason = s.Reason
 				a.lastErr = s.LastErr
-				a.creditBalance, a.benefitBalance, a.balanceUpdatedAt = s.Credit, s.Benefit, s.BalanceAt
+				a.creditBalance, a.balanceUpdatedAt = s.Credit, s.BalanceAt
 				a.mu.Unlock()
 			}
 		}
@@ -1024,7 +1015,6 @@ func (p *Pool) saveStateErr() error {
 		Reason    string                   `json:"reason"`
 		LastErr   string                   `json:"last_error"`
 		Credit    *upstream.CreditBalance  `json:"credit_balance"`
-		Benefit   *upstream.BenefitBalance `json:"benefit_balance"`
 		BalanceAt time.Time                `json:"balance_updated_at"`
 	}
 	accounts := p.Accounts()
@@ -1038,7 +1028,7 @@ func (p *Pool) saveStateErr() error {
 			Disabled:  a.disabled,
 			Reason:    a.disabledReason,
 			LastErr:   a.lastErr,
-			Credit:    a.creditBalance, Benefit: a.benefitBalance, BalanceAt: a.balanceUpdatedAt,
+			Credit:    a.creditBalance, BalanceAt: a.balanceUpdatedAt,
 		})
 		a.mu.Unlock()
 	}

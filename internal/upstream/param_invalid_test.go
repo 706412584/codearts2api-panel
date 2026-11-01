@@ -23,7 +23,7 @@ func TestSendChatV2SurfacesEmbeddedParamInvalidAsBadRequest(t *testing.T) {
 			}))
 			defer backend.Close()
 			c := NewWithChatEndpoint(time.Second, backend.URL)
-			_, err := c.SendChatV2(context.Background(), map[string]any{"model": "GLM-5.2"}, "", SignCredential{}, "", false)
+			_, err := c.SendChatV2(context.Background(), map[string]any{"model": "GLM-5.2"}, "", SignCredential{}, "")
 			var apiErr *ApiError
 			if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || !strings.Contains(apiErr.Message, "invalid") {
 				t.Fatalf("parameter error was treated as an upstream failure: %T %v", err, err)

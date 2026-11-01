@@ -2,9 +2,7 @@ package pool
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"codearts2api-panel/internal/upstream"
@@ -12,17 +10,14 @@ import (
 
 type BalanceClient interface {
 	FetchAccountInfo(context.Context, upstream.SignCredential) (*upstream.CreditBalance, error)
-	FetchBenefitBalance(context.Context, upstream.SignCredential) (*upstream.BenefitBalance, error)
 }
 
 type BalanceResult struct {
 	UID            string                   `json:"uid"`
 	OK             bool                     `json:"ok"`
 	CreditBalance  *upstream.CreditBalance  `json:"credit_balance"`
-	BenefitBalance *upstream.BenefitBalance `json:"benefit_balance"`
 	UpdatedAt      string                   `json:"balance_updated_at"`
 	CreditError    string                   `json:"credit_balance_error"`
-	BenefitError   string                   `json:"benefit_balance_error"`
 }
 
 func optionalTime(t time.Time) string {
@@ -32,8 +27,7 @@ func optionalTime(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-// RefreshBalance updates the two ledgers independently and retains successful
-// cached data when one upstream is unavailable. UI polling reads List only.
+// RefreshBalance updates the CREDIT ledger. UI polling reads List only.
 func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, error) {
 	a := p.Get(uid)
 	if a == nil {
@@ -49,9 +43,9 @@ func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, e
 			err = fmt.Errorf("token invalid; re-login required")
 		}
 		a.mu.Lock()
-		a.creditBalanceError, a.benefitBalanceError = err.Error(), err.Error()
+		a.creditBalanceError = err.Error()
 		a.balanceUpdatedAt = time.Now()
-		out := BalanceResult{UID: uid, CreditBalance: a.creditBalance, BenefitBalance: a.benefitBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: err.Error(), BenefitError: err.Error()}
+		out := BalanceResult{UID: uid, CreditBalance: a.creditBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: err.Error()}
 		a.mu.Unlock()
 		return out, err
 	}
@@ -61,14 +55,7 @@ func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, e
 	if client == nil {
 		client = a.Client
 	}
-	var credit *upstream.CreditBalance
-	var benefit *upstream.BenefitBalance
-	var creditErr, benefitErr error
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); credit, creditErr = client.FetchAccountInfo(ctx, cred) }()
-	go func() { defer wg.Done(); benefit, benefitErr = client.FetchBenefitBalance(ctx, cred) }()
-	wg.Wait()
+	credit, creditErr := client.FetchAccountInfo(ctx, cred)
 	a.mu.Lock()
 	if a.removed {
 		a.mu.Unlock()
@@ -77,31 +64,15 @@ func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, e
 	if creditErr == nil {
 		a.creditBalance = credit
 	}
-	if benefitErr == nil {
-		a.benefitBalance = benefit
-	}
-	a.creditBalanceError, a.benefitBalanceError = "", ""
+	a.creditBalanceError = ""
 	if creditErr != nil {
 		a.creditBalanceError = creditErr.Error()
 	}
-	if benefitErr != nil {
-		a.benefitBalanceError = benefitErr.Error()
-	}
 	a.balanceUpdatedAt = time.Now()
-	out := BalanceResult{UID: uid, OK: creditErr == nil && benefitErr == nil, CreditBalance: a.creditBalance, BenefitBalance: a.benefitBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: a.creditBalanceError, BenefitError: a.benefitBalanceError}
+	out := BalanceResult{UID: uid, OK: creditErr == nil, CreditBalance: a.creditBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: a.creditBalanceError}
 	a.mu.Unlock()
 	p.saveState()
-	return out, errors.Join(creditErr, benefitErr)
-}
-
-// SetBenefitAutoClaim applies the configured write policy to current and future accounts.
-func (p *Pool) SetBenefitAutoClaim(enabled bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.cfg.BenefitAutoClaim = enabled
-	for _, a := range p.accounts {
-		a.Client.SetBenefitAutoClaim(enabled)
-	}
+	return out, creditErr
 }
 
 // Remove deletes the credential before removing the account from the pool.

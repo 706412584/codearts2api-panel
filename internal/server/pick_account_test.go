@@ -23,9 +23,9 @@ func TestPickAccountDiscoversCatalogLazily(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second)})
 
 	// 模拟「惰性发现后」d 账号的目录里有该模型
-	upstream.SetAccountModels("d", []upstream.ModelInfo{{ID: "brand-new-benefit-0915", Benefit: true}})
+	upstream.SetAccountModels("d", []upstream.ModelInfo{{ID: "brand-new-model-0915"}})
 
-	got := h.pickAccount(map[string]bool{}, "brand-new-benefit-0915")
+	got := h.pickAccount(map[string]bool{}, "brand-new-model-0915")
 	if got == nil || got.Name != "d" {
 		t.Fatalf("应挑到目录里有该模型的账号 d，got=%v", got)
 	}

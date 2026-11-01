@@ -69,7 +69,7 @@ type actionResult struct {
 	Message string  `json:"message,omitempty"`
 }
 
-// adminCredits queries the separate CREDIT and benefit Token ledgers.
+// adminCredits queries the CREDIT ledger.
 func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 	body, err := readUIDBody(r)
 	if err != nil {

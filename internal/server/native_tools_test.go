@@ -183,44 +183,6 @@ func TestChatCompletionsRetriesEmbeddedCodeArtsQueueLimit(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsSignsBenefitHeaderForGLM53Flash(t *testing.T) {
-	headersSeen := make(chan http.Header, 1)
-	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		headersSeen <- r.Header.Clone()
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	}))
-	defer upstreamServer.Close()
-
-	a := auth.New("benefit-account", "tester", "domain", "token", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
-	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 1}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Accounts()[0].Client = upstream.NewWithChatEndpoint(5*time.Second, upstreamServer.URL)
-	h := NewHandler(Config{Pool: p, DefaultModel: "glm-5.3-flash", MaxRotate: 1})
-
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{
-		"model":"glm-5.3-flash","stream":false,"messages":[{"role":"user","content":"hi"}]
-	}`))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-
-	headers := <-headersSeen
-	if got := headers.Get("maas_type"); got != "benefit" {
-		t.Fatalf("maas_type=%q, want benefit", got)
-	}
-	authorization := headers.Get("Authorization")
-	if !strings.Contains(authorization, "SignedHeaders=") || !strings.Contains(authorization, "maas_type") {
-		t.Fatalf("maas_type was not covered by the Huawei signature: %q", authorization)
-	}
-}
-
 func TestModelsAdvertisesOnlyVerifiedNewCodeArtsModels(t *testing.T) {
 	p, err := pool.New(nil, pool.Config{}, "")
 	if err != nil {
@@ -252,7 +214,7 @@ func TestModelsAdvertisesOnlyVerifiedNewCodeArtsModels(t *testing.T) {
 			}
 		}
 	}
-	want := map[string]int{"deepseek-v4-pro-0813": 1048576, "GLM-5.2": 202752}
+	want := map[string]int{"Qwen3-VL-235B": 131072, "GLM-5.2": 202752}
 	for _, model := range payload.Data {
 		if expected, ok := want[model.ID]; ok {
 			if model.ContextLength != expected {

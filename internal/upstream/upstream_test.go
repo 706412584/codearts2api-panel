@@ -55,7 +55,7 @@ func TestSendChatV2SurfacesEmbeddedQueueError(t *testing.T) {
 	c := NewWithChatEndpoint(5*time.Second, srv.URL)
 	_, err := c.SendChatV2(context.Background(), map[string]any{
 		"model": "GLM-5.2", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	}, "trace", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "token"}, "token", false)
+	}, "trace", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "token"}, "token")
 	var apiErr *ApiError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests || !strings.Contains(apiErr.Message, "81111.429") {
 		t.Fatalf("embedded queue error was not surfaced as retryable: %T %v", err, err)
