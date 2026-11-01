@@ -1,0 +1,297 @@
+# CodeArts2API Panel
+
+将华为云 **CodeArts 智能编程 / CodeArts Agent** 账号接入 OpenAI 兼容 API 的自托管网关，附带 Web 管理面板。
+
+项目参考 `references/workbuddy2api-panel` 的页面组织和交互，以 `references/codearts2api-go` 的 CodeArts 协议为后端基础。运行时不依赖参考仓库、腾讯服务或 npm；前端资源直接嵌入 Go 二进制。
+
+## 功能
+
+| 模块 | 支持内容 |
+| --- | --- |
+| 账号池 | OAuth 浏览器授权、JSON / AK-SK 导入、启用与禁用、清除冷却、删除、热重载 |
+| 凭据 | 永久 AK/SK、STS 临时凭据、具备完整 PKCE / DPoP 材料的 OAuth 自动续期 |
+| 网关 | `/v1/models`、`/v1/chat/completions`，流式与非流式、工具调用、图片内容块 |
+| 多账号 | 并发限制、会话关联、错误冷却、失败换号与排队重试 |
+| 模型目录 | AgentCenter、内置模型发现；显示上下文、积分倍率及已知模型标签和图片能力 |
+| 额度 | 查询 CodeArts 套餐 CREDIT 积分，未知值不显示为 0 |
+| 活动 | 手动签到 / 新用户活动领取，可配置后台周期执行 |
+| 配置 | 面板校验并保存 JSON；密钥脱敏，修改重启后生效 |
+| 可观测 | 进程累计指标、近期请求及 Token 用量、运行日志、脱敏请求 JSONL 归档 |
+| 面板 | 账号、模型、用量、配置、日志五页；明暗主题及移动布局 |
+
+腾讯专属成长任务、旅行、抽奖和跨域账号体系没有移植。当前项目已移除历史福利模型目录、Token 福利余额及领取通道。模型目录中的兜底项不等于当前账号一定可调用，实际能力以账号套餐及上游响应为准。
+
+## Docker
+
+先准备宿主机的配置文件和数据目录。已有本机启动生成的 `config.json` 时可直接复用；否则复制示例，并将其中的 `api_key`、`admin_key` 填成两个不同的随机密钥：
+
+```sh
+cp config.example.json config.json
+mkdir -p auths data
+# 编辑 config.json，设置 api_key 和 admin_key 后启动：
+docker compose up -d --build
+```
+
+Windows PowerShell 的准备命令：
+
+```powershell
+Copy-Item config.example.json config.json
+New-Item -ItemType Directory -Force auths, data
+# 编辑 config.json，设置两把密钥后：
+docker compose up -d --build
+```
+
+已有配置时跳过复制步骤，避免覆盖。**启动 Compose 前必须存在 config.json 文件**，否则 Docker 可能创建同名目录，服务会拒绝启动。
+
+Compose 默认只发布到 `127.0.0.1:7866`，直接挂载：
+
+| 宿主机 | 容器内 |
+| --- | --- |
+| `./config.json` | `/app/config.json` |
+| `./auths/` | `/app/auths/` |
+| `./data/` | `/app/data/` |
+
+Linux 宿主机需让容器运行用户能写入这些路径。可用自己的 UID/GID 启动：
+
+```sh
+PUID="$(id -u)" PGID="$(id -g)" docker compose up -d --build
+```
+
+也可单独构建：
+
+```sh
+docker build -t codearts2api-panel .
+docker run --rm -p 127.0.0.1:7866:7866 \
+  --mount type=bind,src="$(pwd)/config.json",dst=/app/config.json \
+  --mount type=bind,src="$(pwd)/auths",dst=/app/auths \
+  --mount type=bind,src="$(pwd)/data",dst=/app/data \
+  codearts2api-panel
+```
+
+需要远程访问时，通过自己的 HTTPS 反向代理接入。浏览器授权遇到本机回调不可达时，使用面板的回调地址提交功能。
+
+## 快速启动
+
+需要 **Go 1.22 或更新版本**。业务代码仅依赖 Go 标准库；Node.js 仅用于可选的前端测试。
+
+```sh
+go run ./cmd/server
+```
+
+首次启动自动生成 `config.json`，包含独立的随机 `api_key` 和 `admin_key`，不会覆盖已有配置。打开：
+
+[http://127.0.0.1:7866/panel](http://127.0.0.1:7866/panel)
+
+使用 `config.json` 中的 **admin_key** 登录面板。初始账号池为空，通过「添加账户」完成接入。
+
+| 密钥 | 用途 |
+| --- | --- |
+| `admin_key` | 管理面板及 `/admin/api/*` |
+| `api_key` | OpenAI 客户端调用 `/v1/*` |
+
+已有配置未设置 admin_key 时，为兼容旧配置会使用 api_key；新生成的配置两者独立。管理密钥不应分发给 API 调用方。
+
+也可以先编译再运行：
+
+```sh
+go build -trimpath -o bin/codearts2api-panel ./cmd/server
+./bin/codearts2api-panel
+```
+
+Windows：
+
+```powershell
+go build -trimpath -o bin/codearts2api-panel.exe ./cmd/server
+.\bin\codearts2api-panel.exe
+```
+
+指定配置文件：
+
+```sh
+go run ./cmd/server -config /path/to/config.json
+```
+
+`auth_dir`、`state_file` 的相对路径以**配置文件所在目录**为基准。将配置放到独立目录即可隔离账号和状态。
+
+## 添加 CodeArts 账号
+
+### 浏览器 OAuth
+
+1. 面板点击「添加账户 → 浏览器授权 → 生成授权链接」。
+2. 打开授权链接，完成华为云登录。
+3. 返回面板等待结果，或点击检查状态。
+
+服务会保存临时 AK/SK、Security Token、最新 refresh_token、原 PKCE verifier、DPoP 私钥及 client_id。续期需要复用原始绑定材料，并保存轮转后的 refresh_token。
+
+**远程部署：** 华为门户仍可能回调浏览器所在机器的 `127.0.0.1`。若页面打不开，在添加账户窗口展开「远程部署：提交浏览器回调地址」，粘贴完整回调 URL。若返回下一步授权链接，继续打开并按提示提交后续回调。不要把这些回调地址发给其他人。
+
+原生门户回调端口与网关监听端口可以不同；服务会为需要的登录会话准备高位回调端口。无需把 `oauth_callback_host` 当成任意公网 redirect_uri。
+
+### 永久 AK/SK
+
+选择「AK / SK」，输入本人的访问密钥。永久密钥可不填 Security Token 和到期时间；它没有 OAuth 自动续期流程。
+
+也可导入 JSON：
+
+```json
+{
+  "user_id": "my-codearts-account",
+  "user_name": "我的 CodeArts",
+  "access_key_id": "<AK>",
+  "secret_access_key": "<SK>"
+}
+```
+
+### 临时凭据或已有导出
+
+支持单个对象、对象数组，以及 STS 响应中的 `credentials` 结构。例如：
+
+```json
+{
+  "user_id": "my-codearts-account",
+  "credentials": {
+    "access_key_id": "<TEMP_AK>",
+    "secret_access_key": "<TEMP_SK>",
+    "security_token": "<SECURITY_TOKEN>",
+    "expiration": "2099-01-01T00:00:00Z"
+  }
+}
+```
+
+示例日期仅表达 RFC3339 格式，必须替换为真实到期时间。导入已有 OAuth 记录时，请同时保留 `refresh_token`、`code_verifier`、`client_id` 和 `dpop_private_key`；兼容 `dpop_private_key_jwk` 字段。
+
+仅有临时 AK/SK/Token 时，可在有效期内使用，但不能据此自动生成续期材料。导入会校验凭据并拒绝无效数据；删除账户会同时删除本服务保存的对应凭据文件。
+
+## 调用 OpenAI 兼容 API
+
+客户端配置：
+
+```text
+Base URL: http://127.0.0.1:7866/v1
+API Key:  config.json 中的 api_key
+Model:    从 /v1/models 或面板模型目录复制
+```
+
+查询模型：
+
+```sh
+curl http://127.0.0.1:7866/v1/models \
+  -H "Authorization: Bearer <API_KEY>"
+```
+
+对话：
+
+```sh
+curl http://127.0.0.1:7866/v1/chat/completions \
+  -H "Authorization: Bearer <API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"GLM-5.2","messages":[{"role":"user","content":"你好"}],"stream":true}'
+```
+
+`GLM-5.2` 仅为示例，请替换为账号可用模型。设 `stream:false` 可请求聚合后的普通 JSON 响应；工具使用 OpenAI 风格的 `tools` / `tool_calls` / `tool_call_id`。
+
+图片使用支持多模态的模型，消息形状为：
+
+```json
+{
+  "model": "<支持图片的模型ID>",
+  "messages": [{
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "描述图片"},
+      {"type": "image_url", "image_url": {"url": "data:image/png;base64,<BASE64>"}}
+    ]
+  }],
+  "stream": true
+}
+```
+
+当前网关实现 Chat Completions，不提供 `/v1/responses`。上游的采样参数、工具选择和多模态支持仍可能因模型而异。
+
+## 积分、签到与定时行为
+
+- **套餐积分**来自 SNAP 的账户统计接口，保留小数；总额和基础/赠送等分类不会重复相加。
+- 「刷新额度」查询真实积分余额；查询失败会保留已有缓存并显示错误，未查询时显示未知。
+- 页面普通刷新读取余额缓存，不会每次轮询都领取积分。模型页「重新获取」可主动刷新模型目录。
+- 「签到」处理 CodeArts 的活动领取与确认；活动资格和金额来自当前账号的活动列表。
+- `credits_auto_claim:true` 时，后台轮询会尝试签到及新用户活动。
+- `watch.enabled:true` 时，后台校验登录态并按条件续期；关闭后仍可手动操作。
+
+自动生成的默认配置开启活动积分领取与凭据看护；如希望只手动操作，将 `credits_auto_claim` 或 `watch.enabled` 设为 false 后重启。
+
+## 配置
+
+[config.example.json](config.example.json) 是字段示例，密钥留空。直接首次启动会生成可用配置；手工复制示例时应填入自己的密钥，或设置对应环境变量。
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `listen` | `:7866` | HTTP 监听地址；仅本机访问可设 `127.0.0.1:7866` |
+| `api_key` / `admin_key` | 首次随机生成 | API 与管理鉴权 |
+| `auth_dir` | `./auths` | CodeArts 凭据目录 |
+| `state_file` | `./data/state.json` | 账号池状态 |
+| `default_model` | `glm-5.2` | 请求省略模型时的默认值 |
+| `max_concurrent` | `1` | 单账号并发上限 |
+| `cooldown.soft_rate` | `60s` | 临时限流冷却 |
+| `cooldown.err_threshold` | `3` | 连续错误阈值 |
+| `cooldown.err_cooldown` | `10m` | 错误冷却 |
+| `queue_retry_seconds` | `10` | 排队重试间隔；缺省/0 使用内部默认值 |
+| `queue_max_attempts` | `30` | 排队重试上限；缺省/0 使用内部默认值 |
+| `upstream.timeout_seconds` | `120` | 上游客户端超时配置 |
+| `credits_auto_claim` | `true` | 后台活动积分领取 |
+| `watch.enabled` | `true` | 后台凭据看护 |
+| `watch.poll_minutes` | `30` | 后台轮询间隔 |
+| `watch.refresh_skew_minutes` | `30` | 临近到期续期窗口 |
+
+环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
+
+面板「服务配置」不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**所有在线配置修改均需重启生效**。环境变量覆盖的配置仍需修改部署环境后重启。
+
+## 数据与日志
+
+```text
+config.json                 配置与网关/管理密钥
+auths/codearts-*.json        CodeArts 凭据及续期材料
+data/state.json             账号池持久状态
+data/state.json.chats.json   会话关联状态
+data/requests/              脱敏请求元数据 JSONL
+```
+
+用量页展示当前进程累计指标和近期记录，不把它当作跨重启的完整账单。请求归档默认保留 7 天，只记录请求 ID、模型、状态、耗时及用量等元数据，不记录提示词、模型正文或鉴权头。运行日志为有界内存快照。
+
+凭据文件含敏感材料，应与配置一并备份并限制访问。`auths/`、`data/`、`runtime/`、真实 `config.json` 和 `references/` 均已加入 Git/Docker 忽略规则。
+
+## 开发与测试
+
+```sh
+go test ./...
+go vet ./...
+node --check internal/server/panel.js
+node --test internal/server/panel_frontend.test.cjs
+```
+
+具备受支持 C 编译器的环境可运行：
+
+```sh
+go test -race ./...
+```
+
+主要目录：
+
+```text
+cmd/server/          启动、配置校验及原子保存
+cmd/login/           CodeArts 命令行登录工具
+internal/auth/       凭据解析、校验和持久化
+internal/pool/       账号调度、刷新、余额缓存
+internal/upstream/   华为云 HMAC / DPoP、模型、聊天、余额与活动协议
+internal/server/     OpenAI 接口、管理接口及嵌入式面板
+internal/scheduler/  后台凭据看护与活动调度
+internal/reqlog/     请求指标与脱敏归档
+docs/                协议提取文档
+references/          本地参考仓库，运行与构建均不依赖它
+```
+
+协议出处、历史接口和仓库间差异见 [CodeArts API 文档](docs/codearts-api.md)。该文档保留参考仓库的历史福利接口，不代表当前项目仍支持这些入口。源码与面板测试不替代真实账号联调；账号套餐、模型清单及活动规则仍由华为云决定。
+
+## 开源来源
+
+采用 MIT 许可证，保留上游版权声明。来源与版本说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，许可证见 [LICENSE](LICENSE)。
