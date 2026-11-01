@@ -1,6 +1,7 @@
 package reqlog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,5 +260,70 @@ func TestArchivePruneHonorsSize(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "requests-2026-09-22.jsonl" {
 		t.Fatalf("remaining = %+v, want newest file only", entries)
+	}
+}
+
+// 用量页要从 data/requests 读回重启前的记录：History 直接看归档，
+// 与进程内指标是否为零无关，缓存只影响扫描频率。
+func TestHistoryReadsArchiveAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	before := New(Config{Enabled: true, Dir: dir, RetentionDays: 7})
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for i := 0; i < 3; i++ {
+		before.Record(Event{
+			Time:        base.Add(time.Duration(i) * time.Minute),
+			RequestID:   fmt.Sprintf("req-%d", i),
+			Model:       "glm-5.2",
+			Status:      200,
+			OK:          true,
+			Outcome:     OutcomeSuccess,
+			DurationMs:  100,
+			TotalTokens: 10,
+		})
+	}
+	before.Record(Event{
+		Time:       base.Add(5 * time.Minute),
+		RequestID:  "req-fail",
+		Model:      "glm-5.2",
+		Status:     500,
+		Outcome:    OutcomeHTTPError,
+		DurationMs: 300,
+	})
+	before.Close()
+
+	// 模拟重启：新的 Recorder 进程指标为 0，归档目录仍在磁盘上。
+	after := New(Config{Enabled: true, Dir: dir, RetentionDays: 7})
+	defer after.Close()
+	if snap := after.Snapshot(); snap.Completed != 0 || len(snap.Recent) != 0 {
+		t.Fatalf("fresh process must start empty: %+v", snap)
+	}
+	h := after.History(10)
+	if h == nil {
+		t.Fatal("history must read the archive left by the previous process")
+	}
+	if h.Completed != 4 || h.Succeeded != 3 || h.Failed != 1 {
+		t.Fatalf("history counts = %d/%d/%d, want 4/3/1", h.Completed, h.Succeeded, h.Failed)
+	}
+	if h.SuccessRate != 75 || h.AvgDurationMs != 150 || h.TotalTokens != 30 {
+		t.Fatalf("history summary = rate:%v avg:%v tokens:%v", h.SuccessRate, h.AvgDurationMs, h.TotalTokens)
+	}
+	if len(h.Recent) != 4 || h.Recent[0].RequestID != "req-fail" {
+		t.Fatalf("history recent = %+v, want newest first", h.Recent)
+	}
+	if !h.From.Equal(base) || !h.To.Equal(base.Add(5*time.Minute)) {
+		t.Fatalf("history window = %v..%v", h.From, h.To)
+	}
+	if again := after.History(10); again != h {
+		t.Fatal("history must be cached for the poll interval")
+	}
+}
+
+// 归档未启用时没有可回看的历史：返回 nil，让调用方保留「没历史」而不是伪造 0。
+func TestHistoryWithoutArchiveIsNil(t *testing.T) {
+	if h := New(Config{}).History(10); h != nil {
+		t.Fatalf("history = %+v, want nil when the archive is disabled", h)
+	}
+	if h := New(Config{Enabled: true, Dir: t.TempDir()}).History(10); h != nil {
+		t.Fatalf("history = %+v, want nil for an empty archive", h)
 	}
 }

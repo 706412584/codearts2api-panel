@@ -224,3 +224,49 @@ func TestLogRingRedactsWholeAuthorizationAndNestedSecrets(t *testing.T) {
 		}
 	}
 }
+
+type usagePayload struct {
+	Completed int64           `json:"completed"`
+	Recent    []reqlog.Event  `json:"recent"`
+	History   *reqlog.History `json:"history"`
+}
+
+// 进程指标随重启清零，但 data/requests 里的归档还在：/admin/api/usage 必须回看它，
+// 否则面板用量页每次重启都变成空态。
+func TestUsageFallsBackToArchiveAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	before := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, RetentionDays: 7})
+	before.Record(reqlog.Event{
+		RequestID: "persisted", Path: "/v1/chat/completions", Model: "glm-5.2",
+		Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess, DurationMs: 120, TotalTokens: 42,
+	})
+	before.Close()
+
+	fresh := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, RetentionDays: 7})
+	defer fresh.Close()
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, RequestLog: fresh})
+
+	var body usagePayload
+	raw := panelRequest(h, http.MethodGet, "/admin/api/usage", "", "")
+	if err := json.Unmarshal(raw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode usage: %v (%s)", err, raw.Body.String())
+	}
+	if body.Completed != 0 || len(body.Recent) != 0 {
+		t.Fatalf("restarted process must start empty: %+v", body)
+	}
+	if body.History == nil || body.History.Completed != 1 || len(body.History.Recent) != 1 || body.History.Recent[0].RequestID != "persisted" {
+		t.Fatalf("usage did not read the archive: %s", raw.Body.String())
+	}
+
+	// 本进程有数据后就不再回看归档（省掉目录扫描），页面用实时指标。
+	fresh.Record(reqlog.Event{RequestID: "live", Path: "/v1/chat/completions", Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess})
+	body = usagePayload{}
+	raw = panelRequest(h, http.MethodGet, "/admin/api/usage", "", "")
+	if err := json.Unmarshal(raw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.History != nil || body.Completed != 1 || len(body.Recent) != 1 || body.Recent[0].RequestID != "live" {
+		t.Fatalf("live process must not read the archive: %s", raw.Body.String())
+	}
+}

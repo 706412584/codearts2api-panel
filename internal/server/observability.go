@@ -81,7 +81,13 @@ func (h *Handler) adminLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) adminUsage(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, h.cfg.RequestLog.Snapshot())
+	snap := h.cfg.RequestLog.Snapshot()
+	// 进程内指标随重启清零，但归档（data/requests）还在：此时带上归档回看，
+	// 页面才不会在每次重启后变成空态。进程已有数据时不回看，省掉一次目录扫描。
+	if snap.Completed == 0 {
+		snap.History = h.cfg.RequestLog.History(reqlog.HistoryLimit)
+	}
+	writeJSON(w, http.StatusOK, snap)
 }
 
 type responseObserver struct {

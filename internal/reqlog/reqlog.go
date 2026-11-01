@@ -111,7 +111,25 @@ type ArchiveStats struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
+// HistoryLimit 面板回看归档时的默认条数上限（与 ReadArchive 的上限一致）。
+const HistoryLimit = 500
+
+// History 归档回看窗口：进程内指标随重启清零，磁盘归档仍在，面板据此在重启后
+// 继续显示用量。各计数只覆盖 Recent 这一批记录，不是整个归档的累计。
+type History struct {
+	From          time.Time `json:"from"`
+	To            time.Time `json:"to"`
+	Completed     int64     `json:"completed"`
+	Succeeded     int64     `json:"succeeded"`
+	Failed        int64     `json:"failed"`
+	SuccessRate   float64   `json:"success_rate"`
+	AvgDurationMs float64   `json:"avg_duration_ms"`
+	TotalTokens   int64     `json:"total_tokens"`
+	Recent        []Event   `json:"recent"`
+}
+
 // Snapshot 一次面板读取的完整指标快照。
+// History 由调用方按需填充：进程已有数据时不必回看归档。
 type Snapshot struct {
 	StartedAt       time.Time    `json:"started_at"`
 	Completed       int64        `json:"completed"`
@@ -123,6 +141,7 @@ type Snapshot struct {
 	AvgDurationMs   float64      `json:"avg_duration_ms"`
 	Recent          []Event      `json:"recent"`
 	Archive         ArchiveStats `json:"archive"`
+	History         *History     `json:"history,omitempty"`
 }
 
 // Recorder 并发安全的有界请求指标与归档记录器。
@@ -136,6 +155,10 @@ type Recorder struct {
 	durationSum int64
 	recent      []Event
 	archive     *archiveWriter
+
+	histMu sync.Mutex
+	histAt time.Time
+	hist   *History
 }
 
 // New 创建记录器；Dir 为空或 Enabled=false 时只启用内存指标。
@@ -230,6 +253,46 @@ func (r *Recorder) ReadArchive(limit int, filter Filter) ([]Event, error) {
 		return nil, nil
 	}
 	return r.archive.read(limit, filter)
+}
+
+// historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档最多保留
+// 7 天，不能每次都重扫目录。回看只在「进程还没有任何请求」时发生，那段时间不会
+// 有新事件落盘，因此 30 秒的缓存不会让操作者看到过期信息。
+const historyTTL = 30 * time.Second
+
+// History 从归档回看最近 limit 条请求（事件时间倒序），汇总成与进程指标同形的数字，
+// 供面板在重启后继续显示用量。归档未启用或没有任何记录时返回 nil。
+func (r *Recorder) History(limit int) *History {
+	if r == nil || r.archive == nil || !r.archive.enabled() {
+		return nil
+	}
+	if limit <= 0 {
+		limit = HistoryLimit
+	}
+	r.histMu.Lock()
+	defer r.histMu.Unlock()
+	if r.hist != nil && time.Since(r.histAt) < historyTTL {
+		return r.hist
+	}
+	events, err := r.archive.read(limit, Filter{})
+	if err != nil || len(events) == 0 {
+		return nil
+	}
+	h := &History{Recent: events, To: events[0].Time, From: events[len(events)-1].Time}
+	var durationSum int64
+	for _, e := range events {
+		h.Completed++
+		if e.OK {
+			h.Succeeded++
+		}
+		durationSum += e.DurationMs
+		h.TotalTokens += e.TotalTokens
+	}
+	h.Failed = h.Completed - h.Succeeded
+	h.SuccessRate = round1(float64(h.Succeeded) / float64(h.Completed) * 100)
+	h.AvgDurationMs = float64(durationSum) / float64(h.Completed)
+	r.histAt, r.hist = time.Now(), h
+	return h
 }
 
 // Close 刷盘并停止后台归档。

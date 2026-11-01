@@ -67,6 +67,22 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  ids.get('themeButton').onclick();
  assert.equal(ids.get('themeIconSun').hidden, false); assert.equal(ids.get('themeIconMoon').hidden, true);
  assert(ids.get('usageChart').innerHTML.includes('<svg'));
+ // 重启后进程指标为 0：用量页要回看本地归档（history），而不是显示空态。
+ const liveUsage = { ...usage, recent: [...usage.recent] };
+ usage.completed = 0; usage.succeeded = 0; usage.failed = 0; usage.recent = [];
+ usage.history = { from: new Date(Date.now() - 3600e3).toISOString(), to: new Date().toISOString(), completed: 7, succeeded: 6, failed: 1, avg_duration_ms: 250,
+  recent: [{ time: new Date(Date.now() - 60e3).toISOString(), model: 'archived-model', ok: true, status: 200, total_tokens: 50, duration_ms: 250 }] };
+ context.location.hash = '#accounts'; events.hashchange(); await tick();
+ context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
+ assert.equal(ids.get('usageCompleted').textContent, '7', 'archive totals must feed the cards');
+ assert.equal(ids.get('usageSuccess').textContent, '85.7%');
+ assert.equal(ids.get('usageCompletedNote').textContent, '来自本地归档（重启前的记录）');
+ assert(ids.get('usageChartNote').textContent.includes('本地归档'));
+ assert(ids.get('usageModelsBody').innerHTML.includes('archived-model'), 'archive rows must feed the model table');
+ context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
+ assert(ids.get('requestLogsBody').innerHTML.includes('archived-model'), 'archive rows must feed the request log');
+ Object.assign(usage, liveUsage); delete usage.history;
+ context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
  assert(ids.get('runtimeLogs').innerHTML.includes('&lt;script&gt;'));
  assert(ids.get('requestLogsBody').innerHTML.includes('upstream &lt;failed&gt; &amp; unavailable'));
  assert(!ids.get('requestLogsBody').innerHTML.includes('upstream <failed>'));

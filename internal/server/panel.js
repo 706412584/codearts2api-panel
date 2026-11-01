@@ -196,14 +196,25 @@
     if (event.total_tokens !== undefined && event.total_tokens !== null) return Number(event.total_tokens) || 0;
     return (Number(event.prompt_tokens) || 0) + (Number(event.completion_tokens) || 0);
   }
-  function renderUsage(data) {
+  // 进程内指标重启即清零。此时后端会带 history（本地归档 data/requests 的回看），
+  // 页面优先用它，否则每次重启后都只剩空态。
+  function usageView(data) {
     const recent = Array.isArray(data.recent) ? data.recent : [];
-    $('usageCompleted').textContent = number(data.completed);
-    $('usageSuccess').textContent = data.completed > 0 ? (Number(data.succeeded || 0) / data.completed * 100).toFixed(1) + '%' : '—';
-    $('usageOutcomes').textContent = '成功 ' + number(data.succeeded) + ' · 失败 ' + number(data.failed);
-    $('usageDuration').textContent = duration(data.avg_duration_ms);
+    const history = data.history && Array.isArray(data.history.recent) ? data.history : null;
+    if (!recent.length && history && history.recent.length) return { fromArchive: true, recent: history.recent, totals: history };
+    return { fromArchive: false, recent, totals: data };
+  }
+  function renderUsage(data) {
+    const view = usageView(data), recent = view.recent, totals = view.totals;
+    $('usageCompleted').textContent = number(totals.completed);
+    $('usageSuccess').textContent = totals.completed > 0 ? (Number(totals.succeeded || 0) / totals.completed * 100).toFixed(1) + '%' : '—';
+    $('usageOutcomes').textContent = '成功 ' + number(totals.succeeded) + ' · 失败 ' + number(totals.failed);
+    $('usageDuration').textContent = duration(totals.avg_duration_ms);
     $('usageTokens').textContent = recent.length ? number(recent.reduce((sum, row) => sum + tokenTotal(row), 0)) : '—';
-    $('usageChartNote').textContent = '基于最近 ' + recent.length + ' 条记录，按小时聚合；进程重启后指标重新累计。';
+    $('usageCompletedNote').textContent = view.fromArchive ? '来自本地归档（重启前的记录）' : '当前服务进程累计';
+    $('usageChartNote').textContent = view.fromArchive
+      ? '来自本地归档 data/requests：最近 ' + recent.length + ' 条记录按小时聚合' + (totals.from ? '，覆盖 ' + date(totals.from) + ' 起。' : '。')
+      : '基于最近 ' + recent.length + ' 条记录，按小时聚合；进程重启后指标重新累计。';
     const grouped = new Map();
     recent.forEach(row => { const id = row.model || '未知模型'; const g = grouped.get(id) || { requests: 0, succeeded: 0, tokens: 0, duration: 0 }; g.requests++; g.succeeded += Number(eventOK(row)); g.tokens += tokenTotal(row); g.duration += Number(row.duration_ms) || 0; grouped.set(id, g); });
     $('usageModelsBody').innerHTML = [...grouped].sort((a, b) => b[1].tokens - a[1].tokens).map(([id, g]) => '<tr><td class="mono">' + esc(id) + '</td><td>' + number(g.requests) + '</td><td>' + number(g.succeeded) + '</td><td>' + number(g.tokens) + '</td><td>' + duration(g.duration / g.requests) + '</td></tr>').join('') || emptyRow(5, '暂无请求。通过 /v1/chat/completions 发起对话后可查看用量。');
@@ -223,8 +234,9 @@
     $('usageChart').innerHTML = svg + '</svg>';
   }
   function renderRequestLogs(data) {
-    const recent = Array.isArray(data.recent) ? [...data.recent].sort((a, b) => new Date(b.time) - new Date(a.time)) : [];
-    $('requestLogsBody').innerHTML = recent.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, '当前进程尚无请求记录。');
+    const view = usageView(data);
+    const recent = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
+    $('requestLogsBody').innerHTML = recent.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, view.fromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
   }
   function renderRuntimeLogs() {
     const box = $('runtimeLogs');
