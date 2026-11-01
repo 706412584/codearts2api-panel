@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -8,9 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"codearts2api-panel/internal/reqlog"
 )
+
+// maxErrorBodyBytes 只保留足够解析错误消息的响应前缀，失败响应不应长期占用大块内存。
+const maxErrorBodyBytes = 64 << 10
 
 type LogEntry struct {
 	TS   time.Time `json:"ts"`
@@ -29,7 +34,9 @@ type Ring struct {
 var credentialLogPattern = regexp.MustCompile(`(?i)(["']?(?:access_key_id|secret_access_key|security_token|securitytoken|cloud_dragon_token|refresh_token|access_token|code_verifier|dpop_private_key|dpop|authorization|x-auth-token|x-security-token|api_key|admin_key|secret)["']?\s*[:=]\s*)[^\r\n]*`)
 
 func NewRing(capacity int) *Ring {
-	if capacity <= 0 { capacity = 500 }
+	if capacity <= 0 {
+		capacity = 500
+	}
 	return &Ring{capacity: capacity}
 }
 
@@ -83,6 +90,7 @@ type responseObserver struct {
 	wrote     bool
 	started   time.Time
 	firstByte time.Duration
+	errorBody []byte
 }
 
 func (w *responseObserver) WriteHeader(status int) {
@@ -99,6 +107,13 @@ func (w *responseObserver) Write(p []byte) (int, error) {
 	}
 	if w.firstByte == 0 {
 		w.firstByte = time.Since(w.started)
+	}
+	if w.status >= http.StatusBadRequest && len(w.errorBody) < maxErrorBodyBytes {
+		body := p
+		if remaining := maxErrorBodyBytes - len(w.errorBody); len(body) > remaining {
+			body = body[:remaining]
+		}
+		w.errorBody = append(w.errorBody, body...)
 	}
 	return w.ResponseWriter.Write(p)
 }
@@ -151,15 +166,47 @@ func safeLogLabel(value string) string {
 		return r
 	}, value)
 	if len(value) > 160 {
-		return value[:160]
+		value = value[:160]
+		for !utf8.ValidString(value) {
+			value = value[:len(value)-1]
+		}
 	}
 	return value
+}
+
+func requestErrorMessage(body []byte) string {
+	var response struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &response)
+	return response.Error.Message
+}
+
+func safeRequestError(value string) string {
+	return credentialLogPattern.ReplaceAllString(safeLogLabel(value), `${1}"[REDACTED]"`)
 }
 
 func (h *Handler) finishRequest(event reqlog.Event, observed *responseObserver, started time.Time) {
 	event.Status = observed.status
 	event.DurationMs = time.Since(started).Milliseconds()
 	event.TTFBMs = observed.firstByte.Milliseconds()
+	if !event.OK {
+		event.Error = safeRequestError(event.Error)
+		if event.Error == "" {
+			event.Error = safeRequestError(requestErrorMessage(observed.errorBody))
+		}
+		if event.Error == "" {
+			event.Error = fmt.Sprintf("request failed with HTTP %d", event.Status)
+		}
+	} else {
+		event.Error = ""
+	}
 	h.cfg.RequestLog.Record(event)
-	fmt.Fprintf(h.logs, "chat request=%s model=%s status=%d ok=%t duration_ms=%d tokens=%d\n", event.RequestID, safeLogLabel(event.Model), event.Status, event.OK, event.DurationMs, event.TotalTokens)
+	line := fmt.Sprintf("chat request=%s model=%s status=%d ok=%t duration_ms=%d tokens=%d", event.RequestID, safeLogLabel(event.Model), event.Status, event.OK, event.DurationMs, event.TotalTokens)
+	if event.Error != "" {
+		line += fmt.Sprintf(" error=%q", event.Error)
+	}
+	fmt.Fprintln(h.logs, line)
 }

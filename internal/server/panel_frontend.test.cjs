@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const base = __dirname + '/';
 const html = fs.readFileSync(base + 'panel.html', 'utf8');
 const script = fs.readFileSync(base + 'panel.js', 'utf8');
-const all = [], ids = new Map(), events = {}, requests = [], copiedURLs = [];
+const all = [], ids = new Map(), events = {}, requests = [], copiedURLs = [], intervals = [];
 let oauthStarts = 0, oauthURLOverride = '', clipboardError = false;
 class Element {
   constructor(attrs = '') { this.attrs = attrs; this.id = /\bid="([^"]+)"/.exec(attrs)?.[1] || ''; this.value = ''; this.textContent = ''; this.innerHTML = ''; this.hidden = /\bhidden\b/.test(attrs); this.open = false; this.disabled = false; this.dataset = {}; this.handlers = {}; this.classes = new Set((/\bclass="([^"]+)"/.exec(attrs)?.[1] || '').split(' ')); for (const a of attrs.matchAll(/data-([\w-]+)="([^"]*)"/g)) this.dataset[a[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = a[2]; this.classList = { add: x => this.classes.add(x), remove: x => this.classes.delete(x), contains: x => this.classes.has(x), toggle: (x, enabled) => { if (enabled === undefined) enabled = !this.classes.has(x); enabled ? this.classes.add(x) : this.classes.delete(x); return enabled; } }; }
@@ -32,9 +32,9 @@ const selector = s => s === '.view' ? all.filter(e => e.classes.has('view')) : /
 const storage = () => { const values = new Map(); return { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }; };
 const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
 const overview = { stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
-const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, recent: [{ time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, total_tokens: 25, duration_ms: 500 }] };
-const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} } };
-const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path === 'usage') data = usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: true } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
+const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, recent: [{ time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, total_tokens: 25, duration_ms: 500 }, { time: new Date().toISOString(), model: 'failed-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream <failed> & unavailable', duration_ms: 100 }] };
+const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
+const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path === 'usage') data = usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: true } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  vm.runInContext(script, context);
@@ -57,6 +57,23 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(ids.get('themeIconSun').hidden, false); assert.equal(ids.get('themeIconMoon').hidden, true);
  assert(ids.get('usageChart').innerHTML.includes('<svg'));
  assert(ids.get('runtimeLogs').innerHTML.includes('&lt;script&gt;'));
+ assert(ids.get('requestLogsBody').innerHTML.includes('upstream &lt;failed&gt; &amp; unavailable'));
+ assert(!ids.get('requestLogsBody').innerHTML.includes('upstream <failed>'));
+ const logPoll = intervals.find(timer => timer.ms === 5000);
+ assert(logPoll, 'logs must have a five-second refresh timer');
+ context.location.hash = '#accounts'; events.hashchange(); await tick(); await tick();
+ let beforePoll = requests.length;
+ logPoll.cb(); await tick();
+ assert.equal(requests.length, beforePoll, 'polling must not run outside the logs page');
+ usage.recent.push({ time: new Date().toISOString(), model: 'live-failure', ok: false, outcome: 'stream_error', status: 200, error: 'live stream failed' });
+ context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
+ beforePoll = requests.length;
+ logPoll.cb(); await tick(); await tick();
+ assert.equal(requests.length, beforePoll + 2, 'each visible log poll fetches logs and usage once');
+ assert(ids.get('requestLogsBody').innerHTML.includes('live stream failed'));
+ document.hidden = true; beforePoll = requests.length; logPoll.cb(); await tick();
+ assert.equal(requests.length, beforePoll, 'hidden tabs must not poll');
+ document.hidden = false;
  assert(!ids.get('configEditor').value.includes('server-secret')); assert(!ids.get('configEditor').value.includes('api-secret'));
  ids.get('newAdminKey').value = 'rotated-secret'; ids.get('newAPIKey').value = 'new-api-secret';
  await ids.get('saveConfigButton').onclick();
@@ -131,6 +148,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(!ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  context.fetch = originalFetch;
  ids.get('logoutButton').onclick(); assert(ids.get('loginDialog').open); assert.equal(context.sessionStorage.getItem('codearts2api-panel.admin-key'), undefined);
- console.log('PASS: five views, OAuth link generation/copy/reset and visible callback, escaped API content, session-key login, secret redaction, restart notice and explicit deletion gate.');
+ console.log('PASS: five views, live log polling, escaped recent failures, OAuth controls, session-key login, secret redaction and deletion gate.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

@@ -10,9 +10,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
 	"codearts2api-panel/internal/pool"
+	"codearts2api-panel/internal/reqlog"
 	"codearts2api-panel/internal/upstream"
 )
 
@@ -148,6 +150,55 @@ func TestRequestMetricsUseActualUsageAndRejectTruncatedSuccess(t *testing.T) {
 	}
 }
 
+func TestRecentFailureIncludesRedactedErrorAndSuccessClearsIt(t *testing.T) {
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p})
+	w := panelRequest(h, "POST", "/v1/chat/completions", `{"messages":[]}`, "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d", w.Code)
+	}
+	recent := h.cfg.RequestLog.Snapshot().Recent
+	if len(recent) != 1 || recent[0].OK || recent[0].Error != "no accounts configured" {
+		t.Fatalf("failed request not recorded: %+v", recent)
+	}
+	entries := h.logs.Snapshot()
+	if len(entries) != 1 || entries[0].Ch != "chat" || !strings.Contains(entries[0].Text, "no accounts configured") {
+		t.Fatalf("failure must be one chat log line: %+v", entries)
+	}
+
+	observed := &responseObserver{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK, started: time.Now()}
+	h.finishRequest(reqlog.Event{Error: `authorization=private-token`, OK: true}, observed, time.Now())
+	recent = h.cfg.RequestLog.Snapshot().Recent
+	if !recent[0].OK || recent[0].Error != "" {
+		t.Fatalf("successful retry must not retain failure: %+v", recent[0])
+	}
+}
+
+func TestFailureErrorCapturesResponseSummary(t *testing.T) {
+	h := NewHandler(Config{})
+	observed := &responseObserver{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK, started: time.Now()}
+	writeOpenAIError(observed, http.StatusBadRequest, "invalid_request", "messages must not be empty")
+	h.finishRequest(reqlog.Event{}, observed, time.Now())
+	recent := h.cfg.RequestLog.Snapshot().Recent
+	if len(recent) != 1 || recent[0].Error != "messages must not be empty" {
+		t.Fatalf("response error not recorded: %+v", recent)
+	}
+}
+
+func TestFailureErrorIsBoundedAndRedacted(t *testing.T) {
+	h := NewHandler(Config{})
+	observed := &responseObserver{ResponseWriter: httptest.NewRecorder(), status: http.StatusBadGateway, started: time.Now()}
+	h.finishRequest(reqlog.Event{Error: "authorization=private-token"}, observed, time.Now())
+	recent := h.cfg.RequestLog.Snapshot().Recent
+	if len(recent) != 1 || strings.Contains(recent[0].Error, "private-token") || !strings.Contains(recent[0].Error, "[REDACTED]") {
+		t.Fatalf("unsafe failure error: %+v", recent)
+	}
+	h.finishRequest(reqlog.Event{Error: strings.Repeat("错误", 100)}, observed, time.Now())
+	if recent = h.cfg.RequestLog.Snapshot().Recent; len(recent[0].Error) > 160 || !utf8.ValidString(recent[0].Error) {
+		t.Fatalf("unbounded or invalid error: %q", recent[0].Error)
+	}
+}
+
 func TestLogRingRedactsCredentialsAndIsBounded(t *testing.T) {
 	ring := NewRing(2)
 	io.WriteString(ring, "first\n")
@@ -168,6 +219,8 @@ func TestLogRingRedactsWholeAuthorizationAndNestedSecrets(t *testing.T) {
 	} {
 		ring := NewRing(1)
 		io.WriteString(ring, line)
-		if strings.Contains(ring.Snapshot()[0].Text, "PRIVATE") { t.Fatalf("credentials leaked: %s", ring.Snapshot()[0].Text) }
+		if strings.Contains(ring.Snapshot()[0].Text, "PRIVATE") {
+			t.Fatalf("credentials leaked: %s", ring.Snapshot()[0].Text)
+		}
 	}
 }

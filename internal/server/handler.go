@@ -715,6 +715,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 池里一个账号都没有：直接给出明确错误，别走完选号流程再报成「账号都不可用」。
 	// 客户端拿到 no_accounts 才知道是运维侧没配置账号，而不是账号被禁用/冷却。
 	if h.cfg.Pool == nil || len(h.cfg.Pool.Accounts()) == 0 {
+		event.Error = "no accounts configured"
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_accounts", "no accounts configured; add one in the panel")
 		return
 	}
@@ -937,6 +938,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 			if werr != nil {
 				event.Outcome = reqlog.OutcomeStreamError
+				event.Error = werr.Error()
 				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
 				if !isParamInvalidError(werr) {
 					h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
