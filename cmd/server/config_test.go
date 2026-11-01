@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -172,5 +173,41 @@ func TestStripJSONCommentsEdgeCases(t *testing.T) {
 	// 孤立的 '/' 不能 panic 或死循环（结果是否合法 JSON 无所谓）。
 	for _, in := range []string{"{", "/", `{"a":1}/`, `{"a":1}/*`} {
 		_ = stripJSONComments([]byte(in))
+	}
+}
+
+// 签到时点：默认 9/21，配置里允许乱序/重复/非法值，env 用 "9,21" 形式覆盖。
+func TestCheckinHoursConfigAndEnv(t *testing.T) {
+	t.Setenv("CA2A_API_KEY", "test-key")
+	t.Setenv("CA2A_CHECKIN_HOURS", "")
+	if cfg, err := Load(""); err != nil || !reflect.DeepEqual(cfg.CheckinHours, []int{9, 21}) {
+		t.Fatalf("default checkin hours = %v err=%v", cfg.CheckinHours, err)
+	}
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"checkin_hours":[21,9,9,25]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := Load(path); err != nil || !reflect.DeepEqual(cfg.CheckinHours, []int{9, 21}) {
+		t.Fatalf("normalized checkin hours = %v err=%v", cfg.CheckinHours, err)
+	}
+
+	// 全部非法等同于没配置：回落默认，而不是「一个时点都不跑」。
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"checkin_hours":[42,-1]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := Load(bad); err != nil || !reflect.DeepEqual(cfg.CheckinHours, []int{9, 21}) {
+		t.Fatalf("invalid hours must fall back to default: %v err=%v", cfg.CheckinHours, err)
+	}
+
+	t.Setenv("CA2A_CHECKIN_HOURS", "7,22")
+	if cfg, err := Load(path); err != nil || !reflect.DeepEqual(cfg.CheckinHours, []int{7, 22}) {
+		t.Fatalf("env override ignored: %v err=%v", cfg.CheckinHours, err)
+	}
+	// 非法 env 不覆盖配置文件里的值。
+	t.Setenv("CA2A_CHECKIN_HOURS", "nine")
+	if cfg, err := Load(path); err != nil || !reflect.DeepEqual(cfg.CheckinHours, []int{9, 21}) {
+		t.Fatalf("invalid env must keep config value: %v err=%v", cfg.CheckinHours, err)
 	}
 }

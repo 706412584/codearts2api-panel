@@ -262,29 +262,128 @@
     const copy = { ...config, api_key: '', admin_key: '' };
     return JSON.stringify(copy, null, 2);
   }
+  // 表单字段 ↔ 配置点路径。填充与读取共用这张表，新增字段只改这里和 panel.html。
+  // 未列出的字段（含未知扩展字段）在表单模式下原样保留，要用就用 Raw JSON。
+  const CONFIG_FIELDS = [
+    ['cfgListen', 'listen', 'text'],
+    ['cfgDefaultModel', 'default_model', 'text'],
+    ['cfgAuthDir', 'auth_dir', 'text'],
+    ['cfgStateFile', 'state_file', 'text'],
+    ['cfgOAuthCallbackHost', 'oauth_callback_host', 'text'],
+    ['cfgLoginClientID', 'login_client_id', 'text'],
+    ['cfgMaxConcurrent', 'max_concurrent', 'int'],
+    ['cfgKeepaliveWindow', 'keepalive_window', 'text'],
+    ['cfgQueueRetrySeconds', 'queue_retry_seconds', 'int'],
+    ['cfgQueueMaxAttempts', 'queue_max_attempts', 'int'],
+    ['cfgSoftRate', 'cooldown.soft_rate', 'text'],
+    ['cfgErrThreshold', 'cooldown.err_threshold', 'int'],
+    ['cfgErrCooldown', 'cooldown.err_cooldown', 'text'],
+    ['cfgTimeoutSeconds', 'upstream.timeout_seconds', 'int'],
+    ['cfgWatchEnabled', 'watch.enabled', 'bool'],
+    ['cfgCreditsAutoClaim', 'credits_auto_claim', 'bool'],
+    ['cfgPollMinutes', 'watch.poll_minutes', 'int'],
+    ['cfgRefreshSkew', 'watch.refresh_skew_minutes', 'int'],
+    ['cfgKeepaliveInterval', 'watch.keepalive_interval_minutes', 'int'],
+    ['cfgCheckinHours', 'checkin_hours', 'hours'],
+  ];
+  const configPathGet = (source, path) => path.split('.').reduce((value, key) => (value === null || value === undefined ? undefined : value[key]), source);
+  function configPathSet(target, path, value) {
+    const keys = path.split('.');
+    let cursor = target;
+    for (const key of keys.slice(0, -1)) { if (!cursor[key] || typeof cursor[key] !== 'object') cursor[key] = {}; cursor = cursor[key]; }
+    cursor[keys[keys.length - 1]] = value;
+  }
+  function markConfigDirty() { $('configEditor').dataset.dirty = 'true'; }
+  function markConfigClean() { $('configEditor').dataset.dirty = 'false'; }
+  function fillConfigForm(config) {
+    for (const [id, path, kind] of CONFIG_FIELDS) {
+      const input = $(id), value = configPathGet(config, path);
+      if (kind === 'bool') input.checked = value === true;
+      else if (kind === 'hours') input.value = Array.isArray(value) ? value.join(', ') : '';
+      else input.value = value === null || value === undefined ? '' : String(value);
+      input.oninput = markConfigDirty; input.onchange = markConfigDirty;
+    }
+  }
+  // 以最近读到的配置为底只覆盖表单字段：表单没覆盖到的键（含未知字段）不会丢。
+  function readConfigForm(config) {
+    const next = JSON.parse(JSON.stringify(config || {}));
+    for (const [id, path, kind] of CONFIG_FIELDS) {
+      const input = $(id), raw = String(input.value === undefined ? '' : input.value).trim();
+      if (kind === 'bool') { configPathSet(next, path, input.checked === true); continue; }
+      if (kind === 'hours') {
+        const hours = raw === '' ? [] : raw.split(',').map(part => part.trim()).filter(Boolean).map(Number);
+        if (hours.some(hour => !Number.isInteger(hour) || hour < 0 || hour > 23)) throw new Error('签到时点必须是 0-23 的整数，逗号分隔');
+        configPathSet(next, path, hours);
+        continue;
+      }
+      if (kind === 'int') {
+        if (raw === '') continue; // 留空＝沿用原值，免得把必填项清成 0
+        const number = Number(raw);
+        if (!Number.isFinite(number)) throw new Error(path + ' 必须是数字');
+        configPathSet(next, path, Math.trunc(number));
+        continue;
+      }
+      configPathSet(next, path, raw);
+    }
+    return next;
+  }
+  let configMode = 'form';
+  function renderConfigMode() {
+    const form = configMode === 'form';
+    $('configForm').hidden = !form;
+    $('configRaw').hidden = form;
+    for (const [id, active] of [['configModeForm', form], ['configModeRaw', !form]]) {
+      $(id).classList.toggle('active', active);
+      $(id).setAttribute('aria-selected', String(active));
+    }
+    $('configHelp').textContent = form ? '表单只覆盖以上字段；其余字段请切到 Raw JSON 编辑。保存不会自动重启服务。' : '请使用合法 JSON。保存不会自动重启服务。';
+  }
+  let loadedConfig = {};
   async function loadConfig() {
     const data = await api('config');
-    $('configEditor').value = configForEditor(data.config || {});
-    $('configEditor').dataset.dirty = 'false';
+    // 服务端已把密钥脱敏成空串；这里再显式清一次，保证表单克隆出的 patch 永不带密钥。
+    loadedConfig = { ...(data.config || {}), api_key: '', admin_key: '' };
+    $('configEditor').value = configForEditor(loadedConfig);
+    fillConfigForm(loadedConfig);
+    markConfigClean();
     $('newAdminKey').value = ''; $('newAPIKey').value = '';
     const overrides = Array.isArray(data.env_overrides) ? data.env_overrides : [];
     $('envOverrides').hidden = !overrides.length;
     $('envOverrides').textContent = overrides.length ? '以下字段由环境变量覆盖：' + overrides.join('、') + '。请同时检查启动环境。' : '';
+    renderConfigMode();
   }
-  $('configEditor').oninput = () => { $('configEditor').dataset.dirty = 'true'; };
+  // 切换模式一律重新读取配置文件（未保存的修改随之丢弃，这是页面上写明的行为）。
+  async function switchConfigMode(mode) {
+    if (mode === configMode) return;
+    configMode = mode;
+    renderConfigMode();
+    try { await loadConfig(); toast('已重新读取配置文件'); }
+    catch (error) { toast(error.message, true); }
+  }
+  $('configModeForm').onclick = () => switchConfigMode('form');
+  $('configModeRaw').onclick = () => switchConfigMode('raw');
+  $('configEditor').oninput = markConfigDirty;
   $('saveConfigButton').onclick = async () => {
     let config;
-    try { config = JSON.parse($('configEditor').value); if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('请填写配置对象'); }
-    catch (error) { toast('配置 JSON 无效：' + error.message, true); return; }
+    // 以当前界面模式为准：Raw 模式解析编辑框，表单模式从输入控件重建。
+    if (configMode === 'raw') {
+      try { config = JSON.parse($('configEditor').value); if (!config || Array.isArray(config) || typeof config !== 'object') throw new Error('请填写配置对象'); }
+      catch (error) { toast('配置 JSON 无效：' + error.message, true); return; }
+    } else {
+      try { config = readConfigForm(loadedConfig); }
+      catch (error) { toast('表单有无效值：' + error.message, true); return; }
+    }
     config.api_key = $('newAPIKey').value || config.api_key || '';
     config.admin_key = $('newAdminKey').value || config.admin_key || '';
     $('newAPIKey').value = ''; $('newAdminKey').value = '';
-    $('configEditor').value = configForEditor(config);
     $('saveConfigButton').disabled = true;
     try {
       const data = await api('config', { method: 'PUT', body: JSON.stringify(config) });
       if (data.ok === false) throw new Error(data.message || '保存失败');
-      $('configEditor').value = configForEditor(data.config || config); $('configEditor').dataset.dirty = 'false';
+      loadedConfig = { ...(data.config || config), api_key: '', admin_key: '' };
+      $('configEditor').value = configForEditor(loadedConfig);
+      fillConfigForm(loadedConfig);
+      markConfigClean();
       $('configNotice').textContent = '配置已保存，重启服务后生效。若修改管理密钥，请在重启后使用新密钥连接。';
       toast('配置已保存，请重启服务以应用修改。');
     } catch (error) { toast(error.message, true); }

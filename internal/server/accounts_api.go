@@ -48,7 +48,9 @@ func (h *Handler) adminImport(w http.ResponseWriter, r *http.Request) {
 			for _, path := range created {
 				_ = os.Remove(path)
 			}
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": "保存失败，本批次已回滚"})
+			// 带上底层错误：权限类失败自带 Docker 挂载解法指引（见 auth.permHint），
+			// 只回「本批次已回滚」等于把最有用的那半句丢掉。
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "message": "保存失败，本批次已回滚：" + err.Error()})
 			return
 		}
 		created = append(created, filepath.Join(h.cfg.AuthDir, a.FileName()))
