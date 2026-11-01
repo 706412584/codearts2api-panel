@@ -352,7 +352,7 @@ func (c *Client) fetchBuiltinModels(accountID string, cred SignCredential) ([]Mo
 		if id == "" {
 			continue
 		}
-		mi := ModelInfo{ID: id, Name: id, ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc}
+		mi := ModelInfo{ID: id, Name: firstNonEmpty(m.ModelName, id), ContextWindow: m.ContextWindow, MaxTokens: m.MaxTokens, Desc: m.ModelDesc}
 		if len(m.Credit) > 0 {
 			mi.RatioDisplay = m.Credit[0].RatioDisplay
 		}

@@ -162,10 +162,11 @@
 
   function renderModels() {
     const query = $('modelSearch').value.toLowerCase().trim();
-    const filtered = models.filter(m => String(m.id).toLowerCase().includes(query));
+    const filtered = models.filter(m => (String(m.id) + ' ' + (m.model_name || '')).toLowerCase().includes(query));
     $('modelCount').textContent = filtered.length;
     $('modelsBody').innerHTML = filtered.map(m => {
-      return '<tr><td class="mono">' + esc(m.id) + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
+      const name = m.model_name ? '<small class="model-subtitle">' + esc(m.model_name) + '</small>' : '';
+      return '<tr><td class="mono">' + esc(m.id) + name + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
     }).join('') || emptyRow(6, query ? '没有符合条件的模型。' : '模型目录为空，请添加账户后刷新。');
   }
   $('modelSearch').oninput = renderModels;

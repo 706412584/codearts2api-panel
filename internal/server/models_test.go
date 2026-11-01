@@ -60,7 +60,7 @@ func TestPickAccountPrefersAccountWithModel(t *testing.T) {
 
 func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	entries := modelEntries([]upstream.ModelInfo{
-		{ID: "GLM-5.2", ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
+		{ID: "GLM-5.2", Name: "GLM 5.2", ContextWindow: 202752, MaxTokens: 8192, RatioDisplay: "0.7x"},
 		{ID: "deepseek-v4-pro-0813", ContextWindow: 1048576},
 	})
 	byID := map[string]map[string]any{}
@@ -82,6 +82,9 @@ func TestModelEntriesAliasesStaticAndRatio(t *testing.T) {
 	}
 	if byID["GLM-5.2"]["ratio_display"] != "0.7x" {
 		t.Errorf("积分倍率应传给面板，got=%v", byID["GLM-5.2"])
+	}
+	if byID["GLM-5.2"]["model_name"] != "GLM 5.2" {
+		t.Errorf("模型名称应传给面板，got=%v", byID["GLM-5.2"])
 	}
 
 	fallback := modelEntries(nil)

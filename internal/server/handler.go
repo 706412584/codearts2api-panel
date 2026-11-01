@@ -517,41 +517,46 @@ func (h *Handler) modelKnownUnusable(model string) bool {
 func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 	out := make([]map[string]any, 0, len(infos)+len(staticModels))
 	seen := map[string]bool{}
-	add := func(id string, ctx, maxOut int64, ratioDisplay string) {
-		if id == "" || seen[id] {
+	add := func(mi upstream.ModelInfo) {
+		if mi.ID == "" || seen[mi.ID] {
 			return
 		}
-		seen[id] = true
+		seen[mi.ID] = true
+		ctx := mi.ContextWindow
 		if ctx == 0 {
 			ctx = 131072 // 兜底
 		}
 		entry := map[string]any{
-			"id":             id,
+			"id":             mi.ID,
 			"object":         "model",
 			"created":        1753600000,
 			"owned_by":       "codearts",
 			"context_length": ctx,
 		}
-		if maxOut > 0 {
-			entry["max_output_tokens"] = maxOut
+		if mi.MaxTokens > 0 {
+			entry["max_output_tokens"] = mi.MaxTokens
 		}
-		if ratioDisplay != "" {
-			entry["ratio_display"] = ratioDisplay
+		if mi.RatioDisplay != "" {
+			entry["ratio_display"] = mi.RatioDisplay
+		}
+		if mi.Name != "" {
+			entry["model_name"] = mi.Name
 		}
 		out = append(out, entry)
 	}
 	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。
-	addAlias := func(id string, ctx, maxOut int64, ratioDisplay string) {
-		add(id, ctx, maxOut, ratioDisplay)
-		if lower := strings.ToLower(id); lower != id {
-			add(lower, ctx, maxOut, ratioDisplay)
+	addAlias := func(mi upstream.ModelInfo) {
+		add(mi)
+		if lower := strings.ToLower(mi.ID); lower != mi.ID {
+			mi.ID = lower
+			add(mi)
 		}
 	}
 	for _, mi := range infos {
-		addAlias(mi.ID, mi.ContextWindow, mi.MaxTokens, mi.RatioDisplay)
+		addAlias(mi)
 	}
 	for _, sm := range staticModels {
-		addAlias(sm.ID, sm.ContextWindow, 0, "")
+		addAlias(upstream.ModelInfo{ID: sm.ID, ContextWindow: sm.ContextWindow})
 	}
 	return out
 }

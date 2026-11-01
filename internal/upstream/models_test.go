@@ -75,7 +75,7 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 			if r.URL.Query().Get("agent_id") != "a2" {
 				t.Errorf("应选中 CodeAgent，got=%s", r.URL.RawQuery)
 			}
-			_, _ = io.WriteString(w, `{"gpts":{"models":[{"model_name":"GLM-5.2","model_parameters":{"context_window":202752,"max_tokens":8192}}]}}`)
+			_, _ = io.WriteString(w, `{"gpts":{"models":[{"model_name":"GLM 5.2","model_parameters":{"context_window":202752,"max_tokens":8192}}]}}`)
 		case "/v1/model/builtin":
 			if r.Header.Get("Agent-Type") != "PromptCenter" {
 				t.Errorf("builtin 接口需带 Agent-Type: PromptCenter，got=%q", r.Header.Get("Agent-Type"))
@@ -104,6 +104,9 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 	}
 	if byID["glm-5.2"].ContextWindow != 202752 || byID["glm-5.2"].MaxTokens != 8192 {
 		t.Errorf("agent-center 参数未解析：%+v", byID["glm-5.2"])
+	}
+	if byID["glm-5.2"].Name != "GLM 5.2" {
+		t.Errorf("模型名称未解析：%+v", byID["glm-5.2"])
 	}
 	if byID["openpangu-2.0-pro"].RatioDisplay != "0.7x" {
 		t.Errorf("积分倍率未解析：%+v", byID["openpangu-2.0-pro"])
