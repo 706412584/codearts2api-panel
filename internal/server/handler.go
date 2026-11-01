@@ -701,6 +701,32 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 	return false
 }
 
+// catalogHasModel 报告该模型是否出现在某个账号已发现的目录里。
+//
+// known=false 表示所有账号的目录都还没发现过：这时没有任何证据判定「目录以外」，
+// 调用方应放行，交给上游回答 —— 不能凭缺失的目录拒请求。
+// 判定与 /v1/models 同源：用 CanonicalModel 归一大小写/旧别名后比对账号目录。
+//
+// 这里刻意**不**在未命中时去上游补目录：那是每个未知请求一次的额外往返，
+// 目录本身由 /v1/models、面板与 pickAccount 的惰性发现维护（CatalogTTL 1h）。
+func (h *Handler) catalogHasModel(model string) (known, found bool) {
+	want := strings.ToLower(upstream.CanonicalModel(model))
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil {
+			continue
+		}
+		models, ok := upstream.AccountModels(acct.UID)
+		if !ok {
+			continue
+		}
+		known = true
+		if catalogHas(models, want) {
+			return true, true
+		}
+	}
+	return known, false
+}
+
 // ---------------------------------------------------------------------------
 // chat
 // ---------------------------------------------------------------------------
@@ -753,6 +779,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		model = req.Model
 	}
 	event.Model = safeLogLabel(model)
+
+	// 目录之外的模型 ID 不再往上游打：上游只会回 InferHub.002002009.404，
+	// 还白占一次并发会话与轮转名额。目录还没发现过时没有依据，放行交给上游。
+	if known, found := h.catalogHasModel(model); known && !found {
+		event.Error = "model " + safeLogLabel(model) + " is not in the model catalog"
+		writeOpenAIError(w, http.StatusNotFound, "model_not_available",
+			"model "+model+" is not in this service's model catalog; call GET /v1/models for the available ids")
+		return
+	}
 
 	// OpenAI 线格式本身不携带会话 ID；conversationIDFor 用首条 user 消息
 	// 为整条 Agent 工具链固定 CodeArts 内置 chat_id 与账号亲和。V2 接口
