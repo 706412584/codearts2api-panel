@@ -574,6 +574,8 @@ X-Language: zh-cn
 
 状态、金额均示意，不是固定规则。历史 campaignId 可能为数字，H 解析后转字符串。H 按 `type=USER_LOGIN` 找每日活动；G 当前选择 ID 1/4，属于历史活动选择策略。是否能领以本账号 delivery 返回的 claimable/状态为准，不应仅因套餐标志为 false 就忽略明确可领活动。[G-checkin] `FetchCreditCampaigns` L100；[H-credits] `parseActivity` L650、`fetchCodeArtsOpsActivitiesDetailed` L694。
 
+**本仓实测（2026-11-01，临时 AK/SK 体验版账号，`items` 四条 / `endedCampaigns` 一条）**：每条活动都下发 `type`，`campaignId` 与 type 的对应关系会随投放批次变化 —— 「每日签到领100积分」当时是 `campaignId=34`（`USER_LOGIN`，`benefitAmount=100`），`campaignId=1` 已不存在；新手活动仍是 `campaignId=4`（`NEW_USER_REGISTER`）。因此**选活动只能按 `type`**，按 ID 写死会在换批后静默「一个都没选中」。领取成功后再查：该活动变为 `status=CONFIRMED`、`claimable=false`、`pendingTotalAmount=0`。重复领取回 `HTTP 200 {"code":40001,"message":"并发冲突，请重试"}`（与 H 记录的「尚未到达权益刷新时间」同为 40001，文案不是判据）。
+
 ### 8.3 领取与确认
 
 ```http

@@ -45,9 +45,9 @@ func TestCheckinTransitionsAndEligibility(t *testing.T) {
 						t.Errorf("wrong delivery URL: %s", r.URL)
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]any{"items": []any{
-						map[string]any{"campaignId": 1, "title": "daily", "status": tc.status, "claimable": tc.claimable, "benefitUnit": "CREDIT", "benefitAmount": 1000, "pendingTotalAmount": 1000, "extra": map[string]string{"endTime": tc.end, "startTime": tc.start}},
-						map[string]any{"campaignId": 2, "claimable": true, "status": "ELIGIBLE"},
-						map[string]any{"campaignId": 3, "claimable": true, "status": "ELIGIBLE"},
+						map[string]any{"campaignId": 1, "type": CampaignTypeDailyLogin, "title": "daily", "status": tc.status, "claimable": tc.claimable, "benefitUnit": "CREDIT", "benefitAmount": 1000, "pendingTotalAmount": 1000, "extra": map[string]string{"endTime": tc.end, "startTime": tc.start}},
+						map[string]any{"campaignId": 2, "type": "STUDENT_CERTIFIED", "claimable": true, "status": "ELIGIBLE"},
+						map[string]any{"campaignId": 3, "type": "INVITE_USER", "claimable": true, "status": "ELIGIBLE"},
 					}}})
 					return
 				}
@@ -84,7 +84,7 @@ func TestCheckinRecoversConfirmationAndDailyReset(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EpCreditDelivery:
-			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"status":%q,"claimable":true,"benefitAmount":1000}]}}`, status)
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"items":[{"campaignId":1,"type":%q,"status":%q,"claimable":true,"benefitAmount":1000}]}}`, CampaignTypeDailyLogin, status)
 		case EpCreditClaim:
 			claimCount++
 			status = "CLAIMED"
@@ -143,7 +143,7 @@ func TestCheckinNewUserAndMalformedResponses(t *testing.T) {
 				case EpCreditDelivery:
 					body := tc.delivery
 					if body == "" {
-						body = `{"code":0,"data":{"items":[{"campaignId":4,"title":"new user","status":"ELIGIBLE","claimable":true,"benefitAmount":4000}]}}`
+						body = `{"code":0,"data":{"items":[{"campaignId":4,"type":"NEW_USER_REGISTER","title":"new user","status":"ELIGIBLE","claimable":true,"benefitAmount":4000}]}}`
 					}
 					_, _ = fmt.Fprint(w, body)
 				case EpCreditClaim:
@@ -168,5 +168,64 @@ func TestCheckinNewUserAndMalformedResponses(t *testing.T) {
 				t.Fatalf("result=%+v err=%v confirms=%d", res, err, confirms)
 			}
 		})
+	}
+}
+
+// 活动 ID 随投放批次变化（2026-11-01 实测每日签到是 campaignId=34，旧投放是 1），
+// 判据只能是 type。按写死的 ID 选会在换批后静默「一个活动都选不中」。
+func TestCheckinSelectsCampaignsByTypeNotID(t *testing.T) {
+	var writes []string
+	var claimed []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"items":[
+				{"campaignId":1,"title":"decoy","type":"INVITE_USER","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":1000},
+				{"campaignId":34,"title":"每日签到领100积分","type":"USER_LOGIN","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":100,"pendingTotalAmount":100},
+				{"campaignId":2,"title":"student","type":"STUDENT_CERTIFIED","status":"ELIGIBLE","claimable":true,"benefitUnit":"CREDIT","benefitAmount":4000}
+			]}}`)
+			return
+		}
+		writes = append(writes, r.URL.Path)
+		var body struct {
+			ID int `json:"campaignId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		claimed = append(claimed, body.ID)
+		_, _ = fmt.Fprint(w, `{"code":0,"message":"ok"}`)
+	}))
+	defer srv.Close()
+	c := New(time.Second)
+	c.snapBase = srv.URL
+	res, err := c.Checkin(context.Background(), SignCredential{})
+	if err != nil || !res.OK {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+	if !reflect.DeepEqual(claimed, []int{34, 34}) {
+		t.Fatalf("claimed campaigns = %v, want only the USER_LOGIN campaign 34", claimed)
+	}
+	if !reflect.DeepEqual(writes, []string{EpCreditClaim, EpCreditConfirm}) || res.Credits != 100 {
+		t.Fatalf("writes=%v credits=%g", writes, res.Credits)
+	}
+}
+
+// 没有签到/新手活动时要说明「未下发」，不能让「查到了但没有」与「领完了」同形。
+func TestCheckinReportsMissingCheckinActivity(t *testing.T) {
+	writes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = fmt.Fprint(w, `{"code":0,"data":{"items":[{"campaignId":3,"type":"INVITE_USER","claimable":false,"status":null}]}}`)
+			return
+		}
+		writes++
+		_, _ = fmt.Fprint(w, `{"code":0}`)
+	}))
+	defer srv.Close()
+	c := New(time.Second)
+	c.snapBase = srv.URL
+	res, err := c.Checkin(context.Background(), SignCredential{})
+	if err != nil || !res.OK || writes != 0 || !strings.Contains(res.Message, "USER_LOGIN") {
+		t.Fatalf("result=%+v err=%v writes=%d", res, err, writes)
 	}
 }

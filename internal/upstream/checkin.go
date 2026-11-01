@@ -16,11 +16,19 @@ const (
 	EpCreditClaim    = "/v1/ops/claim"
 	EpCreditConfirm  = "/v1/ops/confirm"
 	creditChannel    = "IDE"
+
+	// CampaignTypeDailyLogin 每日签到活动。上游用 type 标注活动用途，
+	// campaignId 只是当期投放 ID：2026-11-01 实测「每日签到领100积分」已是
+	// campaignId=34，历史记录里的 1/4 属于被替换掉的旧投放，按 ID 选会一个都领不到。
+	CampaignTypeDailyLogin = "USER_LOGIN"
+	// CampaignTypeNewUser 新手注册积分（一次性）。
+	CampaignTypeNewUser = "NEW_USER_REGISTER"
 )
 
 // CreditCampaign 是活动投放接口的脱敏条目；不保留 access 中的活动票据。
 type CreditCampaign struct {
 	ID                 int     `json:"campaignId"`
+	Type               string  `json:"type"`
 	Title              string  `json:"title"`
 	Status             string  `json:"status"`
 	Claimable          bool    `json:"claimable"`
@@ -114,8 +122,11 @@ func (c *Client) FetchCreditCampaigns(ctx context.Context, cred SignCredential) 
 	return *data.Items, nil
 }
 
-// Checkin 领取每日签到（1）和新用户（4）积分。上游决定资格和每日刷新，
-// 已领取不再 claim；CLAIMED 只补 confirm。调用方应串行化同一账号的领取。
+// Checkin 领取每日签到（USER_LOGIN）和新用户（NEW_USER_REGISTER）积分。
+// 活动用途按 type 判定，不按 campaignId：ID 会随投放批次替换，写死的 ID 过期后
+// 会静默「一个活动都没选中」。邀请、学生认证需要账号本人操作，不代领。
+// 上游决定资格和每日刷新，已领取不再 claim；CLAIMED 只补 confirm。
+// 调用方应串行化同一账号的领取。
 func (c *Client) Checkin(ctx context.Context, cred SignCredential) (CheckinResult, error) {
 	campaigns, err := c.FetchCreditCampaigns(ctx, cred)
 	if err != nil {
@@ -123,10 +134,7 @@ func (c *Client) Checkin(ctx context.Context, cred SignCredential) (CheckinResul
 	}
 	out := CheckinResult{OK: true, Campaigns: make([]CreditClaimResult, 0)}
 	for _, campaign := range campaigns {
-		if campaign.ID != 1 && campaign.ID != 4 {
-			continue
-		}
-		if campaign.BenefitUnit != "" && campaign.BenefitUnit != "CREDIT" {
+		if !isCheckinCampaign(campaign) {
 			continue
 		}
 		res := c.claimCreditCampaign(ctx, cred, campaign, time.Now())
@@ -140,9 +148,21 @@ func (c *Client) Checkin(ctx context.Context, cred SignCredential) (CheckinResul
 	}
 	out.Message = strings.Join(parts, "; ")
 	if len(parts) == 0 {
-		out.Message = "无可领取的签到或新手活动"
+		out.Message = "活动列表未下发每日签到（USER_LOGIN）或新手（NEW_USER_REGISTER）活动"
 	}
 	return out, nil
+}
+
+// isCheckinCampaign 报告该活动是否属于本服务代领的范围：每日签到与新手注册。
+// 邀请、学生认证需要账号本人操作，不代领。这里刻意不再筛 benefitUnit：
+// type 已经是权威判据，多一道单位闸只会在上游换名字时静默跳过一个活动。
+func isCheckinCampaign(campaign CreditCampaign) bool {
+	switch campaign.Type {
+	case CampaignTypeDailyLogin, CampaignTypeNewUser:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *Client) claimCreditCampaign(ctx context.Context, cred SignCredential, campaign CreditCampaign, now time.Time) CreditClaimResult {
