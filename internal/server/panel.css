@@ -13,3 +13,11 @@ dialog{color:var(--text);background:var(--surface);border:1px solid var(--line);
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .row-actions .button.done{color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,var(--line))}
+.segmented{display:inline-flex;gap:3px;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);align-self:flex-start}
+.segment{border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:500;padding:6px 14px;border-radius:6px;cursor:pointer}
+.segment:hover{color:var(--text)}
+.segment.active{background:var(--surface);color:var(--text);box-shadow:0 0 0 1px var(--line)}
+.group-title{font-size:11px;font-weight:600;letter-spacing:.4px;color:var(--muted);margin:14px 0 0}
+.checks{display:flex;gap:22px;flex-wrap:wrap;margin:12px 0 2px}
+.check{display:inline-flex;align-items:center;gap:8px;font-weight:500}
+input[type=checkbox]{display:inline-block;width:auto;margin:0}
