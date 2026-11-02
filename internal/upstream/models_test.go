@@ -27,6 +27,31 @@ func TestCanonicalModelKnownIndex(t *testing.T) {
 	}
 }
 
+// 盘古系列上游注册名是全小写，OpenPangu-2.0-Pro 只是展示名：种子和目录发现都必须
+// 给出小写 ID，否则每次调用都撞 InferHub.002002009.404（2026-11-02 实测）。
+func TestCanonicalModelPanguUsesRegisteredID(t *testing.T) {
+	catalog.Lock()
+	delete(catalog.known, "openpangu-2.0-pro")
+	catalog.Unlock()
+
+	if got := CanonicalModel("OpenPangu-2.0-Pro"); got != "openpangu-2.0-pro" {
+		t.Fatalf("目录发现前应回落到小写注册名，got=%q", got)
+	}
+	SetAccountModels("t-pangu", []ModelInfo{{ID: "openpangu-2.0-pro", ContextWindow: 524288}})
+
+	tests := []struct{ in, want string }{
+		{"OpenPangu-2.0-Pro", "openpangu-2.0-pro"},
+		{"OPENPANGU-2.0-PRO", "openpangu-2.0-pro"},
+		{"openpangu-2.0-pro", "openpangu-2.0-pro"},
+		{"OpenPangu-2.0-Flash", "openpangu-2.0-flash"},
+	}
+	for _, tc := range tests {
+		if got := CanonicalModel(tc.in); got != tc.want {
+			t.Errorf("CanonicalModel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestSetAccountModelsReplacesCatalog(t *testing.T) {
 	SetAccountModels("acct-rot", []ModelInfo{{ID: "rotated-model", ContextWindow: 1024}})
 	if _, ok := AccountModels("acct-rot"); !ok {
@@ -80,7 +105,7 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 			if r.Header.Get("Agent-Type") != "PromptCenter" {
 				t.Errorf("builtin 接口需带 Agent-Type: PromptCenter，got=%q", r.Header.Get("Agent-Type"))
 			}
-			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"OpenPangu-2.0-Pro","context_window":524288,"display_enabled":true,"supports_images":false,"credit":[{"ratio_display":"0.7x"}]}]}`)
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"openpangu-2.0-pro","context_window":524288,"display_enabled":true,"supports_images":false,"credit":[{"ratio_display":"0.7x"}]}]}`)
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

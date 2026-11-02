@@ -44,11 +44,21 @@ type ModelInfo struct {
 	SupportsImages *bool `json:"supports_images,omitempty"`
 }
 
-// 内置模型种子（大小写归一用）。
-var seedKnownModels = []string{
-	"GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
-	"OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash",
-	"Qwen3-VL-235B", "Qwen3.5-397B-A17B-VL", "Qwen3.6-27B-VL",
+// seedKnownModels 是目录发现之前的大小写兜底：key 为小写 ID，value 必须是上游
+// InferHub 注册的 model_id，不是展示用的 model_name。
+//
+// 盘古系列就是踩过的坑：上游注册名是全小写 openpangu-2.0-pro，OpenPangu-2.0-Pro
+// 只是展示名，照它调用会稳定撞 InferHub.002002009.404（2026-11-02 实测）。同理
+// GLM-5.2-ArkTS-SPARK 也是展示名（model_id 为 glm-5.2-sft-harmony），不作种子。
+var seedKnownModels = map[string]string{
+	"glm-5.2":              "GLM-5.2",
+	"glm-5.1":              "GLM-5.1",
+	"glm-4.7":              "GLM-4.7",
+	"openpangu-2.0-pro":    "openpangu-2.0-pro",
+	"openpangu-2.0-flash":  "openpangu-2.0-flash",
+	"qwen3-vl-235b":        "Qwen3-VL-235B",
+	"qwen3.5-397b-a17b-vl": "Qwen3.5-397B-A17B-VL",
+	"qwen3.6-27b-vl":       "Qwen3.6-27B-VL",
 }
 
 // accountCatalog 一个账号的模型目录快照。
@@ -60,17 +70,8 @@ type accountCatalog struct {
 var catalog = struct {
 	sync.RWMutex
 	accounts map[string]*accountCatalog // accountID -> 目录
-	known    map[string]string          // lower(id) -> 精确 ID（跨账号，大小写归一）
+	known    map[string]string          // lower(id) -> 精确 ID（只存目录发现结果，跨账号）
 }{accounts: map[string]*accountCatalog{}, known: map[string]string{}}
-
-func init() {
-	catalog.known = make(map[string]string, len(seedKnownModels))
-	for _, id := range seedKnownModels {
-		if _, ok := catalog.known[strings.ToLower(id)]; !ok {
-			catalog.known[strings.ToLower(id)] = id
-		}
-	}
-}
 
 // SetAccountModels 整体替换某账号的模型目录（不是增补：套餐轮换后旧模型不得残留）。
 func SetAccountModels(accountID string, infos []ModelInfo) {
@@ -117,15 +118,20 @@ func AccountCatalogStale(accountID string) bool {
 	return !ok || time.Since(ac.fetched) >= CatalogTTL
 }
 
-// lookupKnownModel 按小写 ID 查精确模型 ID（种子 + 已发现模型）。
+// lookupKnownModel 按小写 ID 查精确模型 ID：账号目录里发现的结果优先，种子只
+// 兜底目录里还没有的模型 —— 种子是猜的大小写，目录才是上游注册的事实。
 func lookupKnownModel(id string) (string, bool) {
 	key := strings.ToLower(strings.TrimSpace(id))
 	if key == "" {
 		return "", false
 	}
 	catalog.RLock()
-	defer catalog.RUnlock()
 	exact, ok := catalog.known[key]
+	catalog.RUnlock()
+	if ok {
+		return exact, true
+	}
+	exact, ok = seedKnownModels[key]
 	return exact, ok
 }
 
