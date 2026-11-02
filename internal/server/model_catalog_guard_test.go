@@ -1,9 +1,12 @@
 package server
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -95,5 +98,47 @@ func TestChatRejectsModelWhenCatalogIsEmpty(t *testing.T) {
 	w := panelRequest(h, http.MethodPost, "/v1/chat/completions", chatBody("GLM-5.2"), "k")
 	if w.Code != http.StatusNotFound || atomic.LoadInt32(calls) != 0 {
 		t.Fatalf("status = %d calls = %d, want 404 without upstream", w.Code, atomic.LoadInt32(calls))
+	}
+}
+
+// 守卫按大小写不敏感判定「有账号能服务」，上游却按注册名精确匹配：真正发出去的
+// model 必须是**当前账号目录里**的写法，而不是跨账号索引（或种子）里那个。
+func TestChatSendsAccountCatalogCase(t *testing.T) {
+	var mu sync.Mutex
+	var sent string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		sent, _ = body["model"].(string)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer up.Close()
+
+	// 另一个账号把全局大小写索引定成混合写法；本账号的注册名是全小写。
+	upstream.SetAccountModels("wire-case-other", []upstream.ModelInfo{{ID: "Case-Probe-Wire"}})
+	uid := "wire-case-acct"
+	upstream.SetAccountModels(uid, []upstream.ModelInfo{{ID: "case-probe-wire"}})
+
+	a := auth.New(uid, "user", "domain", "token", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Accounts()[0].Client = upstream.NewWithChatEndpoint(5*time.Second, up.URL)
+	h := NewHandler(Config{Pool: p, APIKey: "k", MaxRotate: 1})
+
+	w := panelRequest(h, http.MethodPost, "/v1/chat/completions", chatBody("Case-Probe-Wire"), "k")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	got := sent
+	mu.Unlock()
+	if got != "case-probe-wire" {
+		t.Fatalf("上游收到的 model = %q，应为该账号注册的 case-probe-wire", got)
 	}
 }

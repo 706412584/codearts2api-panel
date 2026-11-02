@@ -1,7 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +117,48 @@ func TestProbeSkipsBusyAccount(t *testing.T) {
 	h.probeModel(p.Get("u-busy"), "m-busy")
 	if st, _ := modelAvailability("u-busy", "m-busy"); st != availUnknown {
 		t.Error("账号忙时探测应直接跳过，不得留下结论")
+	}
+}
+
+// 探针用错大小写会拿到 002002009.404，把本来可用的模型记成不可用，/v1/models
+// 就会把它藏起来：探测同样要按该账号的注册名发。
+func TestProbeSendsAccountCatalogCase(t *testing.T) {
+	var mu sync.Mutex
+	var sent string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		sent, _ = body["model"].(string)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n")
+	}))
+	defer up.Close()
+
+	a := &auth.Auth{UserID: "u-probe-case", UserName: "u-probe-case", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Accounts()[0].Client = upstream.NewWithChatEndpoint(5*time.Second, up.URL)
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second)})
+
+	// 本账号注册成小写，另一个账号把全局索引定成混合写法。
+	upstream.SetAccountModels("u-probe-case", []upstream.ModelInfo{{ID: "probe-lower"}})
+	upstream.SetAccountModels("u-probe-other", []upstream.ModelInfo{{ID: "Probe-Lower"}})
+
+	h.probeModel(p.Get("u-probe-case"), "Probe-Lower")
+
+	mu.Lock()
+	got := sent
+	mu.Unlock()
+	if got != "probe-lower" {
+		t.Fatalf("探测发出的 model = %q，应为该账号注册的 probe-lower", got)
+	}
+	if st, _ := modelAvailability("u-probe-case", "Probe-Lower"); st != availUsable {
+		t.Errorf("探测成功应记为可用，got=%v", st)
 	}
 }
 

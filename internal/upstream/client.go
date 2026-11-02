@@ -388,6 +388,11 @@ type ChatOptions struct {
 	TopP            *float64
 	Tools           []map[string]any
 	ToolChoice      any
+
+	// ExactModelID 是按账号目录解析好的精确模型 ID：设置后原样发出，不再过
+	// CanonicalModel —— 上游按注册名精确匹配，而全局大小写索引是跨账号的，
+	// 未必等于当前账号的注册名（见 upstream.CatalogModelID）。
+	ExactModelID string
 }
 
 // CanonicalModel 把用户友好模型 ID 映射为上游 InferHub 注册的模型 ID。
@@ -456,8 +461,12 @@ func (c *Client) ChatStreamWithOptions(ctx context.Context, chatID string, messa
 
 // chatBodyV2 组装 /api/v2/chat/completions 请求体（原生 OpenAI 形状）。
 func chatBodyV2(chatID string, messages []ChatMessage, model string, opts ChatOptions) map[string]any {
+	modelID := CanonicalModel(model)
+	if opts.ExactModelID != "" {
+		modelID = opts.ExactModelID
+	}
 	body := map[string]any{
-		"model":            CanonicalModel(model),
+		"model":            modelID,
 		"stream":           true,
 		"messages":         chatMessagesToOpenAI(messages),
 		"prompt_cache_key": chatID,

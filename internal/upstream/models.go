@@ -135,6 +135,29 @@ func lookupKnownModel(id string) (string, bool) {
 	return exact, ok
 }
 
+// CatalogModelID 返回该账号目录里与 id 大小写不敏感匹配的精确模型 ID。
+//
+// 上游按注册名精确匹配，而 lookupKnownModel 的索引是跨账号的：同一个模型在不同
+// 账号可以注册成不同大小写，全局索引只能记住一个。发请求前按「当前账号自己的
+// 目录」定大小写，守卫放行的 ID 才一定调得通（目录未发现或没登记时返回 false，
+// 调用方照旧走 CanonicalModel）。
+func CatalogModelID(accountID, id string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(id))
+	if accountID == "" || key == "" {
+		return "", false
+	}
+	models, ok := AccountModels(accountID)
+	if !ok {
+		return "", false
+	}
+	for _, mi := range models {
+		if strings.ToLower(mi.ID) == key {
+			return mi.ID, true
+		}
+	}
+	return "", false
+}
+
 // MergeModels 合并多路模型列表：按小写 ID 去重，参数更全的优先。
 // 结果按小写 ID 排序，保证 /v1/models 输出稳定（缓存刷新前后顺序一致）。
 func MergeModels(sets ...[]ModelInfo) []ModelInfo {

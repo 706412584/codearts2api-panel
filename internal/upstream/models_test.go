@@ -52,6 +52,30 @@ func TestCanonicalModelPanguUsesRegisteredID(t *testing.T) {
 	}
 }
 
+// 同一模型在不同账号注册成不同大小写时，发请求要按该账号自己的注册名，
+// 而不是跨账号的全局索引（全局只能记住一个写法）。
+func TestCatalogModelIDUsesAccountRegistrationCase(t *testing.T) {
+	SetAccountModels("t-case-lower", []ModelInfo{{ID: "qwen9-case-probe"}})
+	SetAccountModels("t-case-mixed", []ModelInfo{{ID: "Qwen9-Case-Probe"}})
+
+	for _, tc := range []struct{ account, in, want string }{
+		{"t-case-lower", "Qwen9-Case-Probe", "qwen9-case-probe"},
+		{"t-case-lower", "QWEN9-CASE-PROBE", "qwen9-case-probe"},
+		{"t-case-mixed", "qwen9-case-probe", "Qwen9-Case-Probe"},
+	} {
+		got, ok := CatalogModelID(tc.account, tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("CatalogModelID(%q, %q) = %q, %v; want %q", tc.account, tc.in, got, ok, tc.want)
+		}
+	}
+	if _, ok := CatalogModelID("t-case-lower", "absent-model"); ok {
+		t.Error("目录里没登记的 ID 不应命中")
+	}
+	if _, ok := CatalogModelID("t-case-unknown", "qwen9-case-probe"); ok {
+		t.Error("目录未发现的账号不应命中")
+	}
+}
+
 func TestSetAccountModelsReplacesCatalog(t *testing.T) {
 	SetAccountModels("acct-rot", []ModelInfo{{ID: "rotated-model", ContextWindow: 1024}})
 	if _, ok := AccountModels("acct-rot"); !ok {

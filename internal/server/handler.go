@@ -922,6 +922,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			SecretAccessKey: secretAccessKey,
 			SecurityToken:   token,
 		}
+		// 上游按注册名精确匹配，而 CanonicalModel 的大小写索引是跨账号的（同一模型
+		// 在不同账号可以注册成不同大小写）。发送前按当前账号自己的目录定大小写：
+		// catalogHasModel 放行的 ID 才一定调得通，也不用再白打一次注定 002002009.404
+		// 的上游往返。
 		chatOpts := upstream.ChatOptions{
 			ReasoningEffort: req.ReasoningEffort,
 			MaxTokens:       req.MaxTokens,
@@ -929,6 +933,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			TopP:            req.TopP,
 			Tools:           tools,
 			ToolChoice:      nativeToolChoice(req.ToolChoice),
+		}
+		if exact, ok := upstream.CatalogModelID(acct.UID, model); ok {
+			chatOpts.ExactModelID = exact
 		}
 		// 上游并发会话/TPM 排队是瞬时的。对齐 CodeArts Agent IDE
 		// 参考实现：默认每 10s 重试同一账号，最多 180 次（30min）。
