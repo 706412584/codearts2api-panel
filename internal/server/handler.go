@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,8 @@ type Config struct {
 	LoginConfig upstream.LoginConfig
 	// OAuthCallbackHost 可选：覆盖授权链接回调 host（如 https://oneapi.example.com/codearts）。
 	OAuthCallbackHost string
+	// ImageHandling 见 cmd/server/config.go 同名配置项。空值等同 passthrough。
+	ImageHandling string
 }
 
 var dynamicModelsCache struct {
@@ -539,8 +542,11 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if mi.DisplayEnabled != nil && !*mi.DisplayEnabled {
 			entry["display_enabled"] = false
 		}
-		if mi.SupportsImages != nil && *mi.SupportsImages {
-			entry["supports_images"] = true
+		// 图片能力三态都要透传：true 让客户端知道可以发图，false 让客户端知道
+		// 必须转文字（上游明确声明 false）。旧版本只透传 true，把「明确不支持」
+		// 静默成「没这个字段」，客户端只能靠踩 502 才发现。
+		if mi.SupportsImages != nil {
+			entry["supports_images"] = *mi.SupportsImages
 		}
 		out = append(out, entry)
 	}
@@ -702,6 +708,57 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 	return false
 }
 
+// catalogDeclaresNoImages 报告该模型是否被上游**明确声明**为不支持图片输入
+// （supports_images 存在且为 false）。
+//
+// 三态严格区分：「未声明」（nil）不算，因为上游没表态时网关没有依据拒绝请求——
+// 那会把「上游只是没写这个字段」误判成「不能收图」，挡住本来可用的模型。
+func (h *Handler) catalogDeclaresNoImages(model string) bool {
+	want := strings.ToLower(upstream.CanonicalModel(model))
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil {
+			continue
+		}
+		models, ok := upstream.AccountModels(acct.UID)
+		if !ok {
+			continue
+		}
+		for _, mi := range models {
+			if strings.ToLower(mi.ID) == want {
+				return mi.SupportsImages != nil && !*mi.SupportsImages
+			}
+		}
+	}
+	return false
+}
+
+// visionModelIDs 返回所有账号目录里声明支持图片的模型 ID（去重、排序）。
+// 用于错误信息里告诉调用方「可以改用哪些模型」。
+func (h *Handler) visionModelIDs() []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 4)
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil {
+			continue
+		}
+		models, ok := upstream.AccountModels(acct.UID)
+		if !ok {
+			continue
+		}
+		for _, mi := range models {
+			if mi.ID == "" || mi.SupportsImages == nil || !*mi.SupportsImages {
+				continue
+			}
+			if !seen[mi.ID] {
+				seen[mi.ID] = true
+				out = append(out, mi.ID)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // catalogHasModel 报告该模型是否出现在某个账号已发现的目录里。
 //
 // known=false 表示所有账号的目录都还没发现过：这时没有任何证据判定「目录以外」，
@@ -779,6 +836,57 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" && req.Model != "auto" {
 		model = req.Model
 	}
+	// OpenAI 线格式本身不携带会话 ID；conversationIDFor 用首条 user 消息
+	// 为整条 Agent 工具链固定 CodeArts 内置 chat_id 与账号亲和。V2 接口
+	// 不保留语义上下文，所以每轮仍重放完整 OpenAI 历史。
+	explicitChat := validChatID(req.ConversationID)
+	stickyAcct := ""
+	if explicitChat {
+		h.convMu.Lock()
+		stickyAcct = h.convAcct[req.ConversationID]
+		h.convMu.Unlock()
+	}
+
+	// 带图请求打到「目录明确声明不支持图片」的模型：
+	//   - analyze 模式：把图片换成占位符、注入 analyze_image 工具，交给主模型按需
+	//     调用（复刻官方 AnalyzeImagePlugin）。主模型上下文与推理完全不受影响，
+	//     视觉模型只承担单图分析。
+	//   - 默认 passthrough：直接回 400 并列出可用视觉模型，由调用方自己改。
+	//     刻意**不做自动改派**——视觉模型上下文普遍更小（实测 deepseek 1M vs
+	//     qwen3-vl 131k），拿大请求去撞只会得到 ModelArts.81001；而且视觉模型
+	//     没有推理输出，静默换掉会同时毁掉能力与语义。
+	// 只拦「上游明确声明 false」的模型；未声明时无依据，照原样放行交给上游回答。
+	// analyzeRouted 表示本次请求真的改写了图片、注入了 analyze_image 工具。
+	// 只有它为真时才需要「先聚合再判断回灌」；纯文本请求必须保持原样直通
+	// 流式，否则客户端要等模型生成完才收到首字（实测 91s 的 TTFB）。
+	analyzeRouted := false
+	if hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
+		if h.cfg.ImageHandling != "analyze" {
+			vision := strings.Join(h.visionModelIDs(), ", ")
+			if vision == "" {
+				vision = "(当前账号目录里没有声明支持图片的模型)"
+			}
+			writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
+				"model "+model+" does not accept image input; retry with a vision model such as: "+vision)
+			return
+		}
+		if h.visionModelForAnalyze() == "" {
+			writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
+				"model "+model+" does not accept image input, and no vision model is available for analyze mode")
+			return
+		}
+		if injected := rewriteImagesForAnalyze(req); len(injected) > 0 {
+			req.Tools = append(req.Tools, injected...)
+			analyzeRouted = true
+		}
+		toolsOn = toolsActive(req)
+		// 工具列表在图片改写之前就已构建，注入 analyze_image 后必须重建，
+		// 否则主模型根本看不到这个工具。
+		if tools, err = nativeTools(req.Tools, req.ToolChoice); err != nil {
+			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+	}
 	event.Model = safeLogLabel(model)
 
 	// 目录之外的模型 ID 不再往上游打：上游只会回 InferHub.002002009.404，
@@ -790,16 +898,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// OpenAI 线格式本身不携带会话 ID；conversationIDFor 用首条 user 消息
-	// 为整条 Agent 工具链固定 CodeArts 内置 chat_id 与账号亲和。V2 接口
-	// 不保留语义上下文，所以每轮仍重放完整 OpenAI 历史。
-	explicitChat := validChatID(req.ConversationID)
-	stickyAcct := ""
-	if explicitChat {
-		h.convMu.Lock()
-		stickyAcct = h.convAcct[req.ConversationID]
-		h.convMu.Unlock()
-	}
 	msgs := buildUpstreamMessages(req, toolsOn)
 
 	// 已经确认「所有健康账号都用不了这个模型」时直接快速失败：不必再打上游、
@@ -812,223 +910,276 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	tried := map[string]bool{}
 	var lastErr error
-	for i := 0; i < h.cfg.MaxRotate; i++ {
-		var acct *pool.Account
-		if stickyAcct != "" {
-			// 续接会话：锁定原账号（若仍健康）。
-			acct = h.cfg.Pool.Get(stickyAcct)
-			if acct == nil || !h.cfg.Pool.Healthy(stickyAcct) {
-				stickyAcct = ""
-				acct = h.cfg.Pool.PickExcluding(tried)
-			} else {
-				tried[acct.Name] = true
+	// analyze 模式的工具回灌轮数。主模型调用 analyze_image 时，网关内部执行后
+	// 把结果作为 tool 消息回灌，再请求一次；超过上限就停止，避免死循环。
+	analyzeRounds := 0
+	for {
+		// 每轮工具回灌都重新开始一次完整的账号轮转。
+		answered := false
+		for i := 0; i < h.cfg.MaxRotate; i++ {
+			var acct *pool.Account
+			if stickyAcct != "" {
+				// 续接会话：锁定原账号（若仍健康）。
+				acct = h.cfg.Pool.Get(stickyAcct)
+				if acct == nil || !h.cfg.Pool.Healthy(stickyAcct) {
+					stickyAcct = ""
+					acct = h.cfg.Pool.PickExcluding(tried)
+				} else {
+					tried[acct.Name] = true
+				}
 			}
-		}
-		if acct == nil {
-			acct = h.cfg.Pool.PickExcluding(tried)
-		}
-		if acct == nil {
-			break
-		}
-		tried[acct.Name] = true
-		event.Account = shortID(acct.UID)
-
-		// 阻塞等待并发槽位（上游单账号并发会话释放慢，串行最稳）。
-		// 超时 180s 排队（5 个请求 × ~30s 上限），避免高并发立即失败跳号。
-		if !h.cfg.Pool.AcquireLockWait(acct.Name, 180*time.Second) {
-			log.Printf("account %s concurrent limit reached after wait, trying next", acct.Name)
-			continue
-		}
-
-		ok, verr := h.cfg.Pool.Validate(acct)
-		if verr == nil && !ok {
-			h.cfg.Pool.ReleaseLock(acct.Name)
-			lastErr = errors.New("token invalid")
-			continue
-		}
-		if verr != nil {
-			h.cfg.Pool.ReleaseLock(acct.Name)
-			lastErr = verr
-			continue
-		}
-
-		// 检查是否需要保活
-		if h.cfg.Pool.NeedKeepalive(acct.Name) {
-			h.cfg.Pool.PingKeepalive(acct.Name)
-		}
-
-		chatID := req.ConversationID
-		// 上游要求 chat_id 为 32 位十六进制（UUID 去连字符）；无显式 id 时每次新建。
-		if !validChatID(chatID) {
-			chatID = randHex(32)
-		}
-
-		token, accessKeyID, secretAccessKey := acct.Auth.Credentials()
-		cred := upstream.SignCredential{
-			AccessKeyID:     accessKeyID,
-			SecretAccessKey: secretAccessKey,
-			SecurityToken:   token,
-		}
-		chatOpts := upstream.ChatOptions{
-			ReasoningEffort: req.ReasoningEffort,
-			MaxTokens:       req.MaxTokens,
-			Temperature:     req.Temperature,
-			TopP:            req.TopP,
-			Tools:           tools,
-			ToolChoice:      nativeToolChoice(req.ToolChoice),
-		}
-		// 上游并发会话/TPM 排队是瞬时的。对齐 CodeArts Agent IDE
-		// 参考实现：默认每 10s 重试同一账号，最多 180 次（30min）。
-		// 等待期间释放并发锁，让排队的请求也能尝试（避免死锁式串行等待）。
-		var rc io.ReadCloser
-		var serr error
-		authRetried := false
-		noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
-		for retry := 0; retry < h.cfg.QueueMaxAttempts; retry++ {
-			event.Attempts++
-			rc, serr = acct.Client.ChatStreamWithOptions(r.Context(), chatID, msgs, "", cred, acct.UserName, model, chatOpts)
-			if serr == nil {
+			if acct == nil {
+				acct = h.cfg.Pool.PickExcluding(tried)
+			}
+			if acct == nil {
 				break
 			}
-			var ae *upstream.ApiError
-			if errors.As(serr, &ae) && (ae.Status == 401 || ae.Code == 401) && !authRetried && acct.Auth.Refresh() != "" {
-				if rerr := h.cfg.Pool.RefreshToken(acct.Name); rerr == nil {
-					token, accessKeyID, secretAccessKey = acct.Auth.Credentials()
-					cred = upstream.SignCredential{
-						AccessKeyID:     accessKeyID,
-						SecretAccessKey: secretAccessKey,
-						SecurityToken:   token,
-					}
-					authRetried = true
-					log.Printf("upstream 401 account=%s: token refreshed, retrying request once", acct.Name)
-					continue
-				} else {
-					log.Printf("upstream 401 account=%s: refresh before retry failed: %v", acct.Name, rerr)
-				}
+			tried[acct.Name] = true
+			event.Account = shortID(acct.UID)
+
+			// 阻塞等待并发槽位（上游单账号并发会话释放慢，串行最稳）。
+			// 超时 180s 排队（5 个请求 × ~30s 上限），避免高并发立即失败跳号。
+			if !h.cfg.Pool.AcquireLockWait(acct.Name, 180*time.Second) {
+				log.Printf("account %s concurrent limit reached after wait, trying next", acct.Name)
+				continue
 			}
-			if errors.As(serr, &ae) && isQueueLimitError(ae) {
-				log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, h.cfg.QueueMaxAttempts, acct.Name, h.cfg.QueueRetryDelay)
-				// 释放锁让其他请求有机会，等待后重新获取
+
+			ok, verr := h.cfg.Pool.Validate(acct)
+			if verr == nil && !ok {
 				h.cfg.Pool.ReleaseLock(acct.Name)
-				select {
-				case <-time.After(h.cfg.QueueRetryDelay):
-				case <-r.Context().Done():
-					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				lastErr = errors.New("token invalid")
+				continue
+			}
+			if verr != nil {
+				h.cfg.Pool.ReleaseLock(acct.Name)
+				lastErr = verr
+				continue
+			}
+
+			// 检查是否需要保活
+			if h.cfg.Pool.NeedKeepalive(acct.Name) {
+				h.cfg.Pool.PingKeepalive(acct.Name)
+			}
+
+			chatID := req.ConversationID
+			// 上游要求 chat_id 为 32 位十六进制（UUID 去连字符）；无显式 id 时每次新建。
+			if !validChatID(chatID) {
+				chatID = randHex(32)
+			}
+
+			token, accessKeyID, secretAccessKey := acct.Auth.Credentials()
+			cred := upstream.SignCredential{
+				AccessKeyID:     accessKeyID,
+				SecretAccessKey: secretAccessKey,
+				SecurityToken:   token,
+			}
+			chatOpts := upstream.ChatOptions{
+				ReasoningEffort: req.ReasoningEffort,
+				MaxTokens:       req.MaxTokens,
+				Temperature:     req.Temperature,
+				TopP:            req.TopP,
+				Tools:           tools,
+				ToolChoice:      nativeToolChoice(req.ToolChoice),
+			}
+			// 上游并发会话/TPM 排队是瞬时的。对齐 CodeArts Agent IDE
+			// 参考实现：默认每 10s 重试同一账号，最多 180 次（30min）。
+			// 等待期间释放并发锁，让排队的请求也能尝试（避免死锁式串行等待）。
+			var rc io.ReadCloser
+			var serr error
+			authRetried := false
+			noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
+			for retry := 0; retry < h.cfg.QueueMaxAttempts; retry++ {
+				event.Attempts++
+				rc, serr = acct.Client.ChatStreamWithOptions(r.Context(), chatID, msgs, "", cred, acct.UserName, model, chatOpts)
+				if serr == nil {
+					break
+				}
+				var ae *upstream.ApiError
+				if errors.As(serr, &ae) && (ae.Status == 401 || ae.Code == 401) && !authRetried && acct.Auth.Refresh() != "" {
+					if rerr := h.cfg.Pool.RefreshToken(acct.Name); rerr == nil {
+						token, accessKeyID, secretAccessKey = acct.Auth.Credentials()
+						cred = upstream.SignCredential{
+							AccessKeyID:     accessKeyID,
+							SecretAccessKey: secretAccessKey,
+							SecurityToken:   token,
+						}
+						authRetried = true
+						log.Printf("upstream 401 account=%s: token refreshed, retrying request once", acct.Name)
+						continue
+					} else {
+						log.Printf("upstream 401 account=%s: refresh before retry failed: %v", acct.Name, rerr)
+					}
+				}
+				if errors.As(serr, &ae) && isQueueLimitError(ae) {
+					log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, h.cfg.QueueMaxAttempts, acct.Name, h.cfg.QueueRetryDelay)
+					// 释放锁让其他请求有机会，等待后重新获取
+					h.cfg.Pool.ReleaseLock(acct.Name)
+					select {
+					case <-time.After(h.cfg.QueueRetryDelay):
+					case <-r.Context().Done():
+						writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+						return
+					}
+					if !h.cfg.Pool.AcquireLockWait(acct.Name, 30*time.Second) {
+						lastErr = errors.New("concurrent limit: could not reacquire lock after wait")
+						break
+					}
+					continue
+				}
+				break // 非并发错误，跳出重试
+			}
+			if serr != nil {
+				h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
+				if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
+					// 请求形状/长度问题：换账号结果相同，冷却账号还会拖垮整池。
+					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+						"upstream rejected request: "+truncateMsg(serr.Error(), 200))
 					return
 				}
-				if !h.cfg.Pool.AcquireLockWait(acct.Name, 30*time.Second) {
-					lastErr = errors.New("concurrent limit: could not reacquire lock after wait")
-					break
+				lastErr = serr
+				if h.handleUpstreamError(acct, model, serr) {
+					// 模型级错误：换账号也是同样结果，直接给客户端明确答复。
+					// 请求超出模型能力/形状不对都是 400，其余按「模型对该账号不可用」404。
+					status, code := http.StatusNotFound, "model_not_available"
+					if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
+						status, code = http.StatusBadRequest, "invalid_request"
+					}
+					writeOpenAIError(w, status, code,
+						"model "+model+" is not available: "+truncateMsg(serr.Error(), 200))
+					return
 				}
 				continue
 			}
-			break // 非并发错误，跳出重试
-		}
-		if serr != nil {
-			h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
-			if isParamInvalidError(serr) {
-				// Client request-param problem: rotating accounts yields the same 400,
-				// and cooling accounts takes down the whole pool for minutes.
-				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
-					"upstream rejected request params: "+truncateMsg(serr.Error(), 200))
-				return
-			}
-			lastErr = serr
-			if h.handleUpstreamError(acct, model, serr) {
-				// 模型级错误：换账号也是同样结果，直接给客户端明确答复。
-				writeOpenAIError(w, http.StatusNotFound, "model_not_available",
-					"model "+model+" is not available: "+truncateMsg(serr.Error(), 200))
-				return
-			}
-			continue
-		}
-		// 真实调用成功：记下「这个账号能用这个模型」，供 /v1/models 过滤参考。
-		markUsable(acct.UID, model)
-		noteTraffic(acct.UID)
+			// 真实调用成功：记下「这个账号能用这个模型」，供 /v1/models 过滤参考。
+			markUsable(acct.UID, model)
+			noteTraffic(acct.UID)
 
-		w.Header().Set("X-Codearts-Chat-Id", chatID)
+			w.Header().Set("X-Codearts-Chat-Id", chatID)
 
-		storeChat := func() {
-			// 仅缓存显式会话，便于同 conversation_id 续聊；不把一次性测连写进账号默认会话。
-			if !explicitChat {
+			storeChat := func() {
+				// 仅缓存显式会话，便于同 conversation_id 续聊；不把一次性测连写进账号默认会话。
+				if !explicitChat {
+					return
+				}
+				h.convMu.Lock()
+				h.chats[acct.Name] = chatID
+				h.convAcct[req.ConversationID] = acct.Name // 黏性路由：续接锁定同账号
+				h.convMu.Unlock()
+				h.saveChats()
+			}
+			// 只有真正改写了图片的请求才需要先聚合（才能判断是否回灌工具结果）。
+			// 纯文本请求必须原样直通流式，否则首字要等到模型生成完才返回。
+			streamDirect := req.Stream && !analyzeRouted
+			if streamDirect {
+				var usage func(*upstream.RawCompletion) map[string]any
+				if req.IncludeUsage {
+					usage = func(comp *upstream.RawCompletion) map[string]any { return usageEstimate(msgs, comp) }
+				}
+				werr := upstream.StreamCaptureWithUsage(w, rc, model, func(comp *upstream.RawCompletion) {
+					captureUsage(&event, comp.Usage)
+					storeChat()
+					// 流式传输中定期保活
+					h.cfg.Pool.PingKeepalive(acct.Name)
+				}, usage)
+				rc.Close()
+				h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
+				if werr != nil {
+					event.Outcome = reqlog.OutcomeStreamError
+					event.Error = werr.Error()
+					log.Printf("chat stream account=%s error: %v", acct.Name, werr)
+					// 只有账号侧故障才累计错误；长度/形状/模型级错误换账号也一样。
+					if classifyUpstreamError(werr) == classAccountFault {
+						h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+					}
+				} else {
+					event.OK, event.Outcome = true, reqlog.OutcomeSuccess
+					h.cfg.Pool.NoteSuccess(acct.Name)
+				}
 				return
 			}
-			h.convMu.Lock()
-			h.chats[acct.Name] = chatID
-			h.convAcct[req.ConversationID] = acct.Name // 黏性路由：续接锁定同账号
-			h.convMu.Unlock()
-			h.saveChats()
-		}
-		if req.Stream {
-			var usage func(*upstream.RawCompletion) map[string]any
-			if req.IncludeUsage {
-				usage = func(comp *upstream.RawCompletion) map[string]any { return usageEstimate(msgs, comp) }
-			}
-			werr := upstream.StreamCaptureWithUsage(w, rc, model, func(comp *upstream.RawCompletion) {
-				captureUsage(&event, comp.Usage)
-				storeChat()
-				// 流式传输中定期保活
-				h.cfg.Pool.PingKeepalive(acct.Name)
-			}, usage)
+
+			comp, aerr := upstream.AggregateRaw(rc)
 			rc.Close()
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
-			if werr != nil {
-				event.Outcome = reqlog.OutcomeStreamError
-				event.Error = werr.Error()
-				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
-				if !isParamInvalidError(werr) {
-					h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+			if aerr != nil {
+				// 非流式路径原本对任何聚合错误都无条件冷却账号——正是它让一个超长
+				// prompt（ModelArts.81001）把健康账号打进 10 分钟冷却。改为与流式路径
+				// 共用同一套归类。
+				lastErr = aerr
+				if cls := classifyUpstreamError(aerr); cls == classBadRequest || cls == classBudget {
+					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
+						"upstream rejected request: "+truncateMsg(aerr.Error(), 200))
+					return
 				}
-			} else {
-				event.OK, event.Outcome = true, reqlog.OutcomeSuccess
-				h.cfg.Pool.NoteSuccess(acct.Name)
+				if h.handleUpstreamError(acct, model, aerr) {
+					writeOpenAIError(w, http.StatusNotFound, "model_not_available",
+						"model "+model+" is not available: "+truncateMsg(aerr.Error(), 200))
+					return
+				}
+				continue
 			}
-			return
-		}
 
-		comp, aerr := upstream.AggregateRaw(rc)
-		rc.Close()
-		h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
-		if aerr != nil {
-			if isParamInvalidError(aerr) {
-				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
-					"upstream rejected request params: "+truncateMsg(aerr.Error(), 200))
-				return
+			content, finish := comp.Content, comp.Finish
+			calls := fromUpstreamToolCalls(comp.ToolCalls)
+			// 原生 tool_calls 是 GLM-5.2 的主路径。仅保留文本协议解析作为
+			// 旧模型/异常输出的兼容兜底，并同时检查 reasoning_content，
+			// 避免模型把工具 JSON 放到思考通道时错误以 stop 结束。
+			if toolsOn && len(calls) == 0 {
+				if c, cleanContent, found := toolResponse(comp.Content + "\n" + comp.Reasoning); found {
+					calls = c
+					assignCallIDs(calls)
+					content = cleanContent
+					finish = "tool_calls"
+				}
 			}
-			lastErr = aerr
-			h.cfg.Pool.Cooldown(acct.Name, pool.CoolErr, h.cfg.ErrCooldown, aerr.Error())
-			continue
-		}
-
-		content, finish := comp.Content, comp.Finish
-		calls := fromUpstreamToolCalls(comp.ToolCalls)
-		// 原生 tool_calls 是 GLM-5.2 的主路径。仅保留文本协议解析作为
-		// 旧模型/异常输出的兼容兜底，并同时检查 reasoning_content，
-		// 避免模型把工具 JSON 放到思考通道时错误以 stop 结束。
-		if toolsOn && len(calls) == 0 {
-			if c, cleanContent, found := toolResponse(comp.Content + "\n" + comp.Reasoning); found {
-				calls = c
-				assignCallIDs(calls)
-				content = cleanContent
+			if len(calls) > 0 {
 				finish = "tool_calls"
 			}
-		}
-		if len(calls) > 0 {
-			finish = "tool_calls"
-		}
-		storeChat()
-		h.cfg.Pool.NoteSuccess(acct.Name)
-		captureUsage(&event, comp.Usage)
-		event.OK, event.Outcome = true, reqlog.OutcomeSuccess
+			// analyze 模式：主模型调用了 analyze_image，在网关内部执行掉，
+			// 把结果回灌成 tool 消息后重新请求。其余工具调用原样交给客户端。
+			if analyzeRouted && len(calls) > 0 && analyzeRounds < analyzeMaxRounds {
+				if results, handled := h.handleAnalyzeToolCalls(r.Context(), calls); handled {
+					analyzeRounds++
+					msgs = append(msgs, upstream.ChatMessage{
+						Role:    "assistant",
+						Content: content,
+						ToolCalls: []upstream.ChatToolCall{
+							{ID: calls[0].ID, Type: "function", Function: upstream.ChatToolFunction{Name: calls[0].Name, Arguments: calls[0].Arguments}},
+						},
+					})
+					msgs = append(msgs, openAIMessagesToUpstream(results)...)
+					storeChat()
+					h.cfg.Pool.NoteSuccess(acct.Name)
+					captureUsage(&event, comp.Usage)
+					answered = true
+					tried = map[string]bool{} // 新一轮重新轮转全部账号
+					break                     // 跳出内层轮转，外层 for 重新发起一次完整请求
+				}
+			}
+			storeChat()
+			h.cfg.Pool.NoteSuccess(acct.Name)
+			captureUsage(&event, comp.Usage)
+			event.OK, event.Outcome = true, reqlog.OutcomeSuccess
 
-		writeJSON(w, http.StatusOK, buildCompletion(model, comp.Reasoning, content, calls, finish, chatID, usageEstimate(msgs, comp)))
+			// 带图改写过的请求：响应已被聚合，客户端要流式时按 SSE chunk 补发。
+			if req.Stream {
+				writeAggregatedAsStream(w, model, comp, content, calls, finish, chatID, usageEstimate(msgs, comp))
+				return
+			}
+			writeJSON(w, http.StatusOK, buildCompletion(model, comp.Reasoning, content, calls, finish, chatID, usageEstimate(msgs, comp)))
+			return
+		} // 内层轮转
+		// 工具结果已回灌：外层 for 重新发起一次完整请求。
+		if answered {
+			continue
+		}
+		msg := "all accounts unavailable (disabled/cooldown)"
+		if lastErr != nil {
+			msg += ": " + lastErr.Error()
+		}
+		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 		return
 	}
-	msg := "all accounts unavailable (disabled/cooldown)"
-	if lastErr != nil {
-		msg += ": " + lastErr.Error()
-	}
-	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
 }
 
 // buildUpstreamMessages 把 OpenAI 消息原生映射为 CodeArts V2 chat-completions。
@@ -1207,24 +1358,85 @@ func buildCompletion(model, reasoning, content string, calls []openAIToolCall, f
 	return resp
 }
 
+// writeAggregatedAsStream 把已聚合的完整响应按 OpenAI 流式格式补发。
+//
+// analyze 模式必须先聚合才能判断是否要回灌工具结果，所以不能直接直通流式。
+// 这里在拿到最终答复后按 chunk 格式回放：先发 reasoning（若有），再发正文或
+// tool_calls，最后 finish_reason + [DONE]。调用方仍按 SSE 消费。
+func writeAggregatedAsStream(w http.ResponseWriter, model string, comp *upstream.RawCompletion,
+	content string, calls []openAIToolCall, finish, chatID string, usage map[string]any) {
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	if chatID != "" {
+		h.Set("X-Codearts-Chat-Id", chatID)
+	}
+	fl, _ := w.(http.Flusher)
+	id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+
+	write := func(v any) {
+		raw, _ := json.Marshal(v)
+		_, _ = io.WriteString(w, "data: "+string(raw)+"\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	chunk := func(delta map[string]any, fin string) {
+		choice := map[string]any{"index": 0, "delta": delta}
+		if fin != "" {
+			choice["finish_reason"] = fin
+		}
+		write(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
+			"model": model, "choices": []any{choice},
+		})
+	}
+
+	if comp.Reasoning != "" {
+		chunk(map[string]any{"reasoning_content": comp.Reasoning}, "")
+	}
+	if len(calls) > 0 {
+		chunk(map[string]any{"tool_calls": toOpenAIToolCalls(calls)}, "")
+	} else if content != "" {
+		chunk(map[string]any{"content": content}, "")
+	}
+	chunk(map[string]any{}, finish)
+	if usage != nil {
+		write(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
+			"model": model, "choices": []any{}, "usage": usage,
+		})
+	}
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	if fl != nil {
+		fl.Flush()
+	}
+}
+
 // handleUpstreamError 记录错误并决定是否处罚账号。
 // 返回 true 表示这是「模型对这个账号不可用」的模型级错误：调用方应立即结束
 // 轮转并向客户端返回明确错误（换账号也是同样的结果）。
 func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err error) bool {
-	if isParamInvalidError(err) {
+	// 长度/形状问题（多模态不支持、参数无效、prompt 超长）：换账号结果相同，
+	// 既不冷却也不轮转，调用方据此回 400。刻意**不** markUnusable——这些模型
+	// 处理纯文本完全正常，标为不可用会让它从 /v1/models 消失、连文本也用不了。
+	if cls := classifyUpstreamError(err); cls == classBadRequest || cls == classBudget {
 		return false
+	}
+	// 「模型对这个账号不可用」是模型能力问题，不是账号故障，必须在状态码分支
+	// **之前**判断：not registered 会被嵌入错误包装成 5xx，落到下面的
+	// `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测调用一个未注册模型，
+	// 整个账号被冷却，后续正常请求全部失败。放在 errors.As 之外，让流式路径的
+	// UpstreamError 也能命中。
+	if reason := upstreamUnavailableReason(err); reason != "" {
+		markUnusable(acct.UID, model, reason)
+		log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, reason)
+		return true
 	}
 	var ae *upstream.ApiError
 	if errors.As(err, &ae) {
-		// 「模型对这个账号不可用」是账号能力问题，不是账号故障，必须在状态码分支
-		// **之前**判断：not registered 会被嵌入错误包装成
-		// 5xx，落到下面的 `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测
-		// 调用一个未注册模型，整个账号被冷却，后续正常请求全部失败。
-		if reason := upstreamUnavailableReason(err); reason != "" {
-			markUnusable(acct.UID, model, reason)
-			log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, reason)
-			return true
-		}
 		switch {
 		case ae.Status == 401 || ae.Code == 401:
 			h.cfg.Pool.Disable(acct.Name, "401 "+ae.Message)
@@ -1234,36 +1446,17 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 			// 并发会话上限（TM.00001041）是瞬时错误：上游会话槽位会被其他请求释放，
 			// 不冷却账号——池的并发锁已防止过载，冷却反而误伤后续请求。
 			log.Printf("upstream concurrent limit (transient) account=%s msg=%s", acct.Name, truncateMsg(ae.Message, 80))
-		case ae.Status >= 500:
-			h.cfg.Pool.Cooldown(acct.Name, pool.CoolErr, h.cfg.ErrCooldown, ae.Error())
 		default:
+			// 5xx 也是「累计到阈值才冷却」：实测 ModelArts.81104（Conversion）
+			// 是间歇性的——同一请求重发即成功，若像旧版那样一个 5xx 立刻冷却
+			// 10 分钟，一次抖动就会打瘫整池。真正的账号故障会连续失败，
+			// 照样会被 ErrThreshold 拦下。
 			h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 		}
 		return false
 	}
 	h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 	return false
-}
-
-// isParamInvalidError 判断是否为上游「请求参数无效」类错误（InferHub.001001005）。
-// 这类错误是客户端请求形状问题：换账号结果相同，绝不能冷却账号（曾因此打停整池）。
-func isParamInvalidError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var apiErr *upstream.ApiError
-	var streamErr *upstream.UpstreamError
-	var message string
-	switch {
-	case errors.As(err, &apiErr):
-		message = apiErr.Message
-	case errors.As(err, &streamErr):
-		message = streamErr.Code + " " + streamErr.Msg
-	default:
-		return false
-	}
-	low := strings.ToLower(message)
-	return strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid")
 }
 
 // isConcurrentLimitError 判断是否为上游并发会话上限错误（瞬时、可重试）。

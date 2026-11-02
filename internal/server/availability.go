@@ -131,17 +131,58 @@ func trafficIdleFor(accountID string) time.Duration {
 	return time.Since(t)
 }
 
-// upstreamUnavailableReason 把上游错误归类为「该模型对这个账号不可用」，否则返回空串。
+// errClass 是上游错误的处置类别。判定只看错误文本（ApiError 与流内
+// UpstreamError 的字符串都带业务码），这样流式/非流式/探测三条路径共用一套规则。
+type errClass int
+
+const (
+	// classAccountFault 账号侧故障（5xx、网络、鉴权异常）：冷却账号并轮转。
+	classAccountFault errClass = iota
+	// classModelUnusable 该模型对此账号不可用（未注册）：记模型不可用、不冷却、不轮转。
+	classModelUnusable
+	// classBudget 请求本身超出模型能力（prompt 过长）：不冷却、不轮转、
+	// 换模型也没用，直接给客户端 400。实测 ModelArts.81001：同一个超长请求
+	// 打 1M 上下文的 deepseek 成功、打 131k 的 qwen3-vl 报 81001——
+	// 是「这个模型装不下」，不是账号坏了。
+	classBudget
+	// classBadRequest 客户端请求形状问题（参数无效、多模态不支持）：不冷却、不轮转。
+	classBadRequest
+)
+
+// errClassText 按错误文本分类。三处判定必须放在同一个地方，
+// 否则同一错误在流式与非流式路径会得到不同处置（曾因此出现
+// 「流式不冷却、非流式冷却」的割裂）。
+func errClassText(s string) errClass {
+	low := strings.ToLower(s)
+	switch {
+	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered"):
+		return classModelUnusable
+	case strings.Contains(low, "81001") || strings.Contains(low, "prompt") && strings.Contains(low, "exceed"):
+		return classBudget
+	case strings.Contains(low, "not multimodal") ||
+		strings.Contains(low, "001001020") ||
+		strings.Contains(low, "001001005") ||
+		strings.Contains(low, "request param is invalid"):
+		return classBadRequest
+	}
+	return classAccountFault
+}
+
+// classifyUpstreamError 归类上游错误。nil 视为账号故障便于调用方少写分支，
+// 调用方应先用 err==nil 短路。
+func classifyUpstreamError(err error) errClass {
+	if err == nil {
+		return classAccountFault
+	}
+	return errClassText(err.Error())
+}
+
+// upstreamUnavailableReason 在错误属于「该模型对这个账号不可用」时返回说明，否则空串。
 func upstreamUnavailableReason(err error) string {
 	if err == nil {
 		return ""
 	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "002002009") || strings.Contains(msg, "not registered"):
-		return "模型未在当前账号注册"
-	}
-	return ""
+	return upstreamUnavailableReasonText(err.Error())
 }
 
 // probeModel 用一条最小请求真实试一次该模型，并记录结果。

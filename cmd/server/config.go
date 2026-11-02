@@ -43,6 +43,13 @@ type Config struct {
 	MaxConcurrent   int    `json:"max_concurrent"`   // 单账号最大并发数（新增）
 	KeepaliveWindow string `json:"keepalive_window"` // 保活窗口（新增）
 
+	// ImageHandling 带图请求打到「上游明确不支持图片」的模型时如何处理：
+	//   ""/"passthrough"（默认）—— 直接回 400，由调用方自行改用视觉模型；
+	//   "analyze" —— 复刻官方 AnalyzeImagePlugin：图片换成占位符交给主模型，
+	//     主模型按需调用 analyze_image 工具，网关内部用视觉模型分析后回灌结果。
+	// 不提供「剔除图片只留文本」：静默丢图会让模型答非所问。
+	ImageHandling string `json:"image_handling"`
+
 	// LoginClientID WebUI 登录使用的 OAuth client_id（留空用默认 codearts-agent）。
 	LoginClientID string `json:"login_client_id"`
 
@@ -350,6 +357,13 @@ func (c *Config) normalize() error {
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 2 // 上游单账号并发会话上限 3 且释放慢，留一个槽位余量
+	}
+	switch c.ImageHandling {
+	case "", "passthrough":
+		c.ImageHandling = "passthrough"
+	case "analyze":
+	default:
+		return fmt.Errorf("image_handling must be \"passthrough\" or \"analyze\", got %q", c.ImageHandling)
 	}
 	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
 	if hours := validHours(c.CheckinHours); len(hours) > 0 {

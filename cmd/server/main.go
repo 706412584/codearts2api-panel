@@ -87,6 +87,7 @@ func main() {
 		}(),
 		QueueMaxAttempts: cfg.QueueMaxAttempts,
 		ConvStateFile:    cfg.StateFile + ".chats.json",
+		ImageHandling:    cfg.ImageHandling,
 		WatchInfo: map[string]any{
 			"enabled":              cfg.Watch.Enabled,
 			"credits_auto_claim":   cfg.CreditsAutoClaim,

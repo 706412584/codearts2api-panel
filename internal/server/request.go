@@ -29,6 +29,7 @@ type openAIMessage struct {
 	ToolCalls        []openAIToolCall
 	ToolCallID       string // role=tool 时对应的 call id
 	Name             string // role=tool 时的函数名（部分客户端会带）
+	HasImages        bool   // content 里含 image_url 分片（供视觉模型路由判断）
 }
 
 // toolChoiceOpenAI 归一化后的 tool_choice。
@@ -166,6 +167,7 @@ func parseMessage(rm json.RawMessage) (openAIMessage, error) {
 					if url, ok := image["url"].(string); !ok || strings.TrimSpace(url) == "" {
 						return openAIMessage{}, errors.New("image_url requires a nonempty url")
 					}
+					m.HasImages = true
 				default:
 					return openAIMessage{}, errors.New("unsupported content block type")
 				}
