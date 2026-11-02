@@ -545,25 +545,29 @@ func (h *Handler) modelKnownUnusable(model string) bool {
 
 // modelEntries 把账号模型目录包装成 OpenAI /v1/models 条目。
 //
-// 上游模型 ID 区分大小写：既列精确 ID（GLM-5.2），也补一条小写别名（glm-5.2，
-// 老客户端习惯用小写），聊天时由 CanonicalModel 归一回精确 ID。
+// 对外只暴露小写 ID：上游注册名区分大小写（GLM-5.2 用小写发会被回
+// InferHub.002002009.404，2026-11-02 实测），但同一个模型不该因为大小写列出两条。
+// 目录里也不会存在「只差大小写、其余属性相同」的两条 —— MergeModels 已经按小写 ID
+// 合并过 —— 所以这里逐条小写化、按小写去重即可；聊天时再由 CanonicalModel /
+// CatalogModelID 还原成该账号注册的那个写法。
 //
 // 目录为空就返回空列表：没有账号时客户端应该看到「这里没有模型」，
 // 而不是一张硬编码的、没经过任何上游确认的模型表。
 func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 	out := make([]map[string]any, 0, len(infos))
 	seen := map[string]bool{}
-	add := func(mi upstream.ModelInfo) {
-		if mi.ID == "" || seen[mi.ID] {
-			return
+	for _, mi := range infos {
+		id := strings.ToLower(mi.ID)
+		if id == "" || seen[id] {
+			continue
 		}
-		seen[mi.ID] = true
+		seen[id] = true
 		ctx := mi.ContextWindow
 		if ctx == 0 {
 			ctx = 131072 // 兜底
 		}
 		entry := map[string]any{
-			"id":             mi.ID,
+			"id":             id,
 			"object":         "model",
 			"created":        1753600000,
 			"owned_by":       "codearts",
@@ -596,17 +600,6 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 			entry["supports_images"] = true
 		}
 		out = append(out, entry)
-	}
-	// addAlias 精确 ID + 就近补一条小写别名（已是小写则跳过）。
-	addAlias := func(mi upstream.ModelInfo) {
-		add(mi)
-		if lower := strings.ToLower(mi.ID); lower != mi.ID {
-			mi.ID = lower
-			add(mi)
-		}
-	}
-	for _, mi := range infos {
-		addAlias(mi)
 	}
 	return out
 }
