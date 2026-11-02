@@ -191,11 +191,13 @@
       // 模型 ID 列的原生 tooltip：模型描述，有 notice 时追加一行。
       const tip = [m.model_desc, m.notice].filter(Boolean).join('\n');
       const title = tip ? ' title="' + esc(tip).replace(/\n/g, '&#10;') + '"' : '';
-      // 徽标行：上游标签（紫）、被隐藏的模型（橘）、支持图片（绿）。
+      // 徽标行：上游标签（紫）、被隐藏的模型（橘）、输入模态（绿＝视觉理解 / 灰＝纯文本）。
+      // 上游只在支持图片时才回 supports_images，因此「不是 true」就是纯文本；
+      // 这样每个模型都能一眼看出能不能贴图，不必点开。
       const badges = [
         m.model_tag ? '<span class="pill tag">' + esc(m.model_tag) + '</span>' : '',
-        m.display_enabled === false ? '<span class="pill warn">隐藏模型</span>' : '',
-        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : ''
+        m.display_enabled === false ? '<span class="pill warn">辅助模型</span>' : '',
+        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>'
       ].filter(Boolean).join('');
       const badgeRow = badges ? '<div class="model-badges">' + badges + '</div>' : '';
       return '<tr><td class="mono"' + title + '>' + esc(m.id) + name + badgeRow + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';

@@ -59,14 +59,14 @@ func TestModelEntriesLowercaseAndDeduped(t *testing.T) {
 	if _, ok := byID["deepseek-v4-pro-0813"]["model_desc"]; ok {
 		t.Errorf("没有描述时不应输出 model_desc，got=%v", byID["deepseek-v4-pro-0813"])
 	}
-	// 面板徽标数据源：标签、隐藏模型、视觉理解。
+	// 面板徽标数据源：标签、辅助模型、视觉理解。
 	if glm := byID["glm-5.2"]; glm["model_tag"] != "闲时折扣" || glm["display_enabled"] != false || glm["supports_images"] != true {
 		t.Errorf("徽标字段应传给面板，got=%v", glm)
 	}
 	plain := byID["deepseek-v4-pro-0813"]
 	for _, key := range []string{"model_tag", "display_enabled", "supports_images"} {
 		if _, ok := plain[key]; ok {
-			// 上游没给 display_enabled（nil）不得被当成 false，否则会被标成「隐藏模型」。
+			// 上游没给 display_enabled（nil）不得被当成 false，否则会被标成「辅助模型」。
 			t.Errorf("上游没有表态时不应输出 %s，got=%v", key, plain)
 		}
 	}

@@ -38,8 +38,9 @@ type ModelInfo struct {
 	Notice string `json:"notice,omitempty"`
 	// Tag 上游模型标签（如「闲时折扣」），面板以紫色徽标展示；空串表示无标签。
 	Tag string `json:"model_tag,omitempty"`
-	// DisplayEnabled / SupportsImages 保留上游原始布尔值：nil 表示上游没给这个字段，
-	// 面板据此决定是否显示「隐藏模型」「视觉理解」徽标（nil 时都不显示）。
+	// DisplayEnabled / SupportsImages 保留上游原始布尔值：nil 表示上游没给这个字段。
+	// 面板据此决定徽标：DisplayEnabled 只有明确 false 才标「辅助模型」；SupportsImages
+	// 是 true 标「视觉理解」，否则（含 nil）标「纯文本」—— 上游只在支持图片时才回这个字段。
 	DisplayEnabled *bool `json:"display_enabled,omitempty"`
 	SupportsImages *bool `json:"supports_images,omitempty"`
 }
