@@ -7,7 +7,7 @@ services:
     # /app is owned by this user in the image, including config-save temp files.
     user: "10001:10001"
     ports:
-      - "127.0.0.1:7866:7866"
+      - "7866:7866"
     environment:
       TZ: Asia/Shanghai
       CA2A_LISTEN: ":7866"
