@@ -7,7 +7,7 @@ services:
     # 或写进 .env（PUID=1000 / PGID=1000）。
     user: "${PUID:-10001}:${PGID:-10001}"
     ports:
-      - "127.0.0.1:7866:7866"
+      - "7866:7866"
     volumes:
       - ./auths:/app/auths
       - ./data:/app/data
