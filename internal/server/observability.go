@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,12 +142,41 @@ type usageResponse struct {
 }
 
 func (h *Handler) adminUsage(w http.ResponseWriter, r *http.Request) {
+	// window=1：面板按时间范围要的是聚合，不是逐条记录。30 天的归档逐条传既慢又没人看。
+	if r.URL.Query().Get("window") != "" {
+		from, to := usageWindowBounds(r)
+		stats, err := h.cfg.RequestLog.WindowStats(from, to)
+		if err != nil {
+			// 归档读不完整：数字仍然可用（坏文件被跳过），把原因告诉面板而不是整页报错。
+			fmt.Fprintln(h.logs, "usage window: "+err.Error())
+		}
+		writeJSON(w, http.StatusOK, stats)
+		return
+	}
 	snap := h.cfg.RequestLog.Snapshot()
 	// 进程内指标随重启清零，归档（data/requests）才是能跨重启的那本账：
 	// 只要归档里有记录就带上，页面据此一直显示历史 —— 不能只在「本进程还没请求」
 	// 时才回看，否则重启后跑一条请求，整页就塌成一条。
 	snap.History = h.cfg.RequestLog.History(reqlog.HistoryLimit)
 	writeJSON(w, http.StatusOK, usageResponse{Snapshot: snap, AttemptErrors: h.attemptErrs.snapshot()})
+}
+
+// usageWindowBounds 解析 from/to：RFC3339 或 Unix 毫秒，缺省/非法即该侧不设界。
+func usageWindowBounds(r *http.Request) (from, to time.Time) {
+	parse := func(key string) time.Time {
+		raw := strings.TrimSpace(r.URL.Query().Get(key))
+		if raw == "" {
+			return time.Time{}
+		}
+		if at, err := time.Parse(time.RFC3339, raw); err == nil {
+			return at
+		}
+		if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return time.UnixMilli(ms)
+		}
+		return time.Time{}
+	}
+	return parse("from"), parse("to")
 }
 
 type responseObserver struct {

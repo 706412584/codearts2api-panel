@@ -33,8 +33,8 @@ const storage = () => { const values = new Map(); return { getItem: k => values.
 const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
 const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
 const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, attempt_errors: { 'req-retried': 'upstream 429: TPM <limit> & retry later' }, recent: [{ request_id: 'req-retried', time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, attempts: 3, total_tokens: 1200, completion_tokens: 200, duration_ms: 500, prompt_tokens: 1000, cache_hit_tokens: 800, cache_miss_tokens: 200, ttfb_ms: 300 }, { request_id: 'req-first-try', time: new Date().toISOString(), model: 'failed-model', ok: false, outcome: 'http_error', status: 503, attempts: 1, error: 'upstream <failed> & unavailable', duration_ms: 100, ttfb_ms: 900 }] };
-const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
-const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path === 'usage') data = usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
+const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, tokens: 1200, avg_duration_ms: 4200 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
+const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  vm.runInContext(script, context);
@@ -57,12 +57,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  account.checkin_done = false; account.checkin = undefined; ids.get('accountSearch').oninput();
  assert.equal(checkinButton()[1], '签到');
  for (const page of ['models', 'usage', 'logs', 'config']) { context.location.hash = '#' + page; events.hashchange(); await tick(); await tick(); assert.equal(ids.get('pageError').hidden, true, 'page failed: ' + page); }
- assert.equal(ids.get('usageTTFT').textContent, '600 ms', 'TTFT 只按真正返回过首字的请求平均');
- assert.equal(ids.get('usageCacheHit').textContent, '80.0%', '缓存命中率按已上报的 token 加权');
- assert.equal(ids.get('usageCacheNote').textContent, '命中 800 · 未命中 200', '命中率卡片要给出命中/未命中 token 数');
- assert.equal(ids.get('usagePromptTokens').textContent, '1,000');
- assert.equal(ids.get('usageCompletionTokens').textContent, '200');
- assert.equal(ids.get('usageTokens').textContent, '1,200', '总计 Token 取上游总量');
  assert(ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  assert(ids.get('modelsBody').innerHTML.includes('Kimi &lt;K3&gt;'));
  assert(!ids.get('modelsBody').innerHTML.includes('<K3>'));
@@ -74,40 +68,55 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(ids.get('themeIconSun').hidden, true); assert.equal(ids.get('themeIconMoon').hidden, false);
  ids.get('themeButton').onclick();
  assert.equal(ids.get('themeIconSun').hidden, false); assert.equal(ids.get('themeIconMoon').hidden, true);
+ context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
  assert(ids.get('usageChart').innerHTML.includes('<svg'));
- // 用量页：本地归档（data/requests）与进程内记录合并去重 —— 重启后要有历史，
- // 本进程跑过请求之后也不能塌成一条。
- const liveUsage = { ...usage, recent: [...usage.recent] };
- const archivedRow = (i, model, ok) => ({ time: new Date(Date.now() - (i + 10) * 60e3).toISOString(), request_id: 'arch-' + i, model, ok, status: ok ? 200 : 500, total_tokens: 10, duration_ms: 100 });
- const archivedRows = [archivedRow(1, 'archived-a', true), archivedRow(2, 'archived-b', false)];
- usage.completed = 0; usage.succeeded = 0; usage.failed = 0; usage.recent = [];
- usage.history = { recent: archivedRows };
- context.location.hash = '#accounts'; events.hashchange(); await tick();
- context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
- assert.equal(ids.get('usageCompleted').textContent, '2', 'archive rows must feed the cards');
- assert.equal(ids.get('usageSuccess').textContent, '50.0%');
- assert(ids.get('usageCompletedNote').textContent.includes('归档'));
- assert.equal(ids.get('usageTTFT').textContent, '—', '归档行没有首字时间时不显示数字');
- assert.equal(ids.get('usageCacheHit').textContent, '—', '归档行没有缓存字段时不显示数字');
- assert.equal(ids.get('usageCacheNote').textContent, '上游未上报缓存用量');
- assert.equal(ids.get('usagePromptTokens').textContent, '—', '没有输入用量时显示 — 而不是 0');
- assert.equal(ids.get('usageCompletionTokens').textContent, '—', '没有输出用量时显示 — 而不是 0');
+ // 用量页：卡片、趋势、模型汇总都用服务端按窗口聚合的结果（window=1），前端不再逐条合并记录。
+ assert.equal(ids.get('usageCompleted').textContent, '128');
+ assert.equal(ids.get('usageSuccess').textContent, '98.4%');
+ assert.equal(ids.get('usageOutcomes').textContent, '成功 126 · 失败 2');
+ assert.equal(ids.get('usageDuration').textContent, '4.2 s');
+ assert.equal(ids.get('usageTTFT').textContent, '620 ms');
+ assert.equal(ids.get('usageCacheHit').textContent, '80.0%');
+ assert.equal(ids.get('usageCacheNote').textContent, '命中 800 · 未命中 200');
+ assert.equal(ids.get('usagePromptTokens').textContent, '1,000');
+ assert.equal(ids.get('usageCompletionTokens').textContent, '200');
+ assert.equal(ids.get('usageTokens').textContent, '1,200');
+ assert(ids.get('usageCompletedNote').textContent.includes('近 30 天') && ids.get('usageCompletedNote').textContent.includes('归档'), '卡片注释要写明范围与归档: ' + ids.get('usageCompletedNote').textContent);
  assert(ids.get('usageChartNote').textContent.includes('归档'));
- assert(ids.get('usageModelsBody').innerHTML.includes('archived-a'), 'archive rows must feed the model table');
- // 本进程跑过一条请求：归档仍然要在，页面上是「进程 + 归档」的并集。
- usage.recent = [liveUsage.recent[0]];
- context.location.hash = '#accounts'; events.hashchange(); await tick();
- context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
- assert.equal(ids.get('usageCompleted').textContent, '3', 'live + archived rows must merge, not replace');
- assert(ids.get('usageModelsBody').innerHTML.includes('archived-a') && ids.get('usageModelsBody').innerHTML.includes('test-model'), 'merged rows must feed the model table');
- // 同一条请求既在进程里又在归档里：只算一次。
- usage.history = { recent: [usage.recent[0], ...archivedRows] };
- context.location.hash = '#accounts'; events.hashchange(); await tick();
- context.location.hash = '#usage'; events.hashchange(); await tick(); await tick();
- assert.equal(ids.get('usageCompleted').textContent, '3', 'duplicate rows must be dropped');
+ assert(ids.get('usageModelsBody').innerHTML.includes('test-model'), '模型汇总来自服务端聚合');
+ // 查询串：默认近 30 天必须带 window=1 与 from/to，服务端才按窗口扫归档。
+ const windowQueries = () => requests.filter(r => r.url.includes('/admin/api/usage') && r.url.includes('window=1'));
+ assert(windowQueries().length >= 1, '用量页要请求窗口聚合');
+ const defaultQuery = decodeURIComponent(windowQueries().at(-1).url);
+ assert(/window=1&from=[^&]+&to=[^&]+/.test(defaultQuery), '默认范围要带 from/to: ' + defaultQuery);
+ // 预设范围选中即重新查询：口径在服务端，换范围必须重新拉一次。
+ let beforeRange = requests.length;
+ ids.get('usageRange').value = '7d'; ids.get('usageRange').onchange(); await tick(); await tick();
+ assert(requests.length > beforeRange, '换预设范围要重新查询');
+ assert(windowQueries().at(-1).url !== windowQueries().at(-2).url, '不同范围的查询串不能相同');
+ assert(ids.get('usageCompletedNote').textContent.startsWith('近 7 天'), '注释要跟当前范围: ' + ids.get('usageCompletedNote').textContent);
+ // 自定义：先露出两个 datetime-local 和查询按钮，点「查询」才发新请求（填到一半不扫归档）。
+ assert.equal(ids.get('usageCustom').hidden, true, '预设范围下不显示自定义输入');
+ ids.get('usageRange').value = 'custom'; ids.get('usageRange').onchange(); await tick(); await tick();
+ assert.equal(ids.get('usageCustom').hidden, false, '选自定义要露出时间输入与查询按钮');
+ assert(ids.get('usageFrom').value && ids.get('usageTo').value, '切到自定义时输入框要有默认值');
+ const localStamp = ms => { const d = new Date(ms), pad = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+ ids.get('usageFrom').value = localStamp(Date.now() - 864e5);
+ ids.get('usageTo').value = localStamp(Date.now() + 36e5);
+ const beforeQuery = requests.length;
+ ids.get('usageQuery').onclick(); await tick(); await tick();
+ assert.equal(requests.length, beforeQuery + 1, '点「查询」只发一次请求');
+ const customQuery = decodeURIComponent(windowQueries().at(-1).url);
+ assert(customQuery.includes('from=' + new Date(ids.get('usageFrom').value).toISOString()), '自定义时间要按本地时刻换算成绝对时刻: ' + customQuery);
+ ids.get('usageRange').value = '30d'; ids.get('usageRange').onchange(); await tick(); await tick();
+ assert(ids.get('usageCompletedNote').textContent.startsWith('近 30 天'), '切回预设范围要恢复');
+ context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
+ // 运行日志页仍走非窗口接口：进程记录 + 归档合并去重后展示（窗口聚合只管用量页）。
+ const archivedRows = [{ request_id: 'arch-1', time: new Date(Date.now() - 11 * 60e3).toISOString(), model: 'archived-a', ok: true, status: 200, total_tokens: 10, duration_ms: 100 }];
+ usage.history = { recent: archivedRows };
  context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
  assert(ids.get('requestLogsBody').innerHTML.includes('archived-a'), 'archive rows must feed the request log');
- Object.assign(usage, liveUsage); delete usage.history;
+ delete usage.history;
  context.location.hash = '#logs'; events.hashchange(); await tick(); await tick();
  assert(ids.get('runtimeLogs').innerHTML.includes('&lt;script&gt;'));
  assert(ids.get('requestLogsBody').innerHTML.includes('upstream &lt;failed&gt; &amp; unavailable'));

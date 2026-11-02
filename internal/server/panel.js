@@ -216,48 +216,10 @@
   }
   // 进程指标随重启清零，归档（data/requests）才是跨重启的账本：两者合并去重后展示，
   // 归档里还没落盘的新请求也照样出现在列表里。没有归档时才退回纯进程数据。
-  function usageTotals(recent) {
-    let succeeded = 0, duration = 0;
-    for (const row of recent) { succeeded += Number(eventOK(row)); duration += Number(row.duration_ms) || 0; }
-    return { completed: recent.length, succeeded, failed: recent.length - succeeded, avg_duration_ms: recent.length ? duration / recent.length : 0 };
-  }
-  // 首字时间只对「真的吐出过首字」的请求有意义：失败在首字之前、非流式没记录的请求
-  // 不参与平均，否则一律当成 0 会把两个数字拉低成没意义的乐观值。
-  function ttftAverage(recent) {
-    let sum = 0, count = 0;
-    for (const row of recent) { const ms = Number(row.ttfb_ms); if (ms > 0) { sum += ms; count++; } }
-    return count ? sum / count : null;
-  }
-  // 缓存命中率按 token 加权（总命中 / 总 prompt 缓存 token），不是逐条命中率的平均：
-  // 一条 10 万 token 全命中的请求不该和一条 10 token 的请求等权。
-  // 老归档只有命中数，未命中按 prompt 差值补；两个字段都没有＝上游没报缓存，直接跳过。
-  // 同时把两个绝对数带回给卡片：没有样本时返回 null，让界面显示「—」而不是 0%。
-  function cacheTotals(recent) {
-    let hit = 0, miss = 0, seen = false;
-    for (const row of recent) {
-      if (row.cache_hit_tokens === undefined && row.cache_miss_tokens === undefined) continue;
-      const hits = Number(row.cache_hit_tokens) || 0;
-      hit += hits;
-      miss += row.cache_miss_tokens !== undefined ? Number(row.cache_miss_tokens) || 0 : Math.max(0, (Number(row.prompt_tokens) || 0) - hits);
-      seen = true;
-    }
-    if (!seen) return null;
-    return { hit, miss, rate: hit + miss > 0 ? hit / (hit + miss) * 100 : null };
-  }
-  // 输入/输出 Token 只累加真的上报了该字段的请求：整批都没上报时给 null（显示「—」），
-  // 而不是把「没有数据」画成 0。
-  function sumTokens(recent, key) {
-    let sum = 0, seen = false;
-    for (const row of recent) {
-      if (row[key] === undefined || row[key] === null) continue;
-      sum += Number(row[key]) || 0; seen = true;
-    }
-    return seen ? sum : null;
-  }
   function usageView(data) {
     const live = Array.isArray(data.recent) ? data.recent : [];
     const archived = data.history && Array.isArray(data.history.recent) ? data.history.recent : [];
-    if (!archived.length) return { fromArchive: false, recent: live, totals: data };
+    if (!archived.length) return { fromArchive: false, recent: live };
     const seen = new Set(), merged = [];
     for (const row of [...live, ...archived]) {
       const key = row.request_id || [row.time, row.model, row.status, row.duration_ms].join('|');
@@ -265,36 +227,67 @@
       seen.add(key); merged.push(row);
     }
     merged.sort((a, b) => new Date(b.time) - new Date(a.time));
-    return { fromArchive: true, recent: merged, totals: usageTotals(merged) };
+    return { fromArchive: true, recent: merged };
   }
-  function renderUsage(data) {
-    const view = usageView(data), recent = view.recent, totals = view.totals;
-    $('usageCompleted').textContent = number(totals.completed);
-    $('usageSuccess').textContent = totals.completed > 0 ? (Number(totals.succeeded || 0) / totals.completed * 100).toFixed(1) + '%' : '—';
-    $('usageOutcomes').textContent = '成功 ' + number(totals.succeeded) + ' · 失败 ' + number(totals.failed);
-    $('usageDuration').textContent = duration(totals.avg_duration_ms);
-    const ttft = ttftAverage(recent), cache = cacheTotals(recent);
-    $('usageTTFT').textContent = ttft === null ? '—' : duration(ttft);
-    $('usageCacheHit').textContent = cache && cache.rate !== null ? cache.rate.toFixed(1) + '%' : '—';
-    $('usageCacheNote').textContent = cache ? '命中 ' + number(cache.hit) + ' · 未命中 ' + number(cache.miss) : '上游未上报缓存用量';
-    const promptTokens = sumTokens(recent, 'prompt_tokens'), completionTokens = sumTokens(recent, 'completion_tokens');
-    $('usagePromptTokens').textContent = promptTokens === null ? '—' : number(promptTokens);
-    $('usageCompletionTokens').textContent = completionTokens === null ? '—' : number(completionTokens);
-    $('usageTokens').textContent = recent.length ? number(recent.reduce((sum, row) => sum + tokenTotal(row), 0)) : '—';
-    $('usageCompletedNote').textContent = view.fromArchive ? '本地归档 data/requests（含重启前的记录）' : '当前服务进程累计';
-    $('usageChartNote').textContent = view.fromArchive
-      ? '本地归档 data/requests 最近 ' + recent.length + ' 条记录按小时聚合，新请求落盘后自动计入。'
-      : '基于最近 ' + recent.length + ' 条记录，按小时聚合；进程重启后指标重新累计。';
-    const grouped = new Map();
-    recent.forEach(row => { const id = row.model || '未知模型'; const g = grouped.get(id) || { requests: 0, succeeded: 0, tokens: 0, duration: 0 }; g.requests++; g.succeeded += Number(eventOK(row)); g.tokens += tokenTotal(row); g.duration += Number(row.duration_ms) || 0; grouped.set(id, g); });
-    $('usageModelsBody').innerHTML = [...grouped].sort((a, b) => b[1].tokens - a[1].tokens).map(([id, g]) => '<tr><td class="mono">' + esc(id) + '</td><td>' + number(g.requests) + '</td><td>' + number(g.succeeded) + '</td><td>' + number(g.tokens) + '</td><td>' + duration(g.duration / g.requests) + '</td></tr>').join('') || emptyRow(5, '暂无请求。通过 /v1/chat/completions 发起对话后可查看用量。');
-    renderChart(recent);
+  // —— 请求用量 ——
+  // 数据由服务端按窗口聚合（/admin/api/usage?window=1&from&to）：30 天的归档可能几十万条，
+  // 逐条拉回浏览器既慢又没人看；这里只负责选窗口、发查询、渲染聚合结果。
+  const USAGE_RANGES = { today: '今天', '24h': '近 24 小时', '3d': '近 3 天', '7d': '近 7 天', '30d': '近 30 天', custom: '自定义' };
+  const USAGE_HOURS = { '24h': 24, '3d': 72, '7d': 168, '30d': 720 };
+  let usageRange = '30d', usageCustom = { from: '', to: '' };
+  function usageWindow() {
+    const now = new Date();
+    if (usageRange === 'custom') {
+      const parse = value => { const at = value ? new Date(value) : null; return at && !Number.isNaN(at.getTime()) ? at : null; };
+      // 两端都留空＝不设界（等同「全部」）；只填一端就只卡那一端。
+      return { from: parse(usageCustom.from), to: parse(usageCustom.to), label: USAGE_RANGES.custom };
+    }
+    if (usageRange === 'today') {
+      const start = new Date(now); start.setHours(0, 0, 0, 0);
+      return { from: start, to: now, label: USAGE_RANGES.today };
+    }
+    const hours = USAGE_HOURS[usageRange] || USAGE_HOURS['30d'];
+    return { from: new Date(now.getTime() - hours * 3600e3), to: now, label: USAGE_RANGES[usageRange] || USAGE_RANGES['30d'] };
   }
-  function renderChart(recent) {
-    const hours = new Map();
-    recent.forEach(row => { const t = new Date(row.time || row.ts).getTime(); if (Number.isFinite(t)) { const h = Math.floor(t / 3600000) * 3600000; hours.set(h, (hours.get(h) || 0) + 1); } });
-    const points = [...hours].sort((a, b) => a[0] - b[0]);
-    if (!points.length) { $('usageChart').textContent = '暂无请求数据。完成一次模型调用后刷新此页。'; return; }
+  // datetime-local 只认本地时间串，toISOString 是 UTC，会差出时区那几个小时。
+  function localInputValue(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+  // 窗口交给服务端算：from/to 用绝对时刻（RFC3339），两边不用各自解释一遍时间。
+  function usageQuery() {
+    const win = usageWindow(), parts = ['window=1'];
+    if (win.from) parts.push('from=' + encodeURIComponent(win.from.toISOString()));
+    if (win.to) parts.push('to=' + encodeURIComponent(win.to.toISOString()));
+    return parts.join('&');
+  }
+  function renderUsage(stats) {
+    const s = stats || {}, win = usageWindow(), label = win.label;
+    // 控件始终跟着状态走：刷新、切页、登出后再回来，下拉框不会和实际生效的范围对不上。
+    $('usageRange').value = usageRange;
+    $('usageCustom').hidden = usageRange !== 'custom';
+    const completed = Number(s.completed) || 0;
+    const hit = Number(s.cache_hit_tokens) || 0, miss = Number(s.cache_miss_tokens) || 0;
+    const cacheSamples = Number(s.cache_samples) || 0, tokenSamples = Number(s.token_samples) || 0;
+    $('usageCompleted').textContent = number(completed);
+    $('usageSuccess').textContent = completed > 0 ? (Number(s.success_rate) || 0).toFixed(1) + '%' : '—';
+    $('usageOutcomes').textContent = '成功 ' + number(s.succeeded || 0) + ' · 失败 ' + number(s.failed || 0);
+    $('usageDuration').textContent = completed > 0 ? duration(s.avg_duration_ms) : '—';
+    $('usageTTFT').textContent = Number(s.ttft_samples) > 0 ? duration(s.ttft_ms) : '—';
+    $('usageCacheHit').textContent = cacheSamples > 0 && hit + miss > 0 ? (hit / (hit + miss) * 100).toFixed(1) + '%' : '—';
+    $('usageCacheNote').textContent = cacheSamples > 0 ? '命中 ' + number(hit) + ' · 未命中 ' + number(miss) : '上游未上报缓存用量';
+    $('usagePromptTokens').textContent = tokenSamples > 0 ? number(s.prompt_tokens) : '—';
+    $('usageCompletionTokens').textContent = tokenSamples > 0 ? number(s.completion_tokens) : '—';
+    $('usageTokens').textContent = tokenSamples > 0 ? number(s.total_tokens) : '—';
+    $('usageCompletedNote').textContent = label + ' · ' + number(completed) + ' 条请求' + (s.archive ? '（含本地归档）' : '');
+    $('usageChartNote').textContent = label + ' · ' + (Array.isArray(s.hours) ? s.hours.length : 0) + ' 个有请求的小时' + (s.archive ? '；含本地归档 data/requests' : '') + '。';
+    const models = Array.isArray(s.models) ? s.models : [];
+    $('usageModelsBody').innerHTML = models.map(m => '<tr><td class="mono">' + esc(m.model || '未知模型') + '</td><td>' + number(m.requests) + '</td><td>' + number(m.succeeded) + '</td><td>' + number(m.tokens) + '</td><td>' + duration(m.avg_duration_ms) + '</td></tr>').join('') || emptyRow(5, '该时间段内没有请求。换个范围或点「查询」再试。');
+    renderChart(Array.isArray(s.hours) ? s.hours : [], label);
+  }
+  function renderChart(hours, rangeLabel = '') {
+    const points = hours.map(hour => [Number(hour.t), Number(hour.count) || 0]).filter(point => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
+    if (!points.length) { $('usageChart').textContent = (rangeLabel ? rangeLabel + '：' : '') + '没有请求数据。'; return; }
     const W = 1000, H = 220, left = 38, top = 12, bottom = 36, usableH = H - top - bottom;
     const max = Math.max(4, Math.ceil(Math.max(...points.map(p => p[1])) / 4) * 4);
     const slot = (W - left - 12) / points.length, width = Math.min(64, slot * .62);
@@ -303,6 +296,22 @@
     points.forEach(([t, count], i) => { const x = left + slot * (i + .5), height = count / max * usableH, label = new Date(t).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', hour12: false }); svg += '<rect class="chart-bar" x="' + (x - width / 2) + '" y="' + (top + usableH - height) + '" width="' + width + '" height="' + height + '" rx="3"><title>' + esc(label) + '：' + count + ' 次请求</title></rect>'; if (i % Math.max(1, Math.ceil(points.length / 8)) === 0) svg += '<text x="' + x + '" y="207" text-anchor="middle">' + esc(label) + '</text>'; });
     $('usageChart').innerHTML = svg + '</svg>';
   }
+  // 预设范围选中即查；自定义要点「查询」才查，免得两个框还没填完就先扫一遍归档。
+  // 切到自定义时先拿「近 24 小时」垫底，用户看到的是有值的输入框而不是两个空框。
+  $('usageRange').onchange = () => {
+    usageRange = $('usageRange').value || '30d';
+    if (usageRange === 'custom') {
+      const now = new Date();
+      if (!$('usageFrom').value) $('usageFrom').value = localInputValue(new Date(now.getTime() - 24 * 3600e3));
+      if (!$('usageTo').value) $('usageTo').value = localInputValue(now);
+      usageCustom = { from: $('usageFrom').value, to: $('usageTo').value };
+    }
+    refresh();
+  };
+  $('usageQuery').onclick = () => {
+    usageCustom = { from: $('usageFrom').value, to: $('usageTo').value };
+    refresh();
+  };
   function renderRequestLogs(data) {
     const view = usageView(data);
     requestRows = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
@@ -491,7 +500,7 @@
     try {
       if (page === 'accounts') renderOverview(await api('overview'));
       else if (page === 'models') { const data = await api('models' + (forceModels ? '?refresh=1' : '')); models = data.data || []; renderModels(); if (forceModels) toast('模型目录已重新获取'); }
-      else if (page === 'usage') renderUsage(await api('usage'));
+      else if (page === 'usage') renderUsage(await api('usage?' + usageQuery()));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') await loadLogs();
       if (id === refreshID) $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });

@@ -33,3 +33,6 @@ input[type=checkbox]{display:inline-block;width:auto;margin:0}
 .top-sep{color:var(--muted);opacity:.55}
 /* 用量页 8 张卡、数字又长（7 位 token），窄一点的窗口塞 4 列会把数字挤出卡片。 */
 @media(max-width:1150px){.stats-grid.usage{grid-template-columns:repeat(2,minmax(0,1fr))}}
+/* 用量页时间范围：控件靠右，窄屏换行时仍贴右边。datetime-local 跟着 select 用紧凑内边距。 */
+.usage-filter{display:flex;justify-content:flex-end;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px}
+.usage-filter input[type=datetime-local]{padding:5px 9px;font-size:12px}
