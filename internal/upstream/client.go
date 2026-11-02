@@ -561,7 +561,8 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 	if resp.StatusCode >= 400 {
 		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(rawBody), 200), Path: EpChatV2}
+		// 与 embeddedSSEError 的 300 保持一致：面板「尝试次数」的 tooltip 直接展示这段文本。
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(rawBody), 300), Path: EpChatV2}
 	}
 	return preflightSSE(resp.Body)
 }

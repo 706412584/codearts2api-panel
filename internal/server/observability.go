@@ -223,15 +223,27 @@ func captureUsage(event *reqlog.Event, usage map[string]any) {
 	}
 }
 
-func safeLogLabel(value string) string {
+const (
+	// logLabelLimit 模型名、账户名这类标签的单行字节上限。
+	logLabelLimit = 160
+	// errorTextLimit 错误摘要的字节上限：面板「尝试次数」列的 tooltip 直接用这段
+	// 文本，所以比标签宽一些，容得下上游错误码 + 原文。
+	errorTextLimit = 300
+)
+
+// safeLogLabel 把一段外部文本压成单行，并按标签上限截断。
+func safeLogLabel(value string) string { return safeLogText(value, logLabelLimit) }
+
+// safeLogText 去掉控制字符（换行、制表符等）后按上限截断，且不切断 UTF-8。
+func safeLogText(value string, limit int) string {
 	value = strings.Map(func(r rune) rune {
 		if r < 32 {
 			return -1
 		}
 		return r
 	}, value)
-	if len(value) > 160 {
-		value = value[:160]
+	if len(value) > limit {
+		value = value[:limit]
 		for !utf8.ValidString(value) {
 			value = value[:len(value)-1]
 		}
@@ -250,7 +262,7 @@ func requestErrorMessage(body []byte) string {
 }
 
 func safeRequestError(value string) string {
-	return credentialLogPattern.ReplaceAllString(safeLogLabel(value), `${1}"[REDACTED]"`)
+	return credentialLogPattern.ReplaceAllString(safeLogText(value, errorTextLimit), `${1}"[REDACTED]"`)
 }
 
 func (h *Handler) finishRequest(event reqlog.Event, observed *responseObserver, started time.Time) {

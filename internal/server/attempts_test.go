@@ -10,11 +10,27 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/upstream"
 )
+
+// 面板 tooltip 用的错误文本放宽到 300 字节（标签仍是 160），且不切断 UTF-8。
+func TestSafeRequestErrorKeeps300Bytes(t *testing.T) {
+	if got := safeRequestError(strings.Repeat("x", 1000)); len(got) != errorTextLimit {
+		t.Errorf("ASCII 错误应截到 %d 字节，got=%d", errorTextLimit, len(got))
+	}
+	han := safeRequestError(strings.Repeat("错", 200)) // 600 字节
+	if !utf8.ValidString(han) || len(han) != errorTextLimit || utf8.RuneCountInString(han) != 100 {
+		t.Errorf("300 字节应恰好是 100 个汉字：len=%d runes=%d valid=%v",
+			len(han), utf8.RuneCountInString(han), utf8.ValidString(han))
+	}
+	if got := safeLogLabel(strings.Repeat("m", 1000)); len(got) != logLabelLimit {
+		t.Errorf("标签仍应按 %d 字节截断，got=%d", logLabelLimit, len(got))
+	}
+}
 
 // 面板「尝试次数」列只留最近 50 条错误，超出按写入顺序滚动淘汰。
 func TestAttemptErrorsKeepsLastEntries(t *testing.T) {
@@ -44,6 +60,20 @@ func TestAttemptErrorsOverwritesSameRequest(t *testing.T) {
 	ring.note("req-b", "")
 	if snap := ring.snapshot(); len(snap) != 1 || snap["req-a"] != "第二次失败" {
 		t.Fatalf("同一 request_id 应覆盖、且空值不占位：%v", snap)
+	}
+}
+
+// 客户端错误报文按同一上限截断，且不会把汉字切成半个（否则 JSON 里会出现 U+FFFD）。
+func TestTruncateMsgStopsOnUTF8Boundary(t *testing.T) {
+	got := truncateMsg(strings.Repeat("错", 200), errorTextLimit) // 600 字节
+	if len(got) != errorTextLimit || !utf8.ValidString(got) {
+		t.Fatalf("应截到 %d 字节且保持合法 UTF-8：len=%d valid=%v", errorTextLimit, len(got), utf8.ValidString(got))
+	}
+	if short := truncateMsg("短消息", errorTextLimit); short != "短消息" {
+		t.Errorf("未超限时不应改动，got=%q", short)
+	}
+	if edge := truncateMsg(strings.Repeat("错", 200), errorTextLimit+1); !utf8.ValidString(edge) || len(edge) > errorTextLimit+1 {
+		t.Errorf("截断点落在汉字中间时应回退，len=%d valid=%v", len(edge), utf8.ValidString(edge))
 	}
 }
 

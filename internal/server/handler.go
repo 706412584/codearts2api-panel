@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
 	"codearts2api-panel/internal/livecfg"
@@ -925,14 +926,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// Client request-param problem: rotating accounts yields the same 400,
 				// and cooling accounts takes down the whole pool for minutes.
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
-					"upstream rejected request params: "+truncateMsg(serr.Error(), 200))
+					"upstream rejected request params: "+truncateMsg(serr.Error(), errorTextLimit))
 				return
 			}
 			lastErr = serr
 			if h.handleUpstreamError(acct, model, serr) {
 				// 模型级错误：换账号也是同样结果，直接给客户端明确答复。
 				writeOpenAIError(w, http.StatusNotFound, "model_not_available",
-					"model "+model+" is not available: "+truncateMsg(serr.Error(), 200))
+					"model "+model+" is not available: "+truncateMsg(serr.Error(), errorTextLimit))
 				return
 			}
 			continue
@@ -989,7 +990,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			lastUpstreamErr = aerr
 			if isParamInvalidError(aerr) {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
-					"upstream rejected request params: "+truncateMsg(aerr.Error(), 200))
+					"upstream rejected request params: "+truncateMsg(aerr.Error(), errorTextLimit))
 				return
 			}
 			lastErr = aerr
@@ -1282,9 +1283,15 @@ func isQueueLimitError(err *upstream.ApiError) bool {
 		strings.Contains(low, "tpm limit")
 }
 
+// truncateMsg 截断到 n 字节，并回退到合法 UTF-8 边界——截断点常常落在汉字中间，
+// 半个字进了 JSON 会被替换成 U+FFFD。
 func truncateMsg(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
+	}
+	s = s[:n]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
 	}
 	return s
 }

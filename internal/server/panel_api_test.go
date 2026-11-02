@@ -194,7 +194,7 @@ func TestFailureErrorIsBoundedAndRedacted(t *testing.T) {
 		t.Fatalf("unsafe failure error: %+v", recent)
 	}
 	h.finishRequest(reqlog.Event{Error: strings.Repeat("错误", 100)}, observed, time.Now())
-	if recent = h.cfg.RequestLog.Snapshot().Recent; len(recent[0].Error) > 160 || !utf8.ValidString(recent[0].Error) {
+	if recent = h.cfg.RequestLog.Snapshot().Recent; len(recent[0].Error) > errorTextLimit || !utf8.ValidString(recent[0].Error) {
 		t.Fatalf("unbounded or invalid error: %q", recent[0].Error)
 	}
 }
