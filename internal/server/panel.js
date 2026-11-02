@@ -221,6 +221,39 @@
     for (const row of recent) { succeeded += Number(eventOK(row)); duration += Number(row.duration_ms) || 0; }
     return { completed: recent.length, succeeded, failed: recent.length - succeeded, avg_duration_ms: recent.length ? duration / recent.length : 0 };
   }
+  // 首字时间只对「真的吐出过首字」的请求有意义：失败在首字之前、非流式没记录的请求
+  // 不参与平均，否则一律当成 0 会把两个数字拉低成没意义的乐观值。
+  function ttftAverage(recent) {
+    let sum = 0, count = 0;
+    for (const row of recent) { const ms = Number(row.ttfb_ms); if (ms > 0) { sum += ms; count++; } }
+    return count ? sum / count : null;
+  }
+  // 缓存命中率按 token 加权（总命中 / 总 prompt 缓存 token），不是逐条命中率的平均：
+  // 一条 10 万 token 全命中的请求不该和一条 10 token 的请求等权。
+  // 老归档只有命中数，未命中按 prompt 差值补；两个字段都没有＝上游没报缓存，直接跳过。
+  // 同时把两个绝对数带回给卡片：没有样本时返回 null，让界面显示「—」而不是 0%。
+  function cacheTotals(recent) {
+    let hit = 0, miss = 0, seen = false;
+    for (const row of recent) {
+      if (row.cache_hit_tokens === undefined && row.cache_miss_tokens === undefined) continue;
+      const hits = Number(row.cache_hit_tokens) || 0;
+      hit += hits;
+      miss += row.cache_miss_tokens !== undefined ? Number(row.cache_miss_tokens) || 0 : Math.max(0, (Number(row.prompt_tokens) || 0) - hits);
+      seen = true;
+    }
+    if (!seen) return null;
+    return { hit, miss, rate: hit + miss > 0 ? hit / (hit + miss) * 100 : null };
+  }
+  // 输入/输出 Token 只累加真的上报了该字段的请求：整批都没上报时给 null（显示「—」），
+  // 而不是把「没有数据」画成 0。
+  function sumTokens(recent, key) {
+    let sum = 0, seen = false;
+    for (const row of recent) {
+      if (row[key] === undefined || row[key] === null) continue;
+      sum += Number(row[key]) || 0; seen = true;
+    }
+    return seen ? sum : null;
+  }
   function usageView(data) {
     const live = Array.isArray(data.recent) ? data.recent : [];
     const archived = data.history && Array.isArray(data.history.recent) ? data.history.recent : [];
@@ -240,6 +273,13 @@
     $('usageSuccess').textContent = totals.completed > 0 ? (Number(totals.succeeded || 0) / totals.completed * 100).toFixed(1) + '%' : '—';
     $('usageOutcomes').textContent = '成功 ' + number(totals.succeeded) + ' · 失败 ' + number(totals.failed);
     $('usageDuration').textContent = duration(totals.avg_duration_ms);
+    const ttft = ttftAverage(recent), cache = cacheTotals(recent);
+    $('usageTTFT').textContent = ttft === null ? '—' : duration(ttft);
+    $('usageCacheHit').textContent = cache && cache.rate !== null ? cache.rate.toFixed(1) + '%' : '—';
+    $('usageCacheNote').textContent = cache ? '命中 ' + number(cache.hit) + ' · 未命中 ' + number(cache.miss) : '上游未上报缓存用量';
+    const promptTokens = sumTokens(recent, 'prompt_tokens'), completionTokens = sumTokens(recent, 'completion_tokens');
+    $('usagePromptTokens').textContent = promptTokens === null ? '—' : number(promptTokens);
+    $('usageCompletionTokens').textContent = completionTokens === null ? '—' : number(completionTokens);
     $('usageTokens').textContent = recent.length ? number(recent.reduce((sum, row) => sum + tokenTotal(row), 0)) : '—';
     $('usageCompletedNote').textContent = view.fromArchive ? '本地归档 data/requests（含重启前的记录）' : '当前服务进程累计';
     $('usageChartNote').textContent = view.fromArchive
@@ -473,7 +513,7 @@
     authEpoch++; refreshID++; adminKey = ''; authenticated = false; writeStorage(sessionStorage, KEY_STORAGE, ''); stopOAuth();
     accounts = []; models = []; runtimeLogs = []; serverStartedAt = 0; $('uptime').textContent = '—';
     $('configEditor').value = ''; $('configEditor').dataset.dirty = 'false'; $('newAPIKey').value = ''; $('newAdminKey').value = '';
-    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
+    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
     renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({});
     $('pageLoading').hidden = true; $('pageError').hidden = true; $('refreshButton').disabled = false; showLogin();
   };

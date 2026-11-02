@@ -213,13 +213,21 @@ func captureUsage(event *reqlog.Event, usage map[string]any) {
 	if _, ok := usage["credit"]; ok {
 		event.Credit, event.HasCredit = number("credit"), true
 	}
+	// 上游报过缓存就顺手补齐未命中数：面板的命中率按 hit/(hit+miss) 算，
+	// 只留命中数的话「命中 0」与「上游没说」在归档里长得一样。
+	sawCache := false
 	if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
 		if hit, ok := details["cached_tokens"].(float64); ok {
-			event.CacheHitTokens = int64(hit)
+			event.CacheHitTokens, sawCache = int64(hit), true
 		}
 	}
 	if hit, ok := usage["prompt_cache_hit_tokens"].(float64); ok {
-		event.CacheHitTokens = int64(hit)
+		event.CacheHitTokens, sawCache = int64(hit), true
+	}
+	// 前缀缓存只有「命中/未命中」两种 prompt token，未命中数 = prompt - hit。
+	// 全命中时 miss 为 0 并被 omitempty 省掉，命中数照旧在，不会变成「没上报」。
+	if miss := event.PromptTokens - event.CacheHitTokens; sawCache && miss > 0 {
+		event.CacheMissTokens = miss
 	}
 }
 

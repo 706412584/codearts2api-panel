@@ -31,3 +31,5 @@ input[type=checkbox]{display:inline-block;width:auto;margin:0}
 /* 顶栏运行时长：与 WorkBuddy 面板同款，放在页面标题右侧的斜杠后。 */
 .top-meta{color:var(--muted);font:11px/1.6 "Cascadia Code",Consolas,monospace;white-space:nowrap}
 .top-sep{color:var(--muted);opacity:.55}
+/* 用量页 8 张卡、数字又长（7 位 token），窄一点的窗口塞 4 列会把数字挤出卡片。 */
+@media(max-width:1150px){.stats-grid.usage{grid-template-columns:repeat(2,minmax(0,1fr))}}
