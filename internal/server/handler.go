@@ -133,6 +133,8 @@ type Handler struct {
 	logins     map[string]*pendingLogin
 	accountsMu sync.Mutex
 	logs       *Ring
+	// attemptErrs 是「尝试次数」列 tooltip 的数据源：只存内存，滚动保留最近 50 条。
+	attemptErrs *attemptErrors
 }
 
 // pendingLogin WebUI 登录中间状态。
@@ -186,6 +188,7 @@ func NewHandler(cfg Config) *Handler {
 		cfg: cfg, mux: http.NewServeMux(), oauth: newOAuthStore(), started: time.Now(),
 		chats: map[string]string{}, logins: map[string]*pendingLogin{},
 		convAcct: map[string]string{}, logs: NewRing(500),
+		attemptErrs: newAttemptErrors(attemptErrorLimit),
 	}
 	h.loadChats()
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
@@ -709,8 +712,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	observed := &responseObserver{ResponseWriter: w, status: http.StatusOK, started: started}
 	w = observed
 	event := reqlog.Event{Time: started, RequestID: reqlog.NewRequestID(), Path: r.URL.Path}
+	// lastUpstreamErr 记本次请求最后一次上游错误：只有重试过（attempts>1）的请求
+	// 才写进面板「尝试次数」列的 tooltip，普通请求不占额外内存。
+	var lastUpstreamErr error
 	h.cfg.RequestLog.Begin()
-	defer func() { h.finishRequest(event, observed, started) }()
+	defer func() {
+		if event.Attempts > 1 && lastUpstreamErr != nil {
+			h.attemptErrs.note(event.RequestID, safeRequestError(lastUpstreamErr.Error()))
+		}
+		h.finishRequest(event, observed, started)
+	}()
 	// 池里一个账号都没有：直接给出明确错误，别走完选号流程再报成「账号都不可用」。
 	// 客户端拿到 no_accounts 才知道是运维侧没配置账号，而不是账号被禁用/冷却。
 	if h.cfg.Pool == nil || len(h.cfg.Pool.Accounts()) == 0 {
@@ -873,6 +884,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if serr == nil {
 				break
 			}
+			lastUpstreamErr = serr
 			var ae *upstream.ApiError
 			if errors.As(serr, &ae) && (ae.Status == 401 || ae.Code == 401) && !authRetried && acct.Auth.Refresh() != "" {
 				if rerr := h.cfg.Pool.RefreshToken(acct.Name); rerr == nil {
@@ -956,6 +968,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			rc.Close()
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 			if werr != nil {
+				lastUpstreamErr = werr
 				event.Outcome = reqlog.OutcomeStreamError
 				event.Error = werr.Error()
 				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
@@ -973,6 +986,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		rc.Close()
 		h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 		if aerr != nil {
+			lastUpstreamErr = aerr
 			if isParamInvalidError(aerr) {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 					"upstream rejected request params: "+truncateMsg(aerr.Error(), 200))

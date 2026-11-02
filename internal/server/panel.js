@@ -15,6 +15,7 @@
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
   let authenticated = false, authEpoch = 0, refreshID = 0;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
+  let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
   let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
   let theme = readStorage(localStorage, THEME_STORAGE) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -264,13 +265,22 @@
     const view = usageView(data);
     requestRows = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
     requestRowsFromArchive = view.fromArchive;
+    requestAttemptErrors = (data && data.attempt_errors) || {};
     paintRequestLogs();
+  }
+  // 尝试次数：重试过（>1）才把最后一次上游错误挂到单元格的原生 tooltip 上；
+  // 没有错误就不给 title，鼠标移上去不会弹出空提示。
+  function attemptsCell(row) {
+    const attempts = Number(row.attempts);
+    const shown = Number.isFinite(attempts) && attempts > 0 ? String(attempts) : '—';
+    const failure = attempts > 1 ? requestAttemptErrors[row.request_id] : '';
+    return '<td class="number"' + (failure ? ' title="' + esc(failure) + '"' : '') + '>' + esc(shown) + '</td>';
   }
   // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
   function paintRequestLogs() {
     const filter = $('requestOutcome').value;
     const rows = filter ? requestRows.filter(row => eventOK(row) === (filter === 'ok')) : requestRows;
-    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
+    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(7, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
   }
   function renderRuntimeLogs() {
     const box = $('runtimeLogs');

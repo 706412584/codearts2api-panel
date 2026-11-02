@@ -80,13 +80,73 @@ func (h *Handler) adminLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"entries": h.logs.Snapshot()})
 }
 
+// attemptErrorLimit 面板「尝试次数」列 tooltip 的内存上限：只保留最近 50 条错误。
+const attemptErrorLimit = 50
+
+// attemptErrors 按 request_id 记录「重试过的请求」最后一次上游错误。
+//
+// 只存在内存里、不落盘：归档（data/requests）继续只写脱敏元数据，错误原文随进程
+// 重启消失，面板上跨重启的旧记录也就没有 tooltip 可显示。
+type attemptErrors struct {
+	mu    sync.Mutex
+	order []string
+	byID  map[string]string
+	limit int
+}
+
+func newAttemptErrors(limit int) *attemptErrors {
+	if limit <= 0 {
+		limit = attemptErrorLimit
+	}
+	return &attemptErrors{byID: map[string]string{}, limit: limit}
+}
+
+// note 记下某请求最后一次上游错误；同一个 request_id 重新入队不重复占位。
+func (a *attemptErrors) note(requestID, message string) {
+	if a == nil || requestID == "" || message == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, ok := a.byID[requestID]; !ok {
+		a.order = append(a.order, requestID)
+	}
+	a.byID[requestID] = message
+	for len(a.order) > a.limit {
+		stale := a.order[0]
+		a.order = a.order[1:]
+		delete(a.byID, stale)
+	}
+}
+
+// snapshot 返回副本，供 /admin/api/usage 直接序列化。
+func (a *attemptErrors) snapshot() map[string]string {
+	out := map[string]string{}
+	if a == nil {
+		return out
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, message := range a.byID {
+		out[id] = message
+	}
+	return out
+}
+
+// usageResponse 是 /admin/api/usage 的返回：进程指标与归档回看之外，附上重试请求
+// 的上游错误（内存态，见 attemptErrors）。
+type usageResponse struct {
+	reqlog.Snapshot
+	AttemptErrors map[string]string `json:"attempt_errors"`
+}
+
 func (h *Handler) adminUsage(w http.ResponseWriter, r *http.Request) {
 	snap := h.cfg.RequestLog.Snapshot()
 	// 进程内指标随重启清零，归档（data/requests）才是能跨重启的那本账：
 	// 只要归档里有记录就带上，页面据此一直显示历史 —— 不能只在「本进程还没请求」
 	// 时才回看，否则重启后跑一条请求，整页就塌成一条。
 	snap.History = h.cfg.RequestLog.History(reqlog.HistoryLimit)
-	writeJSON(w, http.StatusOK, snap)
+	writeJSON(w, http.StatusOK, usageResponse{Snapshot: snap, AttemptErrors: h.attemptErrs.snapshot()})
 }
 
 type responseObserver struct {
