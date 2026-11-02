@@ -671,80 +671,6 @@ func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	return infos
 }
 
-// pickAccount 挑一个「目录里登记了这个模型」的健康账号，没有则退回普通轮转。
-//
-// 混合账号池里各账号的套餐不同：/v1/models 展示的是并集，若把请求先发给目录里
-// 没有该模型的账号，上游会按「未注册模型」报 400，既浪费一次轮转（MaxRotate 只有
-// 3 次，池子超过 3 个账号时可能永远轮不到有能力的那台），又会给健康账号记错误、
-// 累计到阈值就冷却 10 分钟。所以按能力优先挑号。
-func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account {
-	want := strings.ToLower(upstream.CanonicalModel(model))
-	if acct := h.pickByCatalog(tried, want); acct != nil {
-		return acct
-	}
-	// 目录里没人登记这个模型。两种可能：① 谁都没有；② 目录还没发现
-	// （客户端只调 /v1/chat/completions、从没调过 /v1/models 就属于这种）。
-	// 直接退回轮转的话，混合池里没有该模型的账号会先吃一次 400，白耗 MaxRotate
-	// （默认 3 次，账号多于 3 个时可能永远轮不到有能力的那台），还会给健康账号
-	// 记错误、到阈值冷却 10 分钟。所以先补齐缺失的目录再挑一次。
-	h.discoverMissingCatalogs(tried)
-	if acct := h.pickByCatalog(tried, want); acct != nil {
-		return acct
-	}
-	return h.cfg.Pool.PickExcluding(tried)
-}
-
-// pickByCatalog 在已发现目录的健康账号里挑第一个能服务该模型的。
-func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.Account {
-	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || tried[acct.Name] || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
-		if models, known := upstream.AccountModels(acct.UID); known && catalogHas(models, wantLower) {
-			if st, _ := modelAvailability(acct.UID, wantLower); st == availUnusable {
-				continue // 该账号实测调不通这个模型，别选它
-			}
-			return acct
-		}
-	}
-	return nil
-}
-
-// discoverMissingCatalogs 为「目录未知或已过期」的健康账号补一次模型发现。
-//
-// 只在聊天挑号失败时调用（不是热路径），且有 CatalogTTL 与失败退避兜底：
-// 刚发现过的账号不会被重复打，上游某一路挂了也不会每次请求都空等超时。
-func (h *Handler) discoverMissingCatalogs(tried map[string]bool) {
-	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || acct.Auth == nil || tried[acct.Name] || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
-		if !upstream.AccountCatalogStale(acct.UID) {
-			continue
-		}
-		_, ak, sk := acct.Auth.Credentials()
-		if ak == "" || sk == "" {
-			continue
-		}
-		if _, err := h.cfg.Upstream.FetchModels(acct.Auth); err != nil {
-			log.Printf("lazy model discovery failed for account %s: %v", acct.Name, err)
-		}
-	}
-}
-
-// accountCanServe 报告账号目录里是否登记了该模型；账号不存在或目录未知时乐观放行
-// （交给上游判定，不凭缺失的目录拒请求）。
-func (h *Handler) accountCanServe(acct *pool.Account, model string) bool {
-	if acct == nil {
-		return true
-	}
-	models, known := upstream.AccountModels(acct.UID)
-	if !known {
-		return true
-	}
-	return catalogHas(models, strings.ToLower(upstream.CanonicalModel(model)))
-}
-
 // catalogHas 按小写 ID 在模型目录里查模型。
 func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 	for _, mi := range models {
@@ -762,7 +688,7 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 // 判定与 /v1/models 同源：用 CanonicalModel 归一大小写/旧别名后比对账号目录。
 //
 // 这里刻意**不**在未命中时去上游补目录：那是每个未知请求一次的额外往返，
-// 目录本身由 /v1/models、面板与 pickAccount 的惰性发现维护（CatalogTTL 1h）。
+// 目录本身由 /v1/models 与面板的惰性发现维护（CatalogTTL 1h）。
 func (h *Handler) catalogHasModel(model string) (known, found bool) {
 	want := strings.ToLower(upstream.CanonicalModel(model))
 	for _, acct := range h.cfg.Pool.Accounts() {
