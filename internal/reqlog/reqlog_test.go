@@ -393,20 +393,21 @@ func TestHistoryWithoutArchiveIsNil(t *testing.T) {
 func TestWindowStatsAggregates(t *testing.T) {
 	dir := t.TempDir()
 	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const alice, bob = "alice(uid00001)", "bob(uid00002)"
 
 	// 前一个「进程」把三条写进归档，模拟重启后由磁盘提供数据。
 	before := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 30})
-	before.Record(Event{Time: base, RequestID: "a", Model: "glm-5.2", Status: 200, OK: true, Outcome: OutcomeSuccess,
-		DurationMs: 100, TTFBMs: 200, PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheHitTokens: 60, CacheMissTokens: 40})
-	before.Record(Event{Time: base.Add(time.Minute), RequestID: "b", Model: "glm-5.2", Status: 500, Outcome: OutcomeHTTPError, DurationMs: 300})
-	before.Record(Event{Time: base.Add(2 * time.Minute), RequestID: "c", Model: "qwen", Status: 200, OK: true, Outcome: OutcomeSuccess,
-		DurationMs: 200, TTFBMs: 400, PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60, CacheHitTokens: 50})
+	before.Record(Event{Time: base, RequestID: "a", Model: "glm-5.2", Account: alice, Status: 200, OK: true, Outcome: OutcomeSuccess,
+		DurationMs: 300, TTFBMs: 200, PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheHitTokens: 60, CacheMissTokens: 40})
+	before.Record(Event{Time: base.Add(time.Minute), RequestID: "b", Model: "glm-5.2", Account: alice, Status: 500, Outcome: OutcomeHTTPError, DurationMs: 300})
+	before.Record(Event{Time: base.Add(2 * time.Minute), RequestID: "c", Model: "qwen", Account: bob, Status: 200, OK: true, Outcome: OutcomeSuccess,
+		DurationMs: 500, TTFBMs: 400, PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60, CacheHitTokens: 50})
 	before.Close()
 
 	after := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 30})
 	defer after.Close()
 	// 内存里这条还没刷盘；另一条落在窗口外，必须被排除。
-	after.Record(Event{Time: base.Add(3 * time.Minute), RequestID: "d", Model: "qwen", Status: 200, OK: true, Outcome: OutcomeSuccess,
+	after.Record(Event{Time: base.Add(3 * time.Minute), RequestID: "d", Model: "qwen", Account: bob, Status: 200, OK: true, Outcome: OutcomeSuccess,
 		DurationMs: 400, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
 	after.Record(Event{Time: base.AddDate(0, 0, -40), RequestID: "old", Model: "glm-5.2", Status: 200, OK: true, Outcome: OutcomeSuccess, DurationMs: 1000})
 
@@ -420,8 +421,8 @@ func TestWindowStatsAggregates(t *testing.T) {
 	if stats.Completed != 4 || stats.Succeeded != 3 || stats.Failed != 1 {
 		t.Fatalf("counts = %d/%d/%d, want 4/3/1", stats.Completed, stats.Succeeded, stats.Failed)
 	}
-	if stats.AvgDurationMs != 250 || stats.SuccessRate != 75 {
-		t.Fatalf("avg duration=%v success=%v, want 250/75", stats.AvgDurationMs, stats.SuccessRate)
+	if stats.AvgDurationMs != 375 || stats.SuccessRate != 75 {
+		t.Fatalf("avg duration=%v success=%v, want 375/75", stats.AvgDurationMs, stats.SuccessRate)
 	}
 	// 首字只平均报过的两条（200/400），没有首字的请求不参与。
 	if stats.TTFTMs != 300 || stats.TTFTSamples != 2 {
@@ -434,9 +435,34 @@ func TestWindowStatsAggregates(t *testing.T) {
 	if stats.PromptTokens != 160 || stats.CompletionTokens != 35 || stats.TotalTokens != 195 || stats.TokenSamples != 3 {
 		t.Fatalf("tokens = %d/%d/%d over %d", stats.PromptTokens, stats.CompletionTokens, stats.TotalTokens, stats.TokenSamples)
 	}
-	if len(stats.Models) != 2 || stats.Models[0].Model != "glm-5.2" || stats.Models[0].Tokens != 120 || stats.Models[0].AvgDurationMs != 200 {
-		t.Fatalf("models = %+v, want glm-5.2 first with 120 tokens", stats.Models)
+
+	// 按模型：glm-5.2 的 TPS = 20 token / (300-200)ms = 200 token/s。
+	if len(stats.Models) != 2 || stats.Models[0].Model != "glm-5.2" {
+		t.Fatalf("models = %+v, want glm-5.2 first", stats.Models)
 	}
+	glm := stats.Models[0]
+	if glm.Requests != 2 || glm.Succeeded != 1 || glm.PromptTokens != 100 || glm.CompletionTokens != 20 || glm.TotalTokens != 120 {
+		t.Fatalf("glm row = %+v", glm)
+	}
+	if glm.CacheHitTokens != 60 || glm.CacheMissTokens != 40 || glm.CacheSamples != 1 {
+		t.Fatalf("glm cache = %+v", glm)
+	}
+	if glm.TTFTMs != 200 || glm.TTFTSamples != 1 || glm.TPS != 200 {
+		t.Fatalf("glm ttft/tps = %+v, want 200ms and 200 tok/s", glm)
+	}
+	// qwen：只有 c 有首字，10 token / 100ms = 100 token/s。
+	if qwen := stats.Models[1]; qwen.Model != "qwen" || qwen.TPS != 100 || qwen.TotalTokens != 75 {
+		t.Fatalf("qwen row = %+v", qwen)
+	}
+
+	// 按账号：与按模型同一口径，按 token 降序。
+	if len(stats.Accounts) != 2 || stats.Accounts[0].Account != alice || stats.Accounts[0].TotalTokens != 120 {
+		t.Fatalf("accounts = %+v, want alice first", stats.Accounts)
+	}
+	if bobRow := stats.Accounts[1]; bobRow.Account != bob || bobRow.Requests != 2 || bobRow.Succeeded != 2 || bobRow.PromptTokens != 60 {
+		t.Fatalf("bob row = %+v", bobRow)
+	}
+
 	if len(stats.Hours) == 0 {
 		t.Fatal("hourly buckets must not be empty")
 	}
@@ -448,6 +474,10 @@ func TestWindowStatsAggregates(t *testing.T) {
 	}
 	if tail.Completed != 1 || tail.TotalTokens != 15 || tail.TTFTSamples != 0 {
 		t.Fatalf("narrow window = %+v, want only the in-memory record", tail)
+	}
+	// 没有首字样本时算不出 TPS，不能退化成 0 秒除出来的无穷大。
+	if tail.Models[0].TPS != 0 || tail.Models[0].TTFTSamples != 0 {
+		t.Fatalf("tps without ttft = %+v", tail.Models[0])
 	}
 }
 

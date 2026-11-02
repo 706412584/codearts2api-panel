@@ -281,10 +281,46 @@
     $('usageTokens').textContent = tokenSamples > 0 ? number(s.total_tokens) : '—';
     $('usageCompletedNote').textContent = label + ' · ' + number(completed) + ' 条请求' + (s.archive ? '（含本地归档）' : '');
     $('usageChartNote').textContent = label + ' · ' + (Array.isArray(s.hours) ? s.hours.length : 0) + ' 个有请求的小时' + (s.archive ? '；含本地归档 data/requests' : '') + '。';
-    const models = Array.isArray(s.models) ? s.models : [];
-    $('usageModelsBody').innerHTML = models.map(m => '<tr><td class="mono">' + esc(m.model || '未知模型') + '</td><td>' + number(m.requests) + '</td><td>' + number(m.succeeded) + '</td><td>' + number(m.tokens) + '</td><td>' + duration(m.avg_duration_ms) + '</td></tr>').join('') || emptyRow(5, '该时间段内没有请求。换个范围或点「查询」再试。');
+    lastUsageStats = s;
+    renderSummary(s);
     renderChart(Array.isArray(s.hours) ? s.hours : [], label);
   }
+  // 汇总表两种口径：同一份窗口聚合里同时有 models 和 accounts，切换不必重新查询。
+  // TPS 由服务端按「输出 token ÷ (耗时 - 首字时间)」加权算好，前端只负责显示。
+  let summaryMode = 'model', lastUsageStats = {};
+  function cacheRate(hit, miss) { return hit + miss > 0 ? (hit / (hit + miss) * 100).toFixed(1) + '%' : '—'; }
+  function renderSummary(stats) {
+    const s = stats || {}, byAccount = summaryMode === 'account';
+    const head = byAccount
+      ? ['账号', '请求', '成功', '输入', '缓存命中率', '输出', '总Token']
+      : ['模型', '请求', '成功', '输入', '缓存命中率', '输出', '总Token', '平均TTFT', '输出TPS'];
+    const rows = (byAccount ? s.accounts : s.models) || [];
+    $('summaryMode').value = summaryMode;
+    $('usageSummaryTitle').textContent = byAccount ? '按账号汇总' : '按模型汇总';
+    $('usageSummaryNote').textContent = usageWindow().label + ' · ' + number(rows.length) + (byAccount ? ' 个账号' : ' 个模型');
+    $('usageSummaryHead').innerHTML = '<tr>' + head.map(text => '<th>' + esc(text) + '</th>').join('') + '</tr>';
+    $('usageModelsBody').innerHTML = rows.map(row => {
+      const cells = [
+        esc(byAccount ? row.account || '未知账号' : row.model || '未知模型'),
+        number(row.requests),
+        number(row.succeeded),
+        number(row.prompt_tokens),
+        cacheRate(Number(row.cache_hit_tokens) || 0, Number(row.cache_miss_tokens) || 0),
+        number(row.completion_tokens),
+        number(row.total_tokens),
+      ];
+      // 平均 TTFT 与输出 TPS 只对模型口径有意义：账号维度回答的是「谁在用、用了多少」。
+      if (!byAccount) {
+        cells.push(Number(row.ttft_samples) > 0 ? duration(row.ttft_ms) : '—');
+        cells.push(Number(row.tps) > 0 ? Number(row.tps).toFixed(1) : '—');
+      }
+      return '<tr>' + cells.map((cell, index) => index === 0 ? '<td class="mono">' + cell + '</td>' : '<td>' + cell + '</td>').join('') + '</tr>';
+    }).join('') || emptyRow(head.length, '该时间段内没有请求。换个范围或点「查询」再试。');
+  }
+  $('summaryMode').onchange = () => {
+    summaryMode = $('summaryMode').value || 'model';
+    renderSummary(lastUsageStats);
+  };
   function renderChart(hours, rangeLabel = '') {
     const points = hours.map(hour => [Number(hour.t), Number(hour.count) || 0]).filter(point => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
     if (!points.length) { $('usageChart').textContent = (rangeLabel ? rangeLabel + '：' : '') + '没有请求数据。'; return; }
