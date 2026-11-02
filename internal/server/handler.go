@@ -570,12 +570,20 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if ctx == 0 {
 			ctx = 131072 // 兜底
 		}
+		// 模态声明：上游只有 supports_images 这一个图像能力开关，没表态的按纯文本处理；
+		// 输出端没有非文本模型，固定 text。客户端（如带视觉选择器的）靠这个字段判断能不能贴图。
+		inputModalities := []string{"text"}
+		if mi.SupportsImages != nil && *mi.SupportsImages {
+			inputModalities = append(inputModalities, "image")
+		}
 		entry := map[string]any{
-			"id":             id,
-			"object":         "model",
-			"created":        1753600000,
-			"owned_by":       "codearts",
-			"context_length": ctx,
+			"id":                id,
+			"object":            "model",
+			"created":           1753600000,
+			"owned_by":          "codearts",
+			"context_length":    ctx,
+			"input_modalities":  inputModalities,
+			"output_modalities": []string{"text"},
 		}
 		if mi.MaxTokens > 0 {
 			entry["max_output_tokens"] = mi.MaxTokens

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,6 +68,19 @@ func TestModelEntriesLowercaseAndDeduped(t *testing.T) {
 		if _, ok := plain[key]; ok {
 			// 上游没给 display_enabled（nil）不得被当成 false，否则会被标成「隐藏模型」。
 			t.Errorf("上游没有表态时不应输出 %s，got=%v", key, plain)
+		}
+	}
+
+	// 模态声明：视觉模型多一个 image 输入，其余纯文本；输出恒为 text。
+	if got := byID["glm-5.2"]["input_modalities"]; !reflect.DeepEqual(got, []string{"text", "image"}) {
+		t.Errorf("视觉模型的 input_modalities 应含 image，got=%v", got)
+	}
+	if got := plain["input_modalities"]; !reflect.DeepEqual(got, []string{"text"}) {
+		t.Errorf("纯文本模型的 input_modalities 只有 text，got=%v", got)
+	}
+	for id, e := range byID {
+		if got := e["output_modalities"]; !reflect.DeepEqual(got, []string{"text"}) {
+			t.Errorf("%s 的 output_modalities 应为 text，got=%v", id, got)
 		}
 	}
 
