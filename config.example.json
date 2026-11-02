@@ -18,6 +18,7 @@
   "queue_max_attempts": 30,
   "credits_auto_claim": true,
   "checkin_hours": [9, 21],
+  "request_log_retention_days": 30,
   "watch": {
     "enabled": true,
     "poll_minutes": 30,

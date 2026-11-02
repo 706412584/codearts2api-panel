@@ -1,12 +1,15 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"codearts2api-panel/internal/auth"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
+	"codearts2api-panel/internal/reqlog"
 	"codearts2api-panel/internal/scheduler"
 )
 
@@ -39,6 +42,7 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	c.MaxConcurrent = 2
 	c.LoginClientID = "client-hot"
 	c.OAuthCallbackHost = "https://example.com/cb"
+	c.RequestLogRetentionDays = 7
 
 	p, err := pool.New(nil, pool.Config{MaxConcurrent: 1}, "")
 	if err != nil {
@@ -47,8 +51,10 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	p.AddAccount(auth.New("u1", "n1", "d1", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
 	sch := scheduler.New(scheduler.Config{Pool: p, Enabled: true, PollInterval: time.Hour})
 	live := livecfg.New(livecfg.Snapshot{APIKey: "api-1", DefaultModel: "model-old"})
+	logs := reqlog.New(reqlog.Config{Enabled: true, Dir: t.TempDir(), RetentionDays: 30})
+	defer logs.Close()
 
-	restart := applyHotConfig(c, live, p, sch)
+	restart := applyHotConfig(c, live, p, sch, logs)
 	if len(restart) != 4 {
 		t.Fatalf("hot apply must report four restart fields, got %v", restart)
 	}
@@ -70,6 +76,42 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 		if row["max_concurrent"] != 2 {
 			t.Fatalf("pool max_concurrent not hot-updated: %+v", row)
 		}
+	}
+}
+
+// 归档保留天数必须热生效：面板把 30 天改成 7 天后，后台清理按新口径删掉超期文件。
+// 清理每秒一轮，这里留 5 秒窗口等它跑到（不直接调 prune，测的是真实后台路径）。
+func TestApplyHotConfigPrunesArchiveWithNewRetention(t *testing.T) {
+	dir := t.TempDir()
+	stale := filepath.Join(dir, "requests-2026-09-01.jsonl")
+	if err := os.WriteFile(stale, []byte("x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tenDaysAgo := time.Now().AddDate(0, 0, -10)
+	if err := os.Chtimes(stale, tenDaysAgo, tenDaysAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, RetentionDays: 30})
+	defer logs.Close()
+
+	c := Default()
+	c.RequestLogRetentionDays = 7
+	p, err := pool.New(nil, pool.Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyHotConfig(c, livecfg.New(livecfg.Snapshot{}), p, scheduler.New(scheduler.Config{Pool: p, PollInterval: time.Hour}), logs)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(stale); os.IsNotExist(err) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("保留 7 天后，10 天前的归档应在 5 秒内被后台清理删除")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

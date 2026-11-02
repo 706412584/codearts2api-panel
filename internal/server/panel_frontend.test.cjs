@@ -152,6 +152,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(ids.get('cfgListen').value, ':7866', 'switching back must re-read the file, not the raw edit');
  ids.get('cfgPollMinutes').value = '15';
  ids.get('cfgCheckinHours').value = '8, 20';
+  ids.get('cfgRequestLogRetentionDays').value = '14';
  await ids.get('saveConfigButton').onclick();
  const formSave = JSON.parse(requests.filter(r => r.opts.method === 'PUT').at(-1).opts.body);
  assert.equal(formSave.watch.poll_minutes, 15, 'form mode must save the form values');

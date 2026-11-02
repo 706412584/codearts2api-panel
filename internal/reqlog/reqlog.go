@@ -29,6 +29,10 @@ const (
 	archiveFileGlob = "requests-*.jsonl"
 )
 
+// DefaultRetentionDays 归档保留天数的缺省值：配置没给（<=0）时按 30 天清理
+// data/requests/。与 cmd/server 的 request_log_retention_days 默认值同源。
+const DefaultRetentionDays = 30
+
 // NewRequestID 生成不含用户信息的本地请求 ID。
 func NewRequestID() string {
 	var b [8]byte
@@ -47,8 +51,10 @@ const (
 
 // Config 归档参数。Enabled=false 时仍保留内存指标。
 type Config struct {
-	Dir           string
-	Enabled       bool
+	Dir     string
+	Enabled bool
+	// RetentionDays 归档文件保留天数（按文件 mtime 判断）；<=0 用 DefaultRetentionDays。
+	// 面板保存配置后由 SetRetentionDays 热更新，不必重启进程。
 	RetentionDays int
 	MaxBytes      int64
 	FileMaxBytes  int64
@@ -255,8 +261,8 @@ func (r *Recorder) ReadArchive(limit int, filter Filter) ([]Event, error) {
 	return r.archive.read(limit, filter)
 }
 
-// historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档最多保留
-// 7 天，不能每次都重扫目录。缓存只挡重复扫描 —— 取值要与轮询间隔同量级，否则
+// historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档保留
+// 30 天，不能每次都重扫目录。缓存只挡重复扫描 —— 取值要与轮询间隔同量级，否则
 // 刚落盘的请求要等缓存过期才出现。
 const historyTTL = 5 * time.Second
 
@@ -295,6 +301,15 @@ func (r *Recorder) History(limit int) *History {
 	return h
 }
 
+// SetRetentionDays 热更新归档保留天数（面板保存配置后调用）。后台清理每秒一轮，
+// 新值最多一秒后生效，不必触发一次同步清理。
+func (r *Recorder) SetRetentionDays(days int) {
+	if r == nil || r.archive == nil {
+		return
+	}
+	r.archive.setRetentionDays(days)
+}
+
 // Close 刷盘并停止后台归档。
 func (r *Recorder) Close() {
 	if r == nil || r.archive == nil {
@@ -322,6 +337,8 @@ type archiveWriter struct {
 	path string
 	day  string
 	size int64
+	// retMu 保护 cfg.RetentionDays：prune 每秒读，面板保存时热更新写。
+	retMu sync.Mutex
 }
 
 func newArchiveWriter(cfg Config) *archiveWriter {
@@ -329,7 +346,7 @@ func newArchiveWriter(cfg Config) *archiveWriter {
 		return &archiveWriter{cfg: cfg}
 	}
 	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 7
+		cfg.RetentionDays = DefaultRetentionDays
 	}
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 100 << 20
@@ -549,7 +566,7 @@ func (w *archiveWriter) prune() {
 	}
 	items := make([]item, 0, len(entries))
 	var total int64
-	cutoff := time.Now().AddDate(0, 0, -w.cfg.RetentionDays)
+	cutoff := time.Now().AddDate(0, 0, -w.retentionDays())
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -697,6 +714,22 @@ func (w *archiveWriter) close() {
 		close(w.stop)
 		<-w.done
 	})
+}
+
+// retentionDays 当前保留天数；配置没给（<=0）时回落 DefaultRetentionDays。
+func (w *archiveWriter) retentionDays() int {
+	w.retMu.Lock()
+	defer w.retMu.Unlock()
+	if w.cfg.RetentionDays > 0 {
+		return w.cfg.RetentionDays
+	}
+	return DefaultRetentionDays
+}
+
+func (w *archiveWriter) setRetentionDays(days int) {
+	w.retMu.Lock()
+	w.cfg.RetentionDays = days
+	w.retMu.Unlock()
 }
 
 func (w *archiveWriter) setErr(err error) {

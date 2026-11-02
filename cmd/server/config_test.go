@@ -176,6 +176,42 @@ func TestStripJSONCommentsEdgeCases(t *testing.T) {
 	}
 }
 
+// 归档保留天数：默认 30 天；配置可改；0/负数等同于没配置（回落 30，而不是删光）；
+// env 用整数覆盖。
+func TestRequestLogRetentionDaysConfigAndEnv(t *testing.T) {
+	t.Setenv("CA2A_API_KEY", "test-key")
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "")
+	if cfg, err := Load(""); err != nil || cfg.RequestLogRetentionDays != 30 {
+		t.Fatalf("default retention = %d err=%v, want 30", cfg.RequestLogRetentionDays, err)
+	}
+
+	write := func(body string) string {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 7 {
+		t.Fatalf("configured retention = %d err=%v, want 7", cfg.RequestLogRetentionDays, err)
+	}
+	for _, body := range []string{`{"request_log_retention_days":0}`, `{"request_log_retention_days":-5}`} {
+		if cfg, err := Load(write(body)); err != nil || cfg.RequestLogRetentionDays != 30 {
+			t.Fatalf("%s: retention = %d err=%v, want default 30", body, cfg.RequestLogRetentionDays, err)
+		}
+	}
+
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "90")
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 90 {
+		t.Fatalf("env override ignored: retention=%d err=%v", cfg.RequestLogRetentionDays, err)
+	}
+	// 非法 env 不覆盖配置文件里的值。
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "forever")
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 7 {
+		t.Fatalf("invalid env must keep config value: retention=%d err=%v", cfg.RequestLogRetentionDays, err)
+	}
+}
+
 // 签到时点：默认 9/21，配置里允许乱序/重复/非法值，env 用 "9,21" 形式覆盖。
 func TestCheckinHoursConfigAndEnv(t *testing.T) {
 	t.Setenv("CA2A_API_KEY", "test-key")

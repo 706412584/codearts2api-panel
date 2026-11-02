@@ -45,6 +45,8 @@
         <h3 class="group-title">后台任务</h3>
         <div class="checks"><label class="check" for="cfgWatchEnabled"><input id="cfgWatchEnabled" type="checkbox">后台凭据看护</label><label class="check" for="cfgCreditsAutoClaim"><input id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label></div>
         <div class="field-grid"><div><label for="cfgPollMinutes">轮询间隔（分钟）</label><input id="cfgPollMinutes" type="number" min="1" step="1"></div><div><label for="cfgRefreshSkew">续期窗口（分钟）</label><input id="cfgRefreshSkew" type="number" min="1" step="1"></div><div><label for="cfgKeepaliveInterval">保活间隔（分钟）</label><input id="cfgKeepaliveInterval" type="number" min="1" step="1"></div><div><label for="cfgCheckinHours">签到时点 <span class="muted">（本地小时，逗号分隔；空=默认 9,21）</span></label><input id="cfgCheckinHours" autocomplete="off" placeholder="9, 21"></div></div>
+        <h3 class="group-title">日志与归档</h3>
+        <div class="field-grid"><div><label for="cfgRequestLogRetentionDays">请求归档保留 <span class="muted">（天）</span></label><input id="cfgRequestLogRetentionDays" type="number" min="1" step="1" placeholder="30"></div></div>
       </div>
       <div id="configRaw"><label for="configEditor">配置 JSON</label><textarea id="configEditor" class="code-editor" spellcheck="false" aria-describedby="configHelp"></textarea><p class="muted" id="configHelp">请使用合法 JSON。保存不会自动重启服务。</p></div>
       <div id="envOverrides" class="notice" hidden></div>

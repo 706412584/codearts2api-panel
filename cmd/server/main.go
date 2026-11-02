@@ -53,8 +53,9 @@ func main() {
 
 	c := upstream.New(time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second)
 	requestLog := reqlog.New(reqlog.Config{
-		Dir:     filepath.Join(filepath.Dir(cfg.StateFile), "requests"),
-		Enabled: true, RetentionDays: 7,
+		Dir:           filepath.Join(filepath.Dir(cfg.StateFile), "requests"),
+		Enabled:       true,
+		RetentionDays: cfg.RequestLogRetentionDays,
 	})
 	defer requestLog.Close()
 
@@ -110,7 +111,7 @@ func main() {
 	})
 	defer h.Close()
 	// 面板保存：校验 → 落盘 → 热应用（settings.update 内串行），返回需重启字段。
-	settings.apply = func(c *Config) []string { return applyHotConfig(c, live, p, sch) }
+	settings.apply = func(c *Config) []string { return applyHotConfig(c, live, p, sch, requestLog) }
 	log.SetOutput(io.MultiWriter(os.Stderr, h.LogWriter()))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

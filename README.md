@@ -263,13 +263,14 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 | `upstream.timeout_seconds` | `120` | 上游客户端超时配置 |
 | `credits_auto_claim` | `true` | 后台活动积分领取（按 `checkin_hours` 时点） |
 | `checkin_hours` | `[9, 21]` | 每日签到时点（本地小时 0-23）；空数组/非法值回落默认 |
+| `request_log_retention_days` | `30` | `data/requests/` 归档保留天数，按文件修改时间清理；0/负数回落默认 |
 | `watch.enabled` | `true` | 后台凭据看护 |
 | `watch.poll_minutes` | `30` | 后台轮询间隔 |
 | `watch.refresh_skew_minutes` | `30` | 临近到期续期窗口 |
 
-环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
+环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）、`CA2A_REQUEST_LOG_RETENTION_DAYS` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
-面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
+面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
 
 ## 数据与日志
 
@@ -281,7 +282,7 @@ data/state.json.chats.json   会话关联状态
 data/requests/              脱敏请求元数据 JSONL
 ```
 
-用量页把 `data/requests/` 的脱敏归档（最近 200 条）与当前进程的记录合并去重后展示，重启不会清空历史，刚完成、还没落盘的请求也照样出现在列表里；统计口径就是页面上这批记录，卡片会标注数据来自本地归档。请求归档默认保留 7 天，只记录请求 ID、模型、状态、耗时、用量及失败错误摘要等元数据，不记录提示词、模型正文或鉴权头。运行日志页每 5 秒刷新一次，最近请求中的失败项会显示脱敏、截断后的最终错误摘要；运行日志本身为有界内存快照。
+用量页把 `data/requests/` 的脱敏归档（最近 200 条）与当前进程的记录合并去重后展示，重启不会清空历史，刚完成、还没落盘的请求也照样出现在列表里；统计口径就是页面上这批记录，卡片会标注数据来自本地归档。请求归档默认保留 30 天（`request_log_retention_days`，按文件修改时间清理，可在面板「日志与归档」里改，保存后一秒内生效），只记录请求 ID、模型、状态、耗时、用量及失败错误摘要等元数据，不记录提示词、模型正文或鉴权头。运行日志页每 5 秒刷新一次，最近请求中的失败项会显示脱敏、截断后的最终错误摘要；运行日志本身为有界内存快照。
 
 凭据文件含敏感材料，应与配置一并备份并限制访问。`auths/`、`data/`、`runtime/`、真实 `config.json` 和 `references/` 均已加入 Git/Docker 忽略规则。
 

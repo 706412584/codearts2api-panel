@@ -5,6 +5,7 @@ import (
 
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
+	"codearts2api-panel/internal/reqlog"
 	"codearts2api-panel/internal/scheduler"
 )
 
@@ -58,11 +59,13 @@ func keepaliveWindow(c *Config) time.Duration {
 }
 
 // applyHotConfig 立即应用可热更新的字段，返回仍需重启的字段列表。
-func applyHotConfig(c *Config, live *livecfg.Holder, p *pool.Pool, sch *scheduler.Scheduler) []string {
+func applyHotConfig(c *Config, live *livecfg.Holder, p *pool.Pool, sch *scheduler.Scheduler, logs *reqlog.Recorder) []string {
 	live.Store(liveSnapshot(c))
 	p.SetMaxConcurrentAll(c.MaxConcurrent)
 	p.SetKeepaliveWindow(keepaliveWindow(c))
 	p.SetLoginClientID(c.LoginClientID)
+	// 归档清理在后台每秒一轮，这里只换天数，新值一秒内生效。
+	logs.SetRetentionDays(c.RequestLogRetentionDays)
 	sch.Reconfigure(scheduler.Config{
 		Pool:              p,
 		Enabled:           c.Watch.Enabled,

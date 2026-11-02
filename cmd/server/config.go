@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/pool"
+	"codearts2api-panel/internal/reqlog"
 )
 
 // Config 顶层配置。
@@ -57,6 +58,10 @@ type Config struct {
 	// 轮询看护（watch.poll_minutes）与它无关：轮询管 token，时点管签到。
 	CheckinHours []int `json:"checkin_hours"`
 
+	// RequestLogRetentionDays data/requests/ 归档保留天数（按文件 mtime 计算，默认 30）。
+	// 超过天数的文件由归档后台清理删除；<=0 视为未配置，回落默认值。
+	RequestLogRetentionDays int `json:"request_log_retention_days"`
+
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"`
 	} `json:"upstream"`
@@ -85,6 +90,7 @@ func Default() *Config {
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
 	c.CheckinHours = []int{9, 21}
+	c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
 	return c
 }
 
@@ -250,6 +256,11 @@ func applyEnv(c *Config) {
 			c.CheckinHours = hours
 		}
 	}
+	if v := os.Getenv("CA2A_REQUEST_LOG_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.RequestLogRetentionDays = n
+		}
+	}
 }
 
 // parseHours 解析 "9,21" 形式的时点列表；没有任何合法值时报 not ok。
@@ -356,6 +367,11 @@ func (c *Config) normalize() error {
 		c.CheckinHours = hours
 	} else {
 		c.CheckinHours = []int{9, 21}
+	}
+	// 归档保留天数：0/负数等同于没配置，回落 30 天。不设上限——归档清理按文件
+	// mtime 逐轮执行，填很大的值只是不删文件，容量仍由 MaxBytes 兜底。
+	if c.RequestLogRetentionDays <= 0 {
+		c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
 	}
 	return nil
 }

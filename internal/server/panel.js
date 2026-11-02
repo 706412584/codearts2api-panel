@@ -330,6 +330,7 @@
     ['cfgRefreshSkew', 'watch.refresh_skew_minutes', 'int'],
     ['cfgKeepaliveInterval', 'watch.keepalive_interval_minutes', 'int'],
     ['cfgCheckinHours', 'checkin_hours', 'hours'],
+    ['cfgRequestLogRetentionDays', 'request_log_retention_days', 'int'],
   ];
   const configPathGet = (source, path) => path.split('.').reduce((value, key) => (value === null || value === undefined ? undefined : value[key]), source);
   function configPathSet(target, path, value) {

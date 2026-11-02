@@ -227,6 +227,66 @@ func TestArchiveFilterByTimeRange(t *testing.T) {
 	}
 }
 
+// 保留天数按文件 mtime 判断：超过天数的文件被删，边界内的原样留下；
+// 面板保存配置后 SetRetentionDays 立刻改变下一轮清理的口径，不必重启进程。
+func TestArchivePruneHonorsRetentionDays(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, ageDays int) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().AddDate(0, 0, -ageDays)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	fresh := write("requests-2026-11-02.jsonl", 1)
+	mid := write("requests-2026-10-20.jsonl", 13)
+	old := write("requests-2026-09-01.jsonl", 62)
+
+	w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, RetentionDays: 30, MaxBytes: 1 << 20}, done: make(chan struct{})}
+	w.prune()
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("62 天前的归档应被删除（保留 30 天）: %v", err)
+	}
+	if _, err := os.Stat(mid); err != nil {
+		t.Fatalf("13 天前的归档必须保留: %v", err)
+	}
+
+	// 面板把保留天数改小：下一轮清理就按新值删掉 13 天前那份。
+	w.setRetentionDays(7)
+	w.prune()
+	if _, err := os.Stat(mid); !os.IsNotExist(err) {
+		t.Fatalf("保留 7 天后 13 天前的归档应被删除: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("1 天前的归档必须保留: %v", err)
+	}
+}
+
+// 未配置保留天数时按 30 天清理（与 cmd/server 的默认值同源），不是「全删」。
+func TestArchiveRetentionDefaultsToThirtyDays(t *testing.T) {
+	if got := (&archiveWriter{cfg: Config{}}).retentionDays(); got != DefaultRetentionDays {
+		t.Fatalf("retention = %d, want %d", got, DefaultRetentionDays)
+	}
+	if DefaultRetentionDays != 30 {
+		t.Fatalf("默认保留天数 = %d，配置文档写的是 30 天", DefaultRetentionDays)
+	}
+	// 经 New() 传入 0 也要落到默认值上，避免后台清理按 0 天删光。
+	r := New(Config{Enabled: true, Dir: t.TempDir()})
+	defer r.Close()
+	if got := r.archive.retentionDays(); got != DefaultRetentionDays {
+		t.Fatalf("New(RetentionDays=0) retention = %d, want %d", got, DefaultRetentionDays)
+	}
+	// 面板保存后热更新：立刻读新值。
+	r.SetRetentionDays(5)
+	if got := r.archive.retentionDays(); got != 5 {
+		t.Fatalf("hot-updated retention = %d, want 5", got)
+	}
+}
+
 func TestArchiveQueueDropCounter(t *testing.T) {
 	w := &archiveWriter{
 		cfg:  Config{Enabled: true, Dir: t.TempDir()},
