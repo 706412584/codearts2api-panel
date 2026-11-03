@@ -758,6 +758,10 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 //
 // 三态严格区分：「未声明」（nil）不算，因为上游没表态时网关没有依据拒绝请求——
 // 那会把「上游只是没写这个字段」误判成「不能收图」，挡住本来可用的模型。
+//
+// 注意：目录是内存态、重启即空，而本判断只看「已发现」的目录。因此调用方在
+// **可能目录未发现**的场景（如冷启动后第一个带图请求）必须先 h.ensureCatalog()，
+// 否则会把「目录还没拉」当成「模型能收图」，把图原样发上游吃到 406。
 func (h *Handler) catalogDeclaresNoImages(model string) bool {
 	want := strings.ToLower(upstream.CanonicalModel(model))
 	for _, acct := range h.cfg.Pool.Accounts() {
@@ -775,6 +779,28 @@ func (h *Handler) catalogDeclaresNoImages(model string) bool {
 		}
 	}
 	return false
+}
+
+// ensureCatalog 在「所有健康账号的目录都还没发现」时补拉一次目录。
+//
+// 只在目录完全未发现时才触发（进程刚启动、或从未查过 /v1/models），且只补一次：
+// 一旦有任一账号目录已发现，后续判断就有依据，不再补。这样：
+//   - 冷启动后第一个「带图打到纯文本模型」的请求也能正确路由到 analyze（否则图
+//     会原样发上游，吃 InferHub.001001020 not multimodal）；
+//   - 目录已就绪时零额外上游调用（这是热路径，不能被每次请求的目录请求拖慢）。
+//
+// 只读已发现状态，不 reset 已有目录；失败留给上游错误路径处理。
+func (h *Handler) ensureCatalog(tried map[string]bool) {
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
+			continue
+		}
+		if _, ok := upstream.AccountModels(acct.UID); ok {
+			return // 已有账号目录可用：判断有依据，不再补
+		}
+	}
+	// 走到这里说明所有健康账号都还没目录：补一次。
+	h.discoverMissingCatalogs(tried)
 }
 
 // visionModelIDs 返回所有账号目录里声明支持图片的模型 ID（去重、排序）。
@@ -928,6 +954,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 只有它为真时才需要「先聚合再判断回灌」；纯文本请求必须保持原样直通
 	// 流式，否则客户端要等模型生成完才收到首字（实测 91s 的 TTFB）。
 	analyzeRouted := false
+	if hasImageBlocks(req) {
+		// 冷启动兜底：目录是内存态、重启即空。若目录还没发现，catalogDeclaresNoImages
+		// 会把「不知道能力」当成「能收图」放行，图原样发上游吃 406。带图请求先补一次
+		// 目录再判定；目录已就绪时 ensureCatalog 立即返回，零额外上游调用。
+		h.ensureCatalog(nil)
+	}
 	if hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
 		if h.cfg.ImageHandling == "passthrough" {
 			vision := strings.Join(h.visionModelIDs(), ", ")
