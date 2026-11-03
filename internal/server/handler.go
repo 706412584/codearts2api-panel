@@ -149,7 +149,9 @@ var dynamicModelsCache struct {
 }
 
 const (
-	dynamicModelsTTL        = time.Hour
+	// dynamicModelsTTL 合并展示列表的缓存时长，与账号目录 CatalogTTL 对齐（23h）。
+	// 列表由后台续期维护，不再依赖用户请求触发刷新。
+	dynamicModelsTTL        = 23 * time.Hour
 	modelsFetchFailCooldown = 5 * time.Minute
 )
 
@@ -786,7 +788,7 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 // 判定与 /v1/models 同源：用 CanonicalModel 归一大小写/旧别名后比对账号目录。
 //
 // 这里刻意**不**在未命中时去上游补目录：那是每个未知请求一次的额外往返，
-// 目录本身由 /v1/models 与面板的惰性发现维护（CatalogTTL 1h）。
+// 目录本身由 /v1/models 首次惰性发现，之后由后台续期维护（CatalogTTL 23h）。
 func (h *Handler) catalogHasModel(model string) (known, found bool) {
 	want := strings.ToLower(upstream.CanonicalModel(model))
 	for _, acct := range h.cfg.Pool.Accounts() {
