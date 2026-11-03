@@ -89,6 +89,13 @@ type Config struct {
 		Quality       int  `json:"quality"`         // 初始 JPEG 质量
 	} `json:"image_shrink"`
 
+	// ImageHandling 带图请求打到纯文本模型时的处理模式：
+	//   ""/"bridge"（默认）—— 识图桥接：请求进来先把图转述成文字（见 VisionBridge）；
+	//   "analyze"  —— 按需识图：图片换成占位符 + 注入 analyze_image 工具，
+	//                  主模型自己决定何时看、看哪张、问什么（复刻官方 AnalyzeImagePlugin）；
+	//   "passthrough" —— 都不做，原样发上游（上游会回 001001020 非多模态）。
+	ImageHandling string `json:"image_handling"`
+
 	// VisionBridge 让纯文本模型也能吃图：先用 VL 模型把图片转述成文字，再交给原模型。
 	// 上游只有 VL 模型支持图片输入，其余模型带图会直接 406。
 	VisionBridge struct {
@@ -476,6 +483,16 @@ func (c *Config) normalize() []string {
 	}
 	if c.ImageShrink.Quality <= 0 || c.ImageShrink.Quality > 100 {
 		c.ImageShrink.Quality = 85
+	}
+	// 图像处理模式：非法值回写默认（bridge），与其它字段同一口径。
+	switch c.ImageHandling {
+	case "", "bridge", "analyze", "passthrough":
+		if c.ImageHandling == "" {
+			c.ImageHandling = "bridge"
+		}
+	default:
+		changes = append(changes, fmt.Sprintf("image_handling=%q → bridge", c.ImageHandling))
+		c.ImageHandling = "bridge"
 	}
 	// 识图桥接：空模型名等于没配，回落默认 VL 模型。
 	if strings.TrimSpace(c.VisionBridge.Model) == "" {

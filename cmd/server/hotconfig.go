@@ -55,6 +55,7 @@ func liveSnapshot(c *Config) livecfg.Snapshot {
 			Quality:          c.ImageShrink.Quality,
 		},
 		VisionBridgeEnabled: c.VisionBridge.Enabled,
+		ImageHandling:       c.ImageHandling,
 		VisionBridge: livecfg.VisionBridge{
 			Enabled:      c.VisionBridge.Enabled,
 			Model:        c.VisionBridge.Model,

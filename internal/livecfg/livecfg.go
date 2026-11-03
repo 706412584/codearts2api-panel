@@ -48,6 +48,17 @@ type Snapshot struct {
 	// VisionBridge 纯文本模型「先用 VL 转述图片」的能力补齐。
 	VisionBridgeEnabled bool
 	VisionBridge        VisionBridge
+
+	// ImageHandling 带图请求打到纯文本模型时的处理模式：
+	//   ""/"bridge"（默认）—— 识图桥接：请求进来先把图转述成文字（见 VisionBridge）；
+	//   "analyze"  —— 按需识图：图片换成占位符 + 注入 analyze_image 工具，
+	//                  主模型自己决定何时看、看哪张、问什么（复刻官方 AnalyzeImagePlugin）；
+	//   "passthrough" —— 都不做，原样发上游（上游会回 001001020 非多模态）。
+	//
+	// analyze 与 bridge 的取舍：bridge 是一次性泛化转述，描述会占上下文且无法追问；
+	// analyze 对 Agent 类客户端更友好（可多轮追问、可精确指定看图任务），
+	// 但需要客户端支持工具调用。默认 bridge 保持与既有行为一致。
+	ImageHandling string
 }
 
 // VisionBridge 识图桥接策略。
