@@ -1264,8 +1264,8 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 	return false
 }
 
-// isParamInvalidError 判断是否为上游「请求参数无效」类错误（InferHub.001001005）。
-// 这类错误是客户端请求形状问题：换账号结果相同，绝不能冷却账号（曾因此打停整池）。
+// isParamInvalidError 判断是否为上游「请求参数无效/模型能力不匹配」类错误。
+// 这类错误由请求内容决定：换账号结果相同，绝不能冷却账号（曾因此打停整池）。
 func isParamInvalidError(err error) bool {
 	if err == nil {
 		return false
@@ -1282,7 +1282,8 @@ func isParamInvalidError(err error) bool {
 		return false
 	}
 	low := strings.ToLower(message)
-	return strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid")
+	return strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid") ||
+		strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "request model is not multimodal")
 }
 
 // isConcurrentLimitError 判断是否为上游并发会话上限错误（瞬时、可重试）。

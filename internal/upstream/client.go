@@ -625,8 +625,9 @@ func embeddedSSEError(data string) *ApiError {
 	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered"):
 		// 模型级错误（该账号用不了这个模型）是客户端问题，不是上游故障。
 		status = http.StatusBadRequest
-	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid"):
-		// 请求参数无效（实测：tool_choice 对象形态触发）：客户端问题，不是账号故障。
+	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid") ||
+		strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "request model is not multimodal"):
+		// 请求参数无效或图像输入超出模型能力：客户端问题，不是账号故障。
 		status = http.StatusBadRequest
 	}
 	return &ApiError{Code: status, Status: status, Message: truncateStr(combined, 300), Path: EpChatV2}

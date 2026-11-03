@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+func TestSendChatV2SurfacesEmbeddedNonMultimodalAsBadRequest(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"error_code\":\"InferHub.001001020.406\",\"error_msg\":\"The request model is not multimodal\"}\n\n")
+	}))
+	defer backend.Close()
+	c := NewWithChatEndpoint(time.Second, backend.URL)
+	_, err := c.SendChatV2(context.Background(), map[string]any{"model": "deepseek-v4.1-flash-1017"}, "", SignCredential{}, "")
+	var apiErr *ApiError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || !strings.Contains(apiErr.Message, "not multimodal") {
+		t.Fatalf("model capability error was treated as an upstream failure: %T %v", err, err)
+	}
+}
+
 func TestSendChatV2SurfacesEmbeddedParamInvalidAsBadRequest(t *testing.T) {
 	for _, payload := range []string{
 		`{"error_code":"InferHub.001001005.400","error_msg":"invalid arguments"}`,
