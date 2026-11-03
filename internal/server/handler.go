@@ -432,9 +432,6 @@ func (h *Handler) saveLoginResult(tok *upstream.TokenResponse, codeVerifier stri
 		return err
 	}
 	if p := h.cfg.Pool.AddAccount(a); p != nil && p.Auth != nil {
-		// 刚登录的账号先不探测：用户很可能马上就要用，探测占用的上游会话
-		// 槽位释放很慢，会把第一个真实请求挤到排队。
-		noteTraffic(a.UserID)
 		log.Printf("webui login success user_id=%s name=%s", a.UserID, a.UserName)
 	} else {
 		log.Printf("webui login saved user_id=%s name=%s (pool add failed)", a.UserID, a.UserName)
@@ -507,7 +504,7 @@ func (h *Handler) modelList(force bool) []map[string]any {
 	entries := modelEntries(h.fetchDynamicModels(force))
 	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
 	// 只在动态结果上过滤会让被下架的模型又从静态表冒出来。
-	// 未知（还没探测出结论）的保留：宁可让用户试，也别把可用模型藏起来。
+	// 未知（还没真实调用出结论）的保留：宁可让用户试，也别把可用模型藏起来。
 	if len(entries) > 0 {
 		kept := make([]map[string]any, 0, len(entries))
 		for _, e := range entries {
@@ -520,31 +517,7 @@ func (h *Handler) modelList(force bool) []map[string]any {
 			entries = kept
 		}
 	}
-	// 刚发现到的模型还没有可用性结论：后台补一轮探测，供后续请求过滤。
-	// （首次请求返回的是「发现结果」，之后才收敛到「真实可用」。）
-	h.probeUnknownAsync()
 	return entries
-}
-
-// probeUnknownAsync 后台探测「还没有结论」的模型，不阻塞请求。
-func (h *Handler) probeUnknownAsync() {
-	availability.Lock()
-	busy := availability.sweeping
-	if !busy {
-		availability.sweeping = true
-	}
-	availability.Unlock()
-	if busy {
-		return
-	}
-	go func() {
-		defer func() {
-			availability.Lock()
-			availability.sweeping = false
-			availability.Unlock()
-		}()
-		h.runProbes(h.pendingProbes())
-	}()
 }
 
 // modelKnownUnusable 报告该模型是否在**所有**健康账号上都被判定为不可用。
@@ -1121,7 +1094,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// lockHeld 跟踪并发槽位是否仍持有：排队重试会「释放→等待→重获」，
 			// 重获失败时不能再统一释放一次（会减掉别的请求的槽位，造成超发）。
 			lockHeld := true
-			noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
 			queueAttempts, queueDelay := h.live().QueueMaxAttempts, h.live().QueueRetryDelay
 			if queueAttempts < 1 {
 				queueAttempts = 1
@@ -1215,7 +1187,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			// 真实调用成功：记下「这个账号能用这个模型」，供 /v1/models 过滤参考。
 			markUsable(acct.UID, model)
-			noteTraffic(acct.UID)
 
 			w.Header().Set("X-Codearts-Chat-Id", chatID)
 

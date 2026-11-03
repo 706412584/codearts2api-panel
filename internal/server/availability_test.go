@@ -1,12 +1,7 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -69,7 +64,7 @@ func TestAvailabilityExpiry(t *testing.T) {
 }
 
 // 过滤语义：只有「所有健康账号都判定不可用」才下架；只要还有账号没结论，
-// 或者有一个账号可用，就必须保留（不能让探测没跑完把可用模型藏起来）。
+// 或者有一个账号可用，就必须保留（不能把还没结论的可用模型藏起来）。
 func TestModelKnownUnusable(t *testing.T) {
 	p, err := pool.New([]*auth.Auth{
 		{UserID: "u1", UserName: "u1"}, {UserID: "u2", UserName: "u2"},
@@ -93,83 +88,6 @@ func TestModelKnownUnusable(t *testing.T) {
 	markUsable("u2", "m-keep")
 	if h.modelKnownUnusable("m-keep") {
 		t.Error("有账号可用时不应下架")
-	}
-}
-
-// 探测必须让位于真实请求：账号一忙就整体跳过，绝不能让用户请求排队等锁。
-func TestProbeSkipsBusyAccount(t *testing.T) {
-	a := &auth.Auth{UserID: "u-busy", UserName: "u-busy", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
-	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 1}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second)})
-	upstream.SetAccountModels("u-busy", []upstream.ModelInfo{{ID: "m-busy"}})
-
-	// 占用并发槽位，模拟真实请求在跑
-	if !p.AcquireLock("u-busy") {
-		t.Fatal("应能获取锁")
-	}
-	defer p.ReleaseLock("u-busy")
-	if !p.Busy("u-busy") {
-		t.Fatal("Busy 应为 true")
-	}
-	h.probeModel(p.Get("u-busy"), "m-busy")
-	if st, _ := modelAvailability("u-busy", "m-busy"); st != availUnknown {
-		t.Error("账号忙时探测应直接跳过，不得留下结论")
-	}
-}
-
-// 探针用错大小写会拿到 002002009.404，把本来可用的模型记成不可用，/v1/models
-// 就会把它藏起来：探测同样要按该账号的注册名发。
-func TestProbeSendsAccountCatalogCase(t *testing.T) {
-	var mu sync.Mutex
-	var sent string
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		var body map[string]any
-		_ = json.Unmarshal(raw, &body)
-		mu.Lock()
-		sent, _ = body["model"].(string)
-		mu.Unlock()
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n")
-	}))
-	defer up.Close()
-
-	a := &auth.Auth{UserID: "u-probe-case", UserName: "u-probe-case", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
-	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 1}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p.Accounts()[0].Client = upstream.NewWithChatEndpoint(5*time.Second, up.URL)
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second)})
-
-	// 本账号注册成小写，另一个账号把全局索引定成混合写法。
-	upstream.SetAccountModels("u-probe-case", []upstream.ModelInfo{{ID: "probe-lower"}})
-	upstream.SetAccountModels("u-probe-other", []upstream.ModelInfo{{ID: "Probe-Lower"}})
-
-	h.probeModel(p.Get("u-probe-case"), "Probe-Lower")
-
-	mu.Lock()
-	got := sent
-	mu.Unlock()
-	if got != "probe-lower" {
-		t.Fatalf("探测发出的 model = %q，应为该账号注册的 probe-lower", got)
-	}
-	if st, _ := modelAvailability("u-probe-case", "Probe-Lower"); st != availUsable {
-		t.Errorf("探测成功应记为可用，got=%v", st)
-	}
-}
-
-// 探针占用的上游会话释放很慢（实测 >15s），连续探测会把单账号的 3 个并发会话
-// 占满，紧随其后的真实请求被上游判为 TM.00001041。两次探测之间必须留释放窗口。
-func TestProbeGapExists(t *testing.T) {
-	if probeGap < 15*time.Second {
-		t.Fatalf("probeGap=%s 太短，上游会话释放实测 >15s", probeGap)
-	}
-	if probeConcurrency != 1 {
-		t.Fatalf("probeConcurrency=%d，探测必须串行以免占满会话槽位", probeConcurrency)
 	}
 }
 

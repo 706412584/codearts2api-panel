@@ -534,7 +534,7 @@ func (p *Pool) Disable(name, reason string) {
 }
 
 // Healthy 查询账号可用。
-// Busy 报告账号当前是否有活跃请求占用并发槽位（供探测等后台任务让位）。
+// Busy 报告账号当前是否有活跃请求占用并发槽位。
 func (p *Pool) Busy(name string) bool {
 	p.mu.Lock()
 	var target *Account
