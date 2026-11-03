@@ -66,6 +66,7 @@ func liveSnapshot(c *Config) livecfg.Snapshot {
 			TotalTimeout: time.Duration(c.VisionBridge.TotalSeconds) * time.Second,
 			Prompt:       c.VisionBridge.Prompt,
 		},
+		ModelRefreshMinutes: c.ModelRefreshMinutes,
 	}
 }
 

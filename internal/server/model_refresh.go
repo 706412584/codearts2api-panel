@@ -20,14 +20,16 @@ import (
 // 用户主动打上游——这与「空闲时零额外请求」的原则一致：有缓存才续，
 // 没有缓存说明这个账号本来就没被用过。
 const (
-	// modelRefreshInterval 续期巡检间隔。23h TTL 下每小时看一眼，最坏情况下
-	// 目录过期不超过 1h，且续期任务本身失败也有下一轮兜底。
-	modelRefreshInterval = time.Hour
+	// defaultModelRefreshInterval 续期巡检间隔的兜底值，可由 config 的
+	// model_refresh_minutes 覆盖。23h TTL 下每小时看一眼，最坏情况下目录过期
+	// 不超过 1h，且续期任务本身失败也有下一轮兜底。
+	defaultModelRefreshInterval = time.Hour
 	// modelRefreshStartDelay 启动后多久开始首次巡检，避开接入初期的真实请求。
 	modelRefreshStartDelay = 2 * time.Minute
 )
 
-// StartModelRefresher 后台按 modelRefreshInterval 续期已发现的账号目录。
+// StartModelRefresher 后台按配置的间隔续期已发现的账号目录。
+// 间隔取自运行期快照，面板改 model_refresh_minutes 后最多滞后一轮生效。
 func (h *Handler) StartModelRefresher(ctx context.Context) {
 	go func() {
 		select {
@@ -35,18 +37,36 @@ func (h *Handler) StartModelRefresher(ctx context.Context) {
 			return
 		case <-time.After(modelRefreshStartDelay):
 		}
-		ticker := time.NewTicker(modelRefreshInterval)
-		defer ticker.Stop()
-		h.refreshStaleCatalogs()
 		for {
-			select {
-			case <-ctx.Done():
+			h.refreshStaleCatalogs()
+			if !sleepCtx(ctx, h.modelRefreshInterval()) {
 				return
-			case <-ticker.C:
-				h.refreshStaleCatalogs()
 			}
 		}
 	}()
+}
+
+// modelRefreshInterval 续期巡检间隔：优先取运行期配置，未配置时用内置默认。
+func (h *Handler) modelRefreshInterval() time.Duration {
+	if m := h.live().ModelRefreshMinutes; m > 0 {
+		return time.Duration(m) * time.Minute
+	}
+	return defaultModelRefreshInterval
+}
+
+// sleepCtx 等待 d 或 ctx 取消（返回 false）。d<=0 时按 1 分钟兜底，避免空转。
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		d = time.Minute
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // refreshStaleCatalogs 重新发现「已发现且已过期」的健康账号目录。
