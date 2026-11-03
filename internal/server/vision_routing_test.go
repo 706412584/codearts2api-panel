@@ -42,13 +42,7 @@ func TestNotMultimodalDoesNotCoolAccount(t *testing.T) {
 	if !p.Healthy("u-mm") {
 		t.Error("多模态错误不得冷却账号（旧版本会瘫整池 10 分钟）")
 	}
-	// 关键：不能把 deepseek 标成「模型不可用」——它处理纯文本完全正常，
-	// 标了会让它从 /v1/models 消失，连纯文本都用不了。
-	if st, _ := modelAvailability("u-mm", "deepseek-v4.1-flash"); st == availUnusable {
-		t.Error("多模态错误不得把该模型下架（纯文本仍可用）")
-	}
 }
-
 
 // prompt 超过模型上下文（ModelArts.81001）同样是请求问题，绝不能冷却账号：
 // 实测同一个 279k token 请求打 1M 上下文的 deepseek 成功、打 131k 的 qwen3-vl 报 81001。

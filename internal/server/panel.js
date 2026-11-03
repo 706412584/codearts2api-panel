@@ -15,6 +15,7 @@
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
   let authenticated = false, authEpoch = 0, refreshID = 0;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
+  let visionBridgeEnabled = false;
   let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
   let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
@@ -193,11 +194,12 @@
       const title = tip ? ' title="' + esc(tip).replace(/\n/g, '&#10;') + '"' : '';
       // 徽标行：上游标签（紫）、被隐藏的模型（橘）、输入模态（绿＝视觉理解 / 灰＝纯文本）。
       // 上游只在支持图片时才回 supports_images，因此「不是 true」就是纯文本；
-      // 这样每个模型都能一眼看出能不能贴图，不必点开。
+      // 纯文本模型在视觉转述启用时再挂黄色「外置视觉理解」，与原生视觉能力区分。
       const badges = [
         m.model_tag ? '<span class="pill tag">' + esc(m.model_tag) + '</span>' : '',
         m.display_enabled === false ? '<span class="pill warn">辅助模型</span>' : '',
-        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>'
+        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>',
+        m.supports_images !== true && visionBridgeEnabled ? '<span class="pill warn">外置视觉理解</span>' : ''
       ].filter(Boolean).join('');
       const badgeRow = badges ? '<div class="model-badges">' + badges + '</div>' : '';
       return '<tr><td class="mono"' + title + '>' + esc(m.id) + name + badgeRow + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
@@ -609,7 +611,13 @@
     if (page === 'models' && forceModels) { $('refreshModelsButton').disabled = true; $('refreshModelsButton').textContent = '正在获取…'; }
     try {
       if (page === 'accounts') renderOverview(await api('overview'));
-      else if (page === 'models') { const data = await api('models' + (forceModels ? '?refresh=1' : '')); models = data.data || []; renderModels(); if (forceModels) toast('模型目录已重新获取'); }
+      else if (page === 'models') {
+        const [data, config] = await Promise.all([api('models' + (forceModels ? '?refresh=1' : '')), api('config')]);
+        models = data.data || [];
+        visionBridgeEnabled = config.config?.vision_bridge?.enabled === true;
+        renderModels();
+        if (forceModels) toast('模型目录已重新获取');
+      }
       else if (page === 'usage') renderUsage(await api('usage?' + usageQuery()));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') await loadLogs();

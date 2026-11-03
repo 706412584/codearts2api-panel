@@ -18,7 +18,7 @@ func TestSendChatV2SurfacesEmbeddedNonMultimodalAsBadRequest(t *testing.T) {
 	}))
 	defer backend.Close()
 	c := NewWithChatEndpoint(time.Second, backend.URL)
-	_, err := c.SendChatV2(context.Background(), map[string]any{"model": "deepseek-v4.1-flash-1017"}, "", SignCredential{}, "")
+	_, err := c.sendChatV2(context.Background(), map[string]any{"model": "deepseek-v4.1-flash-1017"}, "", SignCredential{}, "", "", "")
 	var apiErr *ApiError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || !strings.Contains(apiErr.Message, "not multimodal") {
 		t.Fatalf("model capability error was treated as an upstream failure: %T %v", err, err)
@@ -37,7 +37,7 @@ func TestSendChatV2SurfacesEmbeddedParamInvalidAsBadRequest(t *testing.T) {
 			}))
 			defer backend.Close()
 			c := NewWithChatEndpoint(time.Second, backend.URL)
-			_, err := c.SendChatV2(context.Background(), map[string]any{"model": "GLM-5.2"}, "", SignCredential{}, "")
+			_, err := c.sendChatV2(context.Background(), map[string]any{"model": "GLM-5.2"}, "", SignCredential{}, "", "", "")
 			var apiErr *ApiError
 			if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadRequest || !strings.Contains(apiErr.Message, "invalid") {
 				t.Fatalf("parameter error was treated as an upstream failure: %T %v", err, err)
