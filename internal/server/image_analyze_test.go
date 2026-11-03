@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -288,4 +289,156 @@ func analyzeTestHandler(t *testing.T, endpoint string) (*Handler, *pool.Pool) {
 		Pool: p, DefaultModel: "deepseek-v4.1-flash", MaxRotate: 1,
 		ErrThreshold: 1, ImageHandling: "analyze",
 	}), p
+}
+
+// 识图子请求必须固定复用每账号一个 chat_id：上游按 chat_id 计并发会话（每账号 3 个），
+// 每次工具调用新建 id 会在第 2、3 次就撞满，把并发上限误报成"图片识别失败"。
+// （源自上游 PR #10，适配本 fork。）
+func TestAnalyzeImageReusesVisionSessionID(t *testing.T) {
+	var mainCalls atomic.Int32
+	var chatIDs []string
+	var mu sync.Mutex
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		model, _ := payload["model"].(string)
+		w.Header().Set("Content-Type", "text/event-stream")
+
+		if strings.Contains(model, "VL") {
+			chatID, _ := payload["chat_id"].(string)
+			mu.Lock()
+			chatIDs = append(chatIDs, chatID)
+			mu.Unlock()
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"图片是一个红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		if mainCalls.Add(1) == 1 {
+			id := extractImageID(string(body))
+			args, _ := json.Marshal(map[string]any{"imageId": []string{id}, "task": "这是什么颜色"})
+			frame := map[string]any{"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "tool_calls",
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "call_1", "type": "function",
+					"function": map[string]any{"name": analyzeImageToolName, "arguments": string(args)},
+				}}},
+			}}}
+			raw, _ := json.Marshal(frame)
+			_, _ = io.WriteString(w, "data: "+string(raw)+"\n\ndata: [DONE]\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"这是一个红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	h, p := analyzeTestHandler(t, backend.URL)
+	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
+		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
+		{ID: "Qwen3-VL-235B", SupportsImages: boolPtr(true)},
+	})
+
+	payload := `{"model":"deepseek-v4.1-flash","stream":false,"max_tokens":64,
+		"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"` + tinyPNG + `"}}]}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	got := append([]string(nil), chatIDs...)
+	mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("应调用一次视觉模型，实际 %d", len(got))
+	}
+	if got[0] == "" {
+		t.Fatal("视觉子请求必须带 chat_id")
+	}
+	if want := visionChatID(p.Accounts()[0].Name); got[0] != want {
+		t.Fatalf("识图会话 id 应固定为 visionChatID(账号)，got=%q want=%q", got[0], want)
+	}
+}
+
+// 撞上「并发会话数已达上限」时必须**让出槽位、等一下**再重试，而不是立刻盲目重发
+// （上游会话槽位不会因为重发就变空，盲重试只会连续撞墙，把并发上限误报成"图片识别失败"）。
+//
+// 只断言"重试后成功了"是假断言——盲目重试也会成功。这里量的是「第一次撞墙」到
+// 「第二次调用」之间的间隔：真的让出并等待，就必须 ≥ 等待时长。（源自上游 PR #10。）
+func TestAnalyzeImageWaitsAfterConcurrentLimit(t *testing.T) {
+	oldDelay := visionQueueRetryDelay
+	visionQueueRetryDelay = 300 * time.Millisecond
+	defer func() { visionQueueRetryDelay = oldDelay }()
+
+	var mainCalls, visionCalls atomic.Int32
+	var mu sync.Mutex
+	var visionAt []time.Time
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		model, _ := payload["model"].(string)
+
+		if strings.Contains(model, "VL") {
+			mu.Lock()
+			visionAt = append(visionAt, time.Now())
+			mu.Unlock()
+			if visionCalls.Add(1) == 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)，请关闭部分会话后重试。"}`)
+				return
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"图片是一个红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if mainCalls.Add(1) == 1 {
+			id := extractImageID(string(body))
+			args, _ := json.Marshal(map[string]any{"imageId": []string{id}, "task": "这是什么颜色"})
+			frame := map[string]any{"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "tool_calls",
+				"delta": map[string]any{"tool_calls": []any{map[string]any{
+					"index": 0, "id": "call_1", "type": "function",
+					"function": map[string]any{"name": analyzeImageToolName, "arguments": string(args)},
+				}}},
+			}}}
+			raw, _ := json.Marshal(frame)
+			_, _ = io.WriteString(w, "data: "+string(raw)+"\n\ndata: [DONE]\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"这是一个红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	h, p := analyzeTestHandler(t, backend.URL)
+	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
+		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
+		{ID: "Qwen3-VL-235B", SupportsImages: boolPtr(true)},
+	})
+	payload := `{"model":"deepseek-v4.1-flash","stream":false,"max_tokens":64,
+		"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"` + tinyPNG + `"}}]}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "红色方块") {
+		t.Fatalf("最终答复应包含分析结果，got=%s", rec.Body.String())
+	}
+	mu.Lock()
+	stamps := append([]time.Time(nil), visionAt...)
+	mu.Unlock()
+	if len(stamps) != 2 {
+		t.Fatalf("视觉调用应为 2 次（1 次撞墙 + 1 次重试），实际 %d", len(stamps))
+	}
+	if gap := stamps[1].Sub(stamps[0]); gap < 200*time.Millisecond {
+		t.Fatalf("撞并发上限后没有等待（间隔 %v）—— 说明是盲目重试，没让出槽位", gap)
+	}
+	for _, st := range p.List() {
+		if st["active_concurrent"] != 0 {
+			t.Fatalf("识图结束后槽位没还：%#v", st)
+		}
+	}
 }

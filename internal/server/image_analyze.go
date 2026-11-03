@@ -16,14 +16,17 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/upstream"
 )
 
@@ -35,7 +38,22 @@ const (
 	analyzeMaxRounds = 4
 	// analyzeImageTTL 图片在内存里保留多久。只服务同一次对话的后续轮次。
 	analyzeImageTTL = 30 * time.Minute
+	// analyzeVisionAttempts 单张图片识图的总尝试次数（含 81104 间歇失败与并发排队重试）。
+	analyzeVisionAttempts = 4
 )
+
+// visionQueueRetryDelay 识图子请求撞上「并发会话数已达上限」后的等待间隔（测试可覆盖）。
+var visionQueueRetryDelay = 5 * time.Second
+
+// visionChatID 给某账号派生一个固定的识图会话 id（32 位十六进制，符合上游要求）。
+//
+// 上游按 chat_id 计并发会话，每账号上限 3 个。识图子请求必须固定复用同一个 id：
+// 若每次工具调用（甚至每次重试）都新建 id，几次之后槽位被占满，上游一律回
+// TM.00001041「并发会话数已达上限」，主模型只会看到"工具一直失败、看不到图"。
+func visionChatID(accountName string) string {
+	sum := sha256.Sum256([]byte("codearts-vision-bridge:" + accountName))
+	return hex.EncodeToString(sum[:16])
+}
 
 // analyzeImageStore 保存本次进程内收到的图片，供 analyze_image 工具按 ID 取用。
 // 官方把图片存在会话数据库里；网关没有持久化需求，用带 TTL 的内存表即可。
@@ -233,25 +251,18 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 		return "", fmt.Errorf("no account can serve vision model %s", model)
 	}
 	// 并发槽位：优先首选账号；满载时在全池排队等任意账号空出槽位（与 chat 主
-	// 路径同一策略），而不是死等这一个账号 60s。
-	if !h.cfg.Pool.AcquireLock(acct.Name) {
-		name, ok := h.cfg.Pool.AcquireLockAny(ctx, map[string]bool{acct.Name: true}, visionSlotWait)
-		if !ok {
-			return "", fmt.Errorf("vision model %s busy: all accounts at concurrent limit", model)
-		}
-		// 排队到的是别的账号：必须确认它的目录里登记了这个视觉模型，否则
-		// 宁可放弃这次换号，也不把图发给不支持视觉的账号（上游会回 001001020）。
-		next := h.cfg.Pool.Get(name)
-		if next == nil || !h.accountServesModel(next, model) {
-			h.cfg.Pool.ReleaseLock(name)
-			return "", fmt.Errorf("vision model %s busy: queued account does not serve it", model)
-		}
-		acct = next
+	// 路径同一策略）。held 显式跟踪槽位是否仍持有：排队重试会「让出→等待→重获」，
+	// 重获失败时若还盲目 Release，会减掉别人正在用的槽位（计数器是账号级的，不分持有者）。
+	held := h.acquireVisionSlot(ctx, acct, model)
+	if !held.ok {
+		return "", held.err
 	}
-	defer h.cfg.Pool.ReleaseLock(acct.Name)
+	defer func() {
+		if held.ok {
+			h.cfg.Pool.ReleaseLock(acct.Name)
+		}
+	}()
 
-	token, ak, sk := acct.Auth.Credentials()
-	cred := upstream.SignCredential{AccessKeyID: ak, SecretAccessKey: sk, SecurityToken: token}
 	// 与官方一致：文本在前、图片在后。实测图片在前时上游偶发
 	// ModelArts.81104.503（Conversion failed），调整顺序更稳。
 	messages := []upstream.ChatMessage{{
@@ -262,14 +273,38 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 		},
 	}}
 	maxOut := 2048 // 与官方 createVisionModel 的 output 上限对齐，避免超长转换失败
-	// 81104（Conversion failed）是间歇性的：同一请求重发即成功。重试一次，
-	// 避免把偶发抖动当成图片无法识别回灌给主模型。
+
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		rc, err := acct.Client.ChatStreamWithOptions(ctx, randHex(32), messages, "", cred, acct.UserName, model,
+	for attempt := 0; attempt < analyzeVisionAttempts; attempt++ {
+		// 会话 id 固定复用：见 visionChatID 注释。每次循环重算，换号后跟着新账号走。
+		chatID := visionChatID(acct.Name)
+		token, ak, sk := acct.Auth.Credentials()
+		cred := upstream.SignCredential{AccessKeyID: ak, SecretAccessKey: sk, SecurityToken: token}
+		rc, err := acct.Client.ChatStreamWithOptions(ctx, chatID, messages, "", cred, acct.UserName, model,
 			upstream.ChatOptions{MaxTokens: &maxOut})
 		if err != nil {
 			lastErr = err
+			// 并发会话槽位被占满：让出账号并发槽等一下再试。这不是"图看不了"，
+			// 直接失败会把并发上限误报成图片识别失败回灌给主模型。
+			var ae *upstream.ApiError
+			if errors.As(err, &ae) && isQueueLimitError(ae) {
+				log.Printf("analyze_image queue limit, yielding slot account=%s: %s", acct.Name, truncateMsg(ae.Message, 80))
+				if held.ok {
+					h.cfg.Pool.ReleaseLock(acct.Name)
+					held.ok = false
+				}
+				select {
+				case <-time.After(visionQueueRetryDelay):
+					next := h.acquireVisionSlot(ctx, acct, model)
+					if !next.ok {
+						return "", lastErr
+					}
+					acct, held = next.acct, next
+					continue
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}
 			continue
 		}
 		comp, aerr := upstream.AggregateRaw(rc)
@@ -281,6 +316,39 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 		return strings.TrimSpace(comp.Content), nil
 	}
 	return "", lastErr
+}
+
+// visionSlot 一次槽位获取的结果：ok 表示已持有，acct 为实际持有的账号（排队时可能换号）。
+type visionSlot struct {
+	ok   bool
+	acct *pool.Account
+	err  error
+}
+
+// acquireVisionSlot 获取一次识图子请求的并发槽位。
+//
+// 策略与 chat 主路径一致：先抢首选账号；满载时在全池排队等**任意**账号空出槽位。
+// 排队到别的账号时必须确认其目录登记了该视觉模型，否则宁可放弃这次换号，也不把图
+// 发给不支持视觉的账号（上游会回 001001020）。返回实际持有的账号（可能已换号）。
+func (h *Handler) acquireVisionSlot(ctx context.Context, preferred *pool.Account, model string) visionSlot {
+	held := visionSlot{acct: preferred}
+	if h.cfg.Pool.AcquireLock(preferred.Name) {
+		held.ok = true
+		return held
+	}
+	name, ok := h.cfg.Pool.AcquireLockAny(ctx, map[string]bool{preferred.Name: true}, visionSlotWait)
+	if !ok {
+		held.err = fmt.Errorf("vision model %s busy: all accounts at concurrent limit", model)
+		return held
+	}
+	next := h.cfg.Pool.Get(name)
+	if next == nil || !h.accountServesModel(next, model) {
+		h.cfg.Pool.ReleaseLock(name)
+		held.err = fmt.Errorf("vision model %s busy: queued account does not serve it", model)
+		return held
+	}
+	held.acct, held.ok = next, true
+	return held
 }
 
 // visionModelForAnalyze 选择用于 analyze_image 的视觉模型。
