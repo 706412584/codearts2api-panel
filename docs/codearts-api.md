@@ -359,7 +359,8 @@ Content-Type: application/json
 Authorization: SDK-HMAC-SHA256 Access=<AK>, SignedHeaders=<实际签名头列表>, Signature=<计算值>
 ```
 
-鉴权按第 4 节实现选择；临时凭据携带 `X-Security-Token`。当前 G 另带 `x-auth-token: <security_token>`、`Accept: text/event-stream`、`x-snap-traceid`、`app-id: CodeAgent3.0`、`is_confidential: false`、`X-Language: zh-cn`，H/P 未要求这些额外归属头。不要把 G 发送了某个头误写成三仓共同证明的必填要求。[G-client] `ChatHeadersV2` L442、`sendChatV2` L553；[P-server] `chat_completions` L537；[H-chat] L2323。
+鉴权按第 4 节实现选择；临时凭据携带 `X-Security-Token`。当前 G 另带 `x-auth-token: <security_token>`、`Accept: text/event-stream`、`x-snap-traceid`、`app-id: CodeAgent3.0`、`is_confidential: false`、`X-Language: zh-cn`，H/P 未要求这些额外归属头。不要把 G 发送了某个头误写成三仓共同证明的必填要求。
+G 在 2026-11-03 起再发官方 26.10.100 身份/追踪头子集（`ChatIdentityHeaders`）：`x-ot-trace-id`/`x-ot-span-id`/`x-ot-session-id`/`x-ot-parent-session-id`（未发）/`user-session-id`/`x-ot-function: agent-tui`/`x-ot-client-type: CLI`/`plugin-name`/`plugin-version`（未发）/`ide-name`/`ide-version`（未发）/`model-id`/`model-name`，取值对齐官方 CLI 组合。故意不发的头：`client-ip`（网关填会暴露非本机 IDE）、`maas_type`（与账号套餐状态矛盾）、签名流头 `hash3`/`kernel-version`/`timestamp`/`depart`（依赖官方 libsnap_engine 签名 DLL，属客户端完整性校验，不伪造/绕过；官方自身签名失败时也会走 SIGN_DEGRADE 降级裸发，即当前 G 的状态）。[G-client] `ChatHeadersV2`、`ChatIdentityHeaders`、`sendChatV2`（client.go）；[P-server] `chat_completions` L537；[H-chat] L2323。
 
 最小结构示意：
 

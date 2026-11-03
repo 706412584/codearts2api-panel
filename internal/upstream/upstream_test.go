@@ -62,6 +62,38 @@ func TestSendChatV2SurfacesEmbeddedQueueError(t *testing.T) {
 	}
 }
 
+// TestSendChatV2EmitsIdentityHeaders 验证线上请求实际带上身份头
+// （x-ot-* 链 + CLI 身份 + model 元数据），且 trace/session 与 x-snap-traceid 一致。
+func TestSendChatV2EmitsIdentityHeaders(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewWithChatEndpoint(5*time.Second, srv.URL)
+	_, _ = c.SendChatV2(context.Background(), map[string]any{
+		"model": "glm-5.2", "stream": true, "messages": []any{},
+	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok")
+
+	if got.Get("x-ot-trace-id") != "trace-42" || got.Get("x-snap-traceid") != "trace-42" {
+		t.Fatalf("trace id not unified on wire: x-ot-trace-id=%q x-snap-traceid=%q",
+			got.Get("x-ot-trace-id"), got.Get("x-snap-traceid"))
+	}
+	if sid := got.Get("x-ot-session-id"); len(sid) != 32 || got.Get("user-session-id") != sid {
+		t.Fatalf("session id mismatch: x-ot-session-id=%q user-session-id=%q", sid, got.Get("user-session-id"))
+	}
+	if got.Get("model-id") != "GLM-5.2" || got.Get("model-name") != "GLM-5.2" {
+		t.Fatalf("model headers: %q / %q", got.Get("model-id"), got.Get("model-name"))
+	}
+	if got.Get("x-ot-function") != "agent-tui" || got.Get("x-ot-client-type") != "CLI" ||
+		got.Get("plugin-name") != "CLI" || got.Get("ide-name") != "CLI" {
+		t.Fatalf("cli identity headers wrong: %v", got)
+	}
+}
+
 func TestAggregateCodeArtsSSE(t *testing.T) {
 	stream := "data: {\"delta\":{\"content\":\"你\",\"reasoning_content\":\"思考\"}}\n" +
 		"data: {\"delta\":{\"content\":\"好\"}}\n" +
@@ -172,6 +204,34 @@ func TestChatHeaders(t *testing.T) {
 	}
 	if _, has := h["Agent-Type"]; has {
 		t.Fatalf("v2 headers must not contain Agent-Type: %v", h)
+	}
+}
+
+func TestChatIdentityHeaders(t *testing.T) {
+	h := ChatIdentityHeaders("trace-1", "sess-1", "glm-5.2")
+	if h["x-ot-trace-id"] != "trace-1" || h["x-snap-traceid"] != "trace-1" {
+		t.Fatalf("trace id not unified: %v", h)
+	}
+	if h["x-ot-session-id"] != "sess-1" || h["user-session-id"] != "sess-1" {
+		t.Fatalf("session id not unified: %v", h)
+	}
+	if h["model-id"] != "GLM-5.2" || h["model-name"] != "GLM-5.2" {
+		t.Fatalf("model headers: %v", h)
+	}
+	// 官方 CLI 身份取值
+	if h["x-ot-client-type"] != "CLI" || h["x-ot-function"] != "agent-tui" || h["ide-name"] != "CLI" {
+		t.Fatalf("cli identity: %v", h)
+	}
+	// 不发明官方签名流/伪造信号头
+	for _, k := range []string{"client-ip", "maas_type", "hash3", "kernel-version", "timestamp", "depart"} {
+		if _, has := h[k]; has {
+			t.Fatalf("identity headers must not contain %q: %v", k, h)
+		}
+	}
+	// 空入参时自动生成 32 位 hex
+	g := ChatIdentityHeaders("", "", "")
+	if len(g["x-ot-trace-id"]) != 32 || len(g["x-ot-span-id"]) != 32 {
+		t.Fatalf("generated ids: %v", g)
 	}
 }
 
