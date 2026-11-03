@@ -143,7 +143,9 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(ids.get('requestLogsBody').innerHTML.includes('upstream &lt;failed&gt; &amp; unavailable'));
  assert(!ids.get('requestLogsBody').innerHTML.includes('upstream <failed>'));
  // 尝试次数列：重试过的请求把最后一次上游错误挂进原生 tooltip，一次就成功的没有 tooltip。
- const attemptsCells = [...ids.get('requestLogsBody').innerHTML.matchAll(/<td class="number"(?: title="([^"]*)")?>(\d+)<\/td>/g)];
+ assert(html.includes('<th>时间</th><th>模型</th><th>账户</th><th>结果</th><th>尝试次数</th><th>TTFT</th><th>耗时</th><th>缓存</th><th>总Token</th>'), '最近请求表头及顺序');
+  assert(ids.get('requestLogsBody').innerHTML.includes('<td>300 ms</td><td>500 ms</td><td>800</td><td>1,200</td>'), 'TTFT、耗时、缓存和总Token列的值及顺序');
+  const attemptsCells = [...ids.get('requestLogsBody').innerHTML.matchAll(/<td class="number"(?: title="([^"]*)")?>(\d+)<\/td>/g)];
  assert.equal(attemptsCells.length, 2, '每条请求都要有尝试次数');
  const retriedCell = attemptsCells.find(cell => cell[2] === '3');
  const firstTryCell = attemptsCells.find(cell => cell[2] === '1');
