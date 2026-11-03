@@ -90,6 +90,16 @@ func TestModelEntriesLowercaseAndDeduped(t *testing.T) {
 	}
 }
 
+func TestModelEntriesOmitsUnknownContext(t *testing.T) {
+	entries := modelEntries([]upstream.ModelInfo{{ID: "unknown-context"}})
+	if len(entries) != 1 {
+		t.Fatalf("应返回一个模型条目，got=%v", entries)
+	}
+	if got, ok := entries[0]["context_length"]; ok {
+		t.Errorf("上游未提供上下文长度时不应输出兜底值，got=%v", got)
+	}
+}
+
 func keysOf[T any](m map[string]T) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
