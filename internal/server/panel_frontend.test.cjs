@@ -30,7 +30,7 @@ for (const match of html.matchAll(/<(\/?)([\w-]+)\b([^>]*)>/g)) {
 }
 const selector = s => s === '.view' ? all.filter(e => e.classes.has('view')) : /^\[data-([\w-]+)\]$/.test(s) ? all.filter(e => Object.hasOwn(e.dataset, s.slice(6, -1).replace(/-([a-z])/g, (_, c) => c.toUpperCase()))) : [];
 const storage = () => { const values = new Map(); return { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }; };
-const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
+const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', note: '13800001111 <b>&</b>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
 const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
 const configFixture = {
  listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret', max_body_mb: 48,
@@ -68,6 +68,11 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  await ids.get('loginForm').onsubmit({ preventDefault() {} }); await tick();
  assert(!ids.get('loginDialog').open); assert.equal(ids.get('loginKey').value, '');
  assert(ids.get('accountsBody').innerHTML.includes('&lt;img')); assert(!ids.get('accountsBody').innerHTML.includes('<img')); assert(ids.get('accountsBody').innerHTML.includes('未知'));
+ // 备注显示在账户名下，且按 HTML 转义（与昵称同一套 esc）。
+ assert(ids.get('accountsBody').innerHTML.includes('account-note'), 'note must render its own line');
+ assert(ids.get('accountsBody').innerHTML.includes('13800001111 &lt;b&gt;&amp;&lt;/b&gt;'), 'note must be escaped');
+ assert(!ids.get('accountsBody').innerHTML.includes('13800001111 <b>'), 'note must not inject raw HTML');
+ assert(/data-account-action="note"/.test(ids.get('accountsBody').innerHTML), 'note button must exist');
  assert.equal(ids.get('uptime').textContent, '运行 2 时 30 分', '顶栏运行时长按 uptime_sec 换算');
  assert(ids.get('uptime').title.startsWith('服务启动于'), '顶栏运行时长要能说明启动时刻');
  // 签到按钮按「今日是否已签」切换：未签显示「签到」，已签显示「已签」并带本地结果提示。

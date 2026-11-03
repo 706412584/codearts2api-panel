@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -218,6 +219,7 @@ func (p *Pool) List() []map[string]any {
 			"uid":                   a.UID,
 			"nickname":              a.UserName,
 			"user_name":             a.UserName,
+			"note":                  a.Auth.Note,
 			"default_model":         a.DefaultModel,
 			"credits":               credit,
 			"credit_balance":        a.creditBalance,
@@ -302,6 +304,31 @@ func (p *Pool) ClearCooldown(name string) bool {
 		}
 	}
 	return false
+}
+
+// SetNote 设置账号备注（写盘）。备注是纯本地字段，不参与任何上游请求。
+// 空字符串表示清除备注。返回 false 表示账号不存在或写盘失败。
+func (p *Pool) SetNote(name, note string) bool {
+	p.mu.Lock()
+	var target *Account
+	for _, a := range p.accounts {
+		if a.Name == name || a.UID == name {
+			target = a
+			break
+		}
+	}
+	p.mu.Unlock()
+	if target == nil || target.Auth == nil {
+		return false
+	}
+	target.mu.Lock()
+	target.Auth.Note = strings.TrimSpace(note)
+	target.mu.Unlock()
+	if err := target.Auth.Save(); err != nil {
+		log.Printf("pool save note account=%s: %v", name, err)
+		return false
+	}
+	return true
 }
 
 // SyncToDir 用磁盘 auths 全量对齐。
