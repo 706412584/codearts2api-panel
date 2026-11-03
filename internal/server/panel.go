@@ -8,7 +8,7 @@ import (
 )
 
 // Version is set by release builds with -ldflags -X.
-var Version = "v26.11.03.1"
+var Version = "v26.11.03.2"
 
 //go:embed panel.html
 var panelHTMLRaw string
