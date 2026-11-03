@@ -116,6 +116,7 @@ func TestUsageExposesLastUpstreamErrorForRetriedRequest(t *testing.T) {
 		Recent []struct {
 			RequestID string `json:"request_id"`
 			Attempts  int    `json:"attempts"`
+			QueueMs   int64  `json:"queue_ms"`
 		} `json:"recent"`
 		AttemptErrors map[string]string `json:"attempt_errors"`
 	}
@@ -124,16 +125,25 @@ func TestUsageExposesLastUpstreamErrorForRetriedRequest(t *testing.T) {
 	}
 
 	var retriedID, firstTryID string
+	var retriedQueueMs, firstTryQueueMs int64
 	for _, row := range payload.Recent {
 		switch row.Attempts {
 		case 2:
 			retriedID = row.RequestID
+			retriedQueueMs = row.QueueMs
 		case 1:
 			firstTryID = row.RequestID
+			firstTryQueueMs = row.QueueMs
 		}
 	}
 	if retriedID == "" || firstTryID == "" {
 		t.Fatalf("应各有一条 attempts=2 与 attempts=1 的记录，got=%+v", payload.Recent)
+	}
+	if retriedQueueMs <= 0 {
+		t.Errorf("重试请求应记录排队时长，got=%d", retriedQueueMs)
+	}
+	if firstTryQueueMs != 0 {
+		t.Errorf("一次就成功的请求不应有排队时长，got=%d", firstTryQueueMs)
 	}
 	if msg := payload.AttemptErrors[retriedID]; !strings.Contains(msg, "81111.429") {
 		t.Errorf("重试请求应带上最后一次上游错误，got=%q", msg)

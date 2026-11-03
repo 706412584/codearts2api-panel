@@ -920,12 +920,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, queueAttempts, acct.Name, queueDelay)
 				// 释放锁让其他请求有机会，等待后重新获取
 				h.cfg.Pool.ReleaseLock(acct.Name)
+				queueStarted := time.Now()
 				select {
 				case <-time.After(queueDelay):
 				case <-r.Context().Done():
+					event.QueueMs += time.Since(queueStarted).Milliseconds()
 					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
 					return
 				}
+				event.QueueMs += time.Since(queueStarted).Milliseconds()
 				if !h.cfg.Pool.AcquireLockWait(acct.Name, 30*time.Second) {
 					lastErr = errors.New("concurrent limit: could not reacquire lock after wait")
 					break

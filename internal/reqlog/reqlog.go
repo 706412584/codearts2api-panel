@@ -80,6 +80,7 @@ type Event struct {
 	Error            string  `json:"error,omitempty"`
 	DurationMs       int64   `json:"duration_ms"`
 	TTFBMs           int64   `json:"ttfb_ms,omitempty"`
+	QueueMs          int64   `json:"queue_ms,omitempty"`
 	Attempts         int     `json:"attempts,omitempty"`
 	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64   `json:"completion_tokens,omitempty"`
