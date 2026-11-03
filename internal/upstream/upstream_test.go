@@ -208,7 +208,8 @@ func TestChatHeaders(t *testing.T) {
 }
 
 func TestChatIdentityHeaders(t *testing.T) {
-	h := ChatIdentityHeaders("trace-1", "sess-1", "glm-5.2")
+	const chatID = "0123456789abcdef0123456789abcdef"
+	h := ChatIdentityHeaders("trace-1", "sess-1", "glm-5.2", chatID)
 	if h["x-ot-trace-id"] != "trace-1" || h["x-snap-traceid"] != "trace-1" {
 		t.Fatalf("trace id not unified: %v", h)
 	}
@@ -222,16 +223,35 @@ func TestChatIdentityHeaders(t *testing.T) {
 	if h["x-ot-client-type"] != "CLI" || h["x-ot-function"] != "agent-tui" || h["ide-name"] != "CLI" {
 		t.Fatalf("cli identity: %v", h)
 	}
+	// 官方同款 created-time：ISO 8601 UTC 截到秒
+	ct := h["created-time"]
+	if len(ct) != 20 || !strings.HasSuffix(ct, "Z") || !strings.Contains(ct, "T") {
+		t.Fatalf("created-time not ISO-8601-UTC-to-seconds: %q", ct)
+	}
+	// user-msg-id = chatID-createdTime（官方 `${sessionID}-${createdTime}`）
+	if h["user-msg-id"] != chatID+"-"+ct {
+		t.Fatalf("user-msg-id = %q, want %q", h["user-msg-id"], chatID+"-"+ct)
+	}
+	// 无父子会话：与官方首条消息一致为空串
+	if v, has := h["x-ot-parent-session-id"]; !has || v != "" {
+		t.Fatalf("x-ot-parent-session-id must be present and empty, got %q (has=%v)", v, has)
+	}
 	// 不发明官方签名流/伪造信号头
 	for _, k := range []string{"client-ip", "maas_type", "hash3", "kernel-version", "timestamp", "depart"} {
 		if _, has := h[k]; has {
 			t.Fatalf("identity headers must not contain %q: %v", k, h)
 		}
 	}
-	// 空入参时自动生成 32 位 hex
-	g := ChatIdentityHeaders("", "", "")
+	// 空入参时自动生成 32 位 hex；无 chatID 时 user-msg-id 为空（同官方未提供）
+	g := ChatIdentityHeaders("", "", "", "")
 	if len(g["x-ot-trace-id"]) != 32 || len(g["x-ot-span-id"]) != 32 {
 		t.Fatalf("generated ids: %v", g)
+	}
+	if g["user-msg-id"] != "" {
+		t.Fatalf("user-msg-id without chatID must be empty, got %q", g["user-msg-id"])
+	}
+	if len(g["created-time"]) != 20 {
+		t.Fatalf("created-time missing on empty input: %q", g["created-time"])
 	}
 }
 
