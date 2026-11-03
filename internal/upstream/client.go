@@ -422,11 +422,11 @@ func CanonicalModel(id string) string {
 	}
 }
 
-// ChatHeadersV2 组装 /api/v2/chat/completions 请求头。
+// ChatHeadersV2 组装 /api/v2/chat/completions 基础请求头。
 // 与官方 AgentKernel 一致：x-auth-token 鉴权 + AK/SK 签名，无 Agent-Type。
 func ChatHeadersV2(token, traceID, language string) map[string]string {
 	if traceID == "" {
-		traceID = fmt.Sprintf("%x", time.Now().UnixNano())
+		traceID = uuidHex()
 	}
 	if language == "" {
 		language = "zh-cn"
@@ -442,6 +442,49 @@ func ChatHeadersV2(token, traceID, language string) map[string]string {
 	}
 	if token == "" {
 		delete(headers, "x-auth-token")
+	}
+	return headers
+}
+
+// uuidHex 生成去横杠 UUIDv4（32 位 hex），与官方 trace/session 头格式一致
+// （官方 gc().replace(/-/g,"")）。
+func uuidHex() string {
+	b := make([]byte, 16)
+	if _, err := crand.Read(b); err != nil {
+		return sessionIDFor(fmt.Sprintf("%d", time.Now().UnixNano()))
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return hex.EncodeToString(b)
+}
+
+// ChatIdentityHeaders 对齐官方 26.10.100 的身份/追踪头（官方 CLI 组合）：
+// x-ot-* 追踪链、x-ot-function、客户端归属与模型元数据。
+// 只填事实：网关不是 IDE，按官方 CLI 身份取值（client-type/plugin/ide=CLI、
+// function=agent-tui）。不发 client-ip、maas_type，也不发签名流头
+// （hash3/kernel-version/timestamp/depart）——那些依赖官方签名 DLL。
+// traceID/sessionID 空时各自生成 UUID（官方同款回退）。
+func ChatIdentityHeaders(traceID, sessionID, model string) map[string]string {
+	if traceID == "" {
+		traceID = uuidHex()
+	}
+	if sessionID == "" {
+		sessionID = uuidHex()
+	}
+	headers := map[string]string{
+		"x-ot-trace-id":    traceID,
+		"x-ot-span-id":     uuidHex(),
+		"x-snap-traceid":   traceID,
+		"x-ot-session-id":  sessionID,
+		"user-session-id":  sessionID,
+		"x-ot-function":    "agent-tui",
+		"x-ot-client-type": "CLI",
+		"plugin-name":      "CLI",
+		"ide-name":         "CLI",
+	}
+	if canonical := CanonicalModel(model); canonical != "" {
+		headers["model-id"] = canonical
+		headers["model-name"] = canonical
 	}
 	return headers
 }
@@ -539,6 +582,9 @@ func (c *Client) SendChatV2(ctx context.Context, body map[string]any, traceID st
 //
 // chatID/sessionID 作为请求亲和与 prompt cache 标识（不代替 messages 里的语义历史）。
 func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken, chatID, sessionID string) (io.ReadCloser, error) {
+	if traceID == "" {
+		traceID = uuidHex()
+	}
 	raw, _ := json.Marshal(body)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.chatEndpoint(), bytes.NewReader(raw))
 	if err != nil {
@@ -553,6 +599,10 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 	}
 	if sessionID != "" {
 		httpReq.Header.Set("Session-Id", sessionID)
+	}
+	modelID, _ := body["model"].(string)
+	for k, v := range ChatIdentityHeaders(traceID, sessionID, modelID) {
+		httpReq.Header.Set(k, v)
 	}
 	resp, err := c.streamHTTP.Do(httpReq)
 	if err != nil {
