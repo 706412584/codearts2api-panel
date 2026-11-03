@@ -111,6 +111,8 @@ func TestImageRequestToTextModelIsRejectedWithoutUpstream(t *testing.T) {
 	defer backend.Close()
 
 	h, p := visionTestHandler(t, backend.URL)
+	// 本部署默认 analyze；这个用例测的是 passthrough 的显式拒绝行为。
+	h.cfg.ImageHandling = "passthrough"
 	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
 		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
 		{ID: "Qwen3-VL-235B", SupportsImages: boolPtr(true)},

@@ -62,7 +62,7 @@ type Config struct {
 	ImageShrink *imgshrink.Policy
 	// MaxBodyBytes 聊天请求体上限（字节）。<=0 回落 defaultMaxBodyBytes。
 	MaxBodyBytes int64
-	// ImageHandling 见 cmd/server/config.go 同名配置项。空值等同 passthrough。
+	// ImageHandling 见 cmd/server/config.go 同名配置项。空值等同 analyze（本部署默认）。
 	ImageHandling string
 	// Live 运行期配置快照：面板保存后热生效的字段从这里读。
 	// 为 nil 时（测试/裸用）回落到上面各字段的启动值。
@@ -949,7 +949,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 流式，否则客户端要等模型生成完才收到首字（实测 91s 的 TTFB）。
 	analyzeRouted := false
 	if hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
-		if h.cfg.ImageHandling != "analyze" {
+		if h.cfg.ImageHandling == "passthrough" {
 			vision := strings.Join(h.visionModelIDs(), ", ")
 			if vision == "" {
 				vision = "(当前账号目录里没有声明支持图片的模型)"

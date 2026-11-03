@@ -56,9 +56,10 @@ type Config struct {
 	KeepaliveWindow string `json:"keepalive_window"` // 保活窗口（新增）
 
 	// ImageHandling 带图请求打到「上游明确不支持图片」的模型时如何处理：
-	//   ""/"passthrough"（默认）—— 直接回 400，由调用方自行改用视觉模型；
-	//   "analyze" —— 复刻官方 AnalyzeImagePlugin：图片换成占位符交给主模型，
-	//     主模型按需调用 analyze_image 工具，网关内部用视觉模型分析后回灌结果。
+	//   ""/"analyze"（本部署默认）—— 复刻官方 AnalyzeImagePlugin：图片换成占位符
+	//     交给主模型，主模型按需调用 analyze_image 工具，网关内部用视觉模型分析后
+	//     回灌结果。主模型上下文与推理不受图片描述挤占，且可多轮追问同一张图。
+	//   "passthrough" —— 直接回 400 并列出可用视觉模型，由调用方自行改用。
 	// 不提供「剔除图片只留文本」：静默丢图会让模型答非所问。
 	ImageHandling string `json:"image_handling"`
 
@@ -429,12 +430,14 @@ func (c *Config) normalize() []string {
 		c.MaxConcurrent = 2 // 上游单账号并发会话上限 3 且释放慢，留一个槽位余量
 	}
 	switch c.ImageHandling {
-	case "", "passthrough":
-		c.ImageHandling = "passthrough"
-	case "analyze":
+	case "", "analyze":
+		// 本部署默认 analyze：图片交给主模型按需调用 analyze_image 工具，
+		// 主模型上下文与推理不受图片描述挤占，且可多轮追问同一张图。
+		c.ImageHandling = "analyze"
+	case "passthrough":
 	default:
-		changes = append(changes, fmt.Sprintf("image_handling=%q → passthrough", c.ImageHandling))
-		c.ImageHandling = "passthrough"
+		changes = append(changes, fmt.Sprintf("image_handling=%q → analyze", c.ImageHandling))
+		c.ImageHandling = "analyze"
 	}
 	// 请求体上限：0/负数按没配置处理；上限 512MB 只是防手滑填太大。
 	if c.MaxBodyMB <= 0 || c.MaxBodyMB > 512 {

@@ -5,6 +5,16 @@
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
   "default_model": "glm-5.2",
+  "image_handling": "analyze",
+  "max_body_mb": 32,
+  "image_shrink": {
+    "enabled": true,
+    "trigger_body_mb": 4,
+    "target_image_mb": 2,
+    "target_total_mb": 4,
+    "max_dimension": 2048,
+    "quality": 85
+  },
   "oauth_callback_host": "",
   "login_client_id": "codearts-agent",
   "cooldown": {
@@ -17,7 +27,10 @@
   "queue_retry_seconds": 10,
   "queue_max_attempts": 30,
   "credits_auto_claim": true,
-  "checkin_hours": [9, 21],
+  "checkin_hours": [
+    9,
+    21
+  ],
   "request_log_retention_days": 30,
   "watch": {
     "enabled": true,
