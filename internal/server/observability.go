@@ -267,7 +267,20 @@ const (
 	// errorTextLimit 错误摘要的字节上限：面板「尝试次数」列的 tooltip 直接用这段
 	// 文本，所以比标签宽一些，容得下上游错误码 + 原文。
 	errorTextLimit = 300
+	// stickySlotWait 黏性会话在原账号满载时的短等待窗：有界地保亲和，
+	// 超时后退化为全局排队（换账号继续服务，不把请求卡死）。
+	stickySlotWait = 3 * time.Second
 )
+
+// slotWaitTimeout 首选账号满载时，在全池排队等任意账号空出槽位的时长。
+//
+// 15s 是刻意的短窗：等不到就明确回 429 让客户端重试，而不是把请求拖在长队列里
+// （旧实现死等单个账号 180s）。声明为变量是为了测试能注入短值。
+var slotWaitTimeout = 15 * time.Second
+
+// visionSlotWait 视觉子请求等槽位的时长。比 chat 主路径长一些（主模型的
+// analyze_image 工具调用在等结果，宁可多等一会儿也不要直接失败回灌）。
+const visionSlotWait = 30 * time.Second
 
 // safeLogLabel 把一段外部文本压成单行，并按标签上限截断。
 func safeLogLabel(value string) string { return safeLogText(value, logLabelLimit) }
@@ -319,7 +332,19 @@ func (h *Handler) finishRequest(event reqlog.Event, observed *responseObserver, 
 		event.Error = ""
 	}
 	h.cfg.RequestLog.Record(event)
-	line := fmt.Sprintf("chat request=%s model=%s status=%d ok=%t duration_ms=%d tokens=%d", event.RequestID, safeLogLabel(event.Model), event.Status, event.OK, event.DurationMs, event.TotalTokens)
+	// 运行日志里带上首字延迟与排队时长：面板「运行日志」页据此一眼看出
+	// 慢在排队还是慢在模型（ttfb 是客户端可见的首个响应字节时刻）。
+	line := fmt.Sprintf("chat request=%s model=%s status=%d ok=%t duration_ms=%d ttfb_ms=%d tokens=%d",
+		event.RequestID, safeLogLabel(event.Model), event.Status, event.OK, event.DurationMs, event.TTFBMs, event.TotalTokens)
+	if event.QueueMs > 0 {
+		line += fmt.Sprintf(" queue_ms=%d", event.QueueMs)
+	}
+	if event.Attempts > 1 {
+		line += fmt.Sprintf(" attempts=%d", event.Attempts)
+	}
+	if event.Account != "" {
+		line += " account=" + event.Account
+	}
 	if event.Error != "" {
 		line += fmt.Sprintf(" error=%q", event.Error)
 	}

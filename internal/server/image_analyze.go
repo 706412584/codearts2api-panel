@@ -232,8 +232,21 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 	if acct == nil {
 		return "", fmt.Errorf("no account can serve vision model %s", model)
 	}
-	if !h.cfg.Pool.AcquireLockWait(acct.Name, 60*time.Second) {
-		return "", fmt.Errorf("vision model busy")
+	// 并发槽位：优先首选账号；满载时在全池排队等任意账号空出槽位（与 chat 主
+	// 路径同一策略），而不是死等这一个账号 60s。
+	if !h.cfg.Pool.AcquireLock(acct.Name) {
+		name, ok := h.cfg.Pool.AcquireLockAny(ctx, map[string]bool{acct.Name: true}, visionSlotWait)
+		if !ok {
+			return "", fmt.Errorf("vision model %s busy: all accounts at concurrent limit", model)
+		}
+		// 排队到的是别的账号：必须确认它的目录里登记了这个视觉模型，否则
+		// 宁可放弃这次换号，也不把图发给不支持视觉的账号（上游会回 001001020）。
+		next := h.cfg.Pool.Get(name)
+		if next == nil || !h.accountServesModel(next, model) {
+			h.cfg.Pool.ReleaseLock(name)
+			return "", fmt.Errorf("vision model %s busy: queued account does not serve it", model)
+		}
+		acct = next
 	}
 	defer h.cfg.Pool.ReleaseLock(acct.Name)
 

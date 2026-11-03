@@ -337,23 +337,59 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	p.accounts = next
 }
 
-// PickExcluding 挑一个健康账号。
+// PickExcluding 挑一个健康账号。调度优先级：
+//
+//  1. 有空闲并发槽位（activeConcurrent < maxConcurrent）的账号优先于满载账号——
+//     多账号池里「第一个账号满载就死等它」会让其他账号空转，实测会造成
+//     3 分钟级排队。
+//  2. 同档位内按积分余额从高到低排——余额高的多承担流量，避免单账号被抽干
+//     （余额未知的账号排在已知余额之后，但不被排除）。
+//  3. 仍相同则保持账号原有顺序（稳定，便于复现）。
+//
+// 满载账号仍然会被返回（当没有空闲账号时），调用方配合 AcquireLockWait 短超时
+// 使用：等不到槽位就换下一个账号重试。
 func (p *Pool) PickExcluding(tried map[string]bool) *Account {
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	now := time.Now()
+	type cand struct {
+		acct    *Account
+		idle    bool
+		credits float64
+		known   bool
+	}
+	p.mu.Lock()
+	cands := make([]cand, 0, len(p.accounts))
 	for _, a := range p.accounts {
 		if tried != nil && tried[a.Name] {
 			continue
 		}
 		a.mu.Lock()
 		healthy := !a.disabled && now.After(a.coolUntil)
+		idle := a.activeConcurrent < a.maxConcurrent
+		var credits float64
+		known := a.creditBalance != nil
+		if known {
+			credits = a.creditBalance.Total
+		}
 		a.mu.Unlock()
 		if healthy {
-			return a
+			cands = append(cands, cand{acct: a, idle: idle, credits: credits, known: known})
 		}
 	}
-	return nil
+	p.mu.Unlock()
+	if len(cands) == 0 {
+		return nil
+	}
+	// 稳定排序：空闲优先 → 余额高优先 → 已知余额优先 → 原顺序。
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].idle != cands[j].idle {
+			return cands[i].idle
+		}
+		if cands[i].known != cands[j].known {
+			return cands[i].known
+		}
+		return cands[i].credits > cands[j].credits
+	})
+	return cands[0].acct
 }
 
 // Validate 校验并（必要时）自动刷新 token。带 5 分钟缓存。
@@ -585,6 +621,100 @@ func (p *Pool) AcquireLockWait(name string, timeout time.Duration) bool {
 		// 避免忙轮询：每次 100ms 重试。
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// AcquireLockAny 全局排队：在**任意**健康账号上抢一个并发槽位，返回抢到的账号名。
+//
+// 与 AcquireLockWait 的区别：那个只等指定账号，满载时调用方只能换号（各账号
+// 各自排队）；这个把整个池当一个资源池排队，谁先空出来就用谁——不会出现
+// 「A 满载、B/C 空闲，请求却卡在 A 的队列里」。
+//
+// exclude 里的账号不参与（本轮已试过并失败的账号）；ctx 取消立即返回。
+// 没有任何可等待的账号时立即返回 false（不必空等）；否则等到 timeout。
+// 返回空串表示超时/取消/无候选。
+func (p *Pool) AcquireLockAny(ctx context.Context, exclude map[string]bool, timeout time.Duration) (string, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		name, ok, eligible := p.tryAcquireIdle(exclude)
+		if ok {
+			return name, true
+		}
+		if eligible == 0 {
+			// 排除集之外已无健康账号：再等也不会有人空出槽位。
+			return "", false
+		}
+		if timeout <= 0 || time.Now().After(deadline) {
+			return "", false
+		}
+		wait := 100 * time.Millisecond
+		if remain := time.Until(deadline); remain < wait {
+			wait = remain
+		}
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return "", false
+			case <-time.After(wait):
+			}
+			continue
+		}
+		time.Sleep(wait)
+	}
+}
+
+// tryAcquireIdle 在空闲账号里按与 PickExcluding 相同的优先级抢一个槽位。
+// eligible 是排除集之外的健康账号总数（无论是否满载），供调用方判断
+// 「还有没有等下去的必要」。
+func (p *Pool) tryAcquireIdle(exclude map[string]bool) (name string, acquired bool, eligible int) {
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// 先按优先级找出候选，再逐个尝试加锁；竞争失败就继续下一个候选。
+	type cand struct {
+		acct    *Account
+		credits float64
+		known   bool
+	}
+	cands := make([]cand, 0, len(p.accounts))
+	for _, a := range p.accounts {
+		if exclude != nil && exclude[a.Name] {
+			continue
+		}
+		a.mu.Lock()
+		healthy := !a.disabled && now.After(a.coolUntil)
+		free := a.activeConcurrent < a.maxConcurrent
+		var credits float64
+		known := a.creditBalance != nil
+		if known {
+			credits = a.creditBalance.Total
+		}
+		a.mu.Unlock()
+		if !healthy {
+			continue
+		}
+		eligible++
+		if free {
+			cands = append(cands, cand{acct: a, credits: credits, known: known})
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].known != cands[j].known {
+			return cands[i].known
+		}
+		return cands[i].credits > cands[j].credits
+	})
+	// 候选已在 p.mu 内、且各自的 activeConcurrent 已复核；直接加锁。
+	for _, c := range cands {
+		c.acct.mu.Lock()
+		if c.acct.activeConcurrent < c.acct.maxConcurrent {
+			c.acct.activeConcurrent++
+			name := c.acct.Name
+			c.acct.mu.Unlock()
+			return name, true, eligible
+		}
+		c.acct.mu.Unlock()
+	}
+	return "", false, eligible
 }
 
 // NeedKeepalive 检查账号是否需要保活心跳。

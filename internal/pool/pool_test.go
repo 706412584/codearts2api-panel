@@ -38,6 +38,140 @@ func TestSyncToDirInitializesConcurrency(t *testing.T) {
 	p.ReleaseLock("u1")
 }
 
+// 满载账号不该被优先选中：同池里还有空闲账号时必须选空闲的。
+func TestPickExcludingPrefersIdleAccount(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u1", "u2"} {
+		p.AddAccount(auth.New(id, id, "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	}
+	// u1 占满槽位；PickExcluding 不应再选它。
+	if !p.AcquireLock("u1") {
+		t.Fatal("could not occupy u1")
+	}
+	if got := p.PickExcluding(nil); got == nil || got.Name != "u2" {
+		gotName := "<nil>"
+		if got != nil {
+			gotName = got.Name
+		}
+		t.Fatalf("picked %s, want u2 (u1 is saturated)", gotName)
+	}
+	// 都满载时回落到仍返回一个账号（调用方靠短超时排队换号）。
+	if !p.AcquireLock("u2") {
+		t.Fatal("could not occupy u2")
+	}
+	if got := p.PickExcluding(nil); got == nil {
+		t.Fatal("with every account saturated PickExcluding must still return a candidate for the caller to queue on")
+	}
+}
+
+// 余额高的账号在同档位里优先。
+func TestPickExcludingPrefersHigherCredits(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 2}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"low", "high", "unknown"} {
+		p.AddAccount(auth.New(id, id, "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	}
+	setCredits := func(name string, total float64) {
+		a := p.Get(name)
+		a.mu.Lock()
+		a.creditBalance = &upstream.CreditBalance{Total: total}
+		a.mu.Unlock()
+	}
+	setCredits("low", 100)
+	setCredits("high", 9000)
+	// unknown 保持 nil：余额未知的账号排在有余额的之后。
+	if got := p.PickExcluding(nil); got == nil || got.Name != "high" {
+		gotName := "<nil>"
+		if got != nil {
+			gotName = got.Name
+		}
+		t.Fatalf("picked %s, want high", gotName)
+	}
+	deleteMap := map[string]bool{"high": true}
+	if got := p.PickExcluding(deleteMap); got == nil || got.Name != "low" {
+		gotName := "<nil>"
+		if got != nil {
+			gotName = got.Name
+		}
+		t.Fatalf("picked %s, want low (high excluded, unknown ranks last)", gotName)
+	}
+}
+
+// AcquireLockAny 能把槽位分给任意空闲账号，并遵守 exclude 与超时。
+func TestAcquireLockAnySkipsSaturatedAndExcluded(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"u1", "u2", "u3"} {
+		p.AddAccount(auth.New(id, id, "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	}
+	if !p.AcquireLock("u1") {
+		t.Fatal("occupy u1")
+	}
+	// u1 满载 → 应拿到 u2。
+	name, ok := p.AcquireLockAny(nil, nil, 0)
+	if !ok || name != "u2" {
+		t.Fatalf("got %q ok=%v, want u2", name, ok)
+	}
+	p.ReleaseLock("u2")
+	// 排除 u2、u1 已满载 → 应拿到 u3。
+	name, ok = p.AcquireLockAny(nil, map[string]bool{"u1": true, "u2": true}, 0)
+	if !ok || name != "u3" {
+		t.Fatalf("got %q ok=%v, want u3", name, ok)
+	}
+	p.ReleaseLock("u3")
+	// 全部排除 → 超时返回空。
+	if name, ok := p.AcquireLockAny(nil, map[string]bool{"u1": true, "u2": true, "u3": true}, 0); ok {
+		t.Fatalf("expected no candidate, got %q", name)
+	}
+}
+
+// 单账号池：唯一的账号满载时，仍要能等它空出槽位（而不是把它自己排除掉）。
+// 这是「排除集误用 tried」那个高危缺陷的回归测试。
+func TestAcquireLockAnySingleAccountStillWaitsForItsOnlySlot(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddAccount(auth.New("only", "only", "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	if !p.AcquireLock("only") {
+		t.Fatal("occupy the only account")
+	}
+	// 槽位被占：正确行为是等待，而不是立刻判定无候选。
+	if _, ok := p.AcquireLockAny(nil, nil, 0); ok {
+		t.Fatal("expected no slot while saturated with zero timeout")
+	}
+	// 释放后应能拿到；模拟「等一会儿就有了」。
+	go func() { time.Sleep(150 * time.Millisecond); p.ReleaseLock("only") }()
+	name, ok := p.AcquireLockAny(nil, nil, 3*time.Second)
+	if !ok || name != "only" {
+		t.Fatalf("got %q ok=%v, want only", name, ok)
+	}
+	p.ReleaseLock("only")
+}
+
+// 排除集之外已无健康账号时，AcquireLockAny 必须立刻返回，不空等。
+func TestAcquireLockAnyReturnsImmediatelyWhenNothingEligible(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddAccount(auth.New("u1", "u1", "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	start := time.Now()
+	if name, ok := p.AcquireLockAny(nil, map[string]bool{"u1": true}, 5*time.Second); ok {
+		t.Fatalf("expected failure, got %q", name)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("waited %s with no eligible account; should return immediately", elapsed)
+	}
+}
+
 func TestValidateKeepsAccountEnabledAfterRetryableRefreshFailure(t *testing.T) {
 	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "temporary upstream outage", http.StatusBadGateway)

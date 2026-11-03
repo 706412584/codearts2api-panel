@@ -107,6 +107,10 @@ func (h *Handler) loginConfig() upstream.LoginConfig {
 	return cfg
 }
 
+// errAllBusy 全部账号并发槽位占满（容量问题，不是账号故障）：
+// 收尾时据此返回 429 而非 503，让客户端稍后重试。
+var errAllBusy = errors.New("all accounts at concurrent limit")
+
 var dynamicModelsCache struct {
 	sync.RWMutex
 	ids      []upstream.ModelInfo
@@ -700,6 +704,18 @@ func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account
 	return h.cfg.Pool.PickExcluding(tried)
 }
 
+// accountServesModel 报告该账号的目录是否登记了这个模型（目录未知时放行）。
+func (h *Handler) accountServesModel(acct *pool.Account, model string) bool {
+	if acct == nil {
+		return false
+	}
+	models, known := upstream.AccountModels(acct.UID)
+	if !known {
+		return true // 目录未发现：无依据拒绝，交给上游判定
+	}
+	return catalogHas(models, strings.ToLower(upstream.CanonicalModel(model)))
+}
+
 // pickByCatalog 在目录登记了该模型的健康账号里挑一个。
 func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.Account {
 	for _, acct := range h.cfg.Pool.Accounts() {
@@ -982,11 +998,46 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			tried[acct.Name] = true
 			event.Account = shortID(acct.UID)
 
-			// 阻塞等待并发槽位（上游单账号并发会话释放慢，串行最稳）。
-			// 超时 180s 排队（5 个请求 × ~30s 上限），避免高并发立即失败跳号。
-			if !h.cfg.Pool.AcquireLockWait(acct.Name, 180*time.Second) {
-				log.Printf("account %s concurrent limit reached after wait, trying next", acct.Name)
-				continue
+			// 并发槽位。PickExcluding 已优先挑空闲账号，所以这里多数情况能直接
+			// 抢到；抢不到说明首选账号恰好被并发占满，此时全池排队等**任意**
+			// 账号空出槽位——而不是死等这一个（旧实现死等单账号 180s，
+			// 「A 满载、B/C 空闲」时其他账号完全空转）。
+			//
+			// 饱和不是账号故障：等待超时后直接以「全部满载」收尾，不消耗轮转
+			// 名额（轮转是给上游真失败用的）。黏性会话先给原账号一个短等待窗
+			// 保亲和，超时再退化为全局排队。
+			acquired := h.cfg.Pool.AcquireLock(acct.Name)
+			if !acquired && stickyAcct != "" && acct.Name == stickyAcct {
+				acquired = h.cfg.Pool.AcquireLockWait(acct.Name, stickySlotWait)
+			}
+			if !acquired {
+				// 排除集不能用原样的 tried：刚标入的 acct 正是本轮要等的账号，
+				// 排除它会把自己排掉（单账号池会 100% 失败）。去掉它之后再排除
+				// 「本轮已失败」的账号。
+				exclude := make(map[string]bool, len(tried))
+				for name := range tried {
+					exclude[name] = true
+				}
+				delete(exclude, acct.Name) // 首选账号仍可等待：它随时可能空出槽位
+				queueStarted := time.Now()
+				name, ok := h.cfg.Pool.AcquireLockAny(r.Context(), exclude, slotWaitTimeout)
+				waited := time.Since(queueStarted).Milliseconds()
+				if !ok {
+					event.QueueMs += waited
+					log.Printf("all accounts at concurrent limit after %dms, giving up", waited)
+					lastErr = errAllBusy
+					break
+				}
+				event.QueueMs += waited
+				next := h.cfg.Pool.Get(name)
+				if next == nil {
+					// 排队期间账号被移除：释放并走下一轮。
+					h.cfg.Pool.ReleaseLock(name)
+					continue
+				}
+				acct = next
+				tried[acct.Name] = true
+				event.Account = shortID(acct.UID)
 			}
 
 			ok, verr := h.cfg.Pool.Validate(acct)
@@ -1039,6 +1090,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			var rc io.ReadCloser
 			var serr error
 			authRetried := false
+			// lockHeld 跟踪并发槽位是否仍持有：排队重试会「释放→等待→重获」，
+			// 重获失败时不能再统一释放一次（会减掉别的请求的槽位，造成超发）。
+			lockHeld := true
 			noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
 			queueAttempts, queueDelay := h.live().QueueMaxAttempts, h.live().QueueRetryDelay
 			if queueAttempts < 1 {
@@ -1077,6 +1131,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, queueAttempts, acct.Name, queueDelay)
 					// 释放锁让其他请求有机会，等待后重新获取
 					h.cfg.Pool.ReleaseLock(acct.Name)
+					lockHeld = false
 					queueStarted := time.Now()
 					select {
 					case <-time.After(queueDelay):
@@ -1087,15 +1142,22 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					}
 					event.QueueMs += time.Since(queueStarted).Milliseconds()
 					if !h.cfg.Pool.AcquireLockWait(acct.Name, 30*time.Second) {
+						// 拿不回槽位就直接换号；此处不持有锁，不能走下面的
+						// 统一释放（会把别的在跑请求的槽位减掉）。
 						lastErr = errors.New("concurrent limit: could not reacquire lock after wait")
+						lockHeld = false
 						break
 					}
+					lockHeld = true
 					continue
 				}
 				break // 非并发错误，跳出重试
 			}
 			if serr != nil {
-				h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
+				if lockHeld {
+					h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
+					lockHeld = false
+				}
 				if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
 					// 请求形状/长度问题：换账号结果相同，冷却账号还会拖垮整池。
 					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
@@ -1244,6 +1306,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 一种是轮转时连一个健康账号都挑不出来（确实禁用/冷却中）；
 		// 另一种是挑到了账号、也真的打到了上游，只是重试预算用完了——账号多半是健康的，
 		// 把上游错误说成「账号都不可用」会让人去查根本不存在的账号故障。
+		if errors.Is(lastErr, errAllBusy) {
+			// 账号都健康，只是并发槽位全满：这是容量问题不是故障，用 429 +
+			// Retry-After 让客户端稍后重试（与「账号禁用/冷却」区分开）。
+			w.Header().Set("Retry-After", "5")
+			event.Error = "all accounts at concurrent limit"
+			writeOpenAIError(w, http.StatusTooManyRequests, "all_accounts_busy",
+				fmt.Sprintf("all %d account(s) at concurrent limit; retry shortly", len(tried)))
+			return
+		}
 		if lastErr != nil {
 			writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_retries_exhausted",
 				fmt.Sprintf("upstream attempts exhausted after %d attempt(s) on %d account(s): %s",
