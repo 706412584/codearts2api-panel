@@ -338,3 +338,60 @@ func TestUsageWindowAggregates(t *testing.T) {
 		t.Fatalf("plain usage must keep the per-request rows: %s", raw.Body.String())
 	}
 }
+
+// 备注是纯本地字段：设置后要落盘、出现在 overview 里、可被搜索匹配；清空即移除。
+func TestAccountNotePersistsAndClears(t *testing.T) {
+	dir := t.TempDir()
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, AuthDir: dir, AdminKey: "admin"})
+	valid := `{"user_id":"note-a","user_name":"A","access_key_id":"ak-a","secret_access_key":"sk-a"}`
+	if w := panelRequest(h, "POST", "/admin/api/accounts/import", "["+valid+"]", "admin"); w.Code != 200 {
+		t.Fatalf("import=%d %s", w.Code, w.Body.String())
+	}
+
+	// 设置备注：overview 回读 + 文件落盘
+	if w := panelRequest(h, "POST", "/admin/api/accounts/note", `{"uid":"note-a","note":"13800001111"}`, "admin"); w.Code != 200 {
+		t.Fatalf("set note=%d %s", w.Code, w.Body.String())
+	}
+	overview := panelRequest(h, "GET", "/admin/api/overview", "", "admin").Body.String()
+	if !strings.Contains(overview, `"note":"13800001111"`) {
+		t.Fatalf("note missing from overview: %s", overview)
+	}
+	stored, err := auth.LoadDir(dir)
+	if err != nil || len(stored) != 1 || stored[0].Note != "13800001111" {
+		t.Fatalf("note not persisted to disk: %v %+v", err, stored)
+	}
+
+	// 清空：overview 不再有该值，磁盘也清掉
+	if w := panelRequest(h, "POST", "/admin/api/accounts/note", `{"uid":"note-a","note":""}`, "admin"); w.Code != 200 {
+		t.Fatalf("clear note=%d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(panelRequest(h, "GET", "/admin/api/overview", "", "admin").Body.String(), "13800001111") {
+		t.Fatal("cleared note still visible")
+	}
+	if stored, _ := auth.LoadDir(dir); len(stored) != 1 || stored[0].Note != "" {
+		t.Fatalf("note not cleared on disk: %+v", stored)
+	}
+}
+
+// 备注不得影响凭据本身，也不该接受超长值。
+func TestAccountNoteRejectsOversizeAndUnknownAccount(t *testing.T) {
+	dir := t.TempDir()
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, AuthDir: dir, AdminKey: "admin"})
+	valid := `{"user_id":"note-b","user_name":"B","access_key_id":"ak-b","secret_access_key":"sk-b"}`
+	_ = panelRequest(h, "POST", "/admin/api/accounts/import", "["+valid+"]", "admin")
+
+	long := strings.Repeat("x", 201)
+	if w := panelRequest(h, "POST", "/admin/api/accounts/note", `{"uid":"note-b","note":"`+long+`"}`, "admin"); w.Code != 400 {
+		t.Fatalf("oversize note accepted: %d", w.Code)
+	}
+	if w := panelRequest(h, "POST", "/admin/api/accounts/note", `{"uid":"nope","note":"x"}`, "admin"); w.Code != 404 {
+		t.Fatalf("unknown account=%d", w.Code)
+	}
+	// 凭据未被备注操作破坏
+	stored, _ := auth.LoadDir(dir)
+	if len(stored) != 1 || stored[0].AccessKeyID != "ak-b" || stored[0].SecretAccessKey != "sk-b" {
+		t.Fatalf("credentials damaged: %+v", stored)
+	}
+}
