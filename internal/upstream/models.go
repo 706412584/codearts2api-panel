@@ -24,7 +24,9 @@ import (
 )
 
 // CatalogTTL 账号模型目录的有效期（超过则建议重新发现）。
-const CatalogTTL = time.Hour
+// 取 23h：首次发现后由后台续期保持常驻，不再受用户请求触发，因此可以设得足够长
+// （官方 models-cache.json 也是 24h）。留 1h 余量给续期任务失败重试，避免真的过期。
+const CatalogTTL = 23 * time.Hour
 
 // ModelInfo 模型信息（与 workbuddy/trae 一致）。
 type ModelInfo struct {
@@ -76,12 +78,22 @@ var catalog = struct {
 
 // SetAccountModels 整体替换某账号的模型目录（不是增补：套餐轮换后旧模型不得残留）。
 func SetAccountModels(accountID string, infos []ModelInfo) {
+	setAccountModels(accountID, infos, time.Now())
+}
+
+// SetAccountModelsAt 同 SetAccountModels，但显式指定发现时刻。
+// 仅测试用（模拟目录老化，验证后台续期）；服务路径一律走 SetAccountModels。
+func SetAccountModelsAt(accountID string, infos []ModelInfo, fetched time.Time) {
+	setAccountModels(accountID, infos, fetched)
+}
+
+func setAccountModels(accountID string, infos []ModelInfo, fetched time.Time) {
 	if accountID == "" {
 		return
 	}
 	ac := &accountCatalog{
 		infos:   append([]ModelInfo(nil), infos...),
-		fetched: time.Now(),
+		fetched: fetched,
 	}
 	catalog.Lock()
 	defer catalog.Unlock()

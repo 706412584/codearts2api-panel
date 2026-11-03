@@ -121,6 +121,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go sch.Run(ctx)
+	// 模型目录缓存 23h：到期前后台自动续期，用户请求永远命中缓存。
+	h.StartModelRefresher(ctx)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           h,
