@@ -175,6 +175,57 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  outcome.value = ''; outcome.onchange();
  assert(ids.get('requestLogsBody').innerHTML.includes('test-model') && ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '全部筛选恢复所有记录');
  assert.equal(requests.length, beforeFilter, '筛选不得触发额外请求');
+ assert(html.includes('<option id="requestOutcomeAbnormal" value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
+ // 失败原因徽标：四个已知分支黄色，「异常」红色；异常筛选只留没归类的失败。
+ const at = Date.now();
+ usage.recent.push(
+   { request_id: 'req-cancel', time: new Date(at - 5e3).toISOString(), model: 'cancel-model', ok: false, outcome: 'http_error', status: 503, error: 'Post "https://upstream": context canceled' },
+   { request_id: 'req-missing', time: new Date(at - 4e3).toISOString(), model: 'missing-model', ok: false, outcome: 'http_error', status: 404, error: 'model test1 is not in the model catalog' },
+   { request_id: 'req-no-account', time: new Date(at - 3e3).toISOString(), model: 'no-account-model', ok: false, outcome: 'http_error', status: 503, error: 'all accounts unavailable (disabled/cooldown)' },
+   { request_id: 'req-capability', time: new Date(at - 2e3).toISOString(), model: 'capability-model', ok: false, outcome: 'http_error', status: 400, error: 'upstream rejected request params: InferHub.001001020.406 The request model is not multimodal' },
+   // 11:48:11 那条真实记录：queue_max_attempts=1 时 TM.00001041 一次都没重试就 503，
+   // 本质是上游并发已满（排队/限流），不能归进红色「异常」。
+   { request_id: 'req-queue-limit', time: new Date(at - 1.8e3).toISOString(), model: 'queue-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=400 http=400 path=/api/v2/chat/completions msg={"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)，请关闭部分会话后重试。"}' },
+   { request_id: 'req-upstream-timeout', time: new Date(at - 1.75e3).toISOString(), model: 'timeout-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=504 http=504 path=/api/v2/chat/completions msg={"error_msg":"Backend timeout","error_code":"APIG.0203","request_id":"example"}' },
+   { request_id: 'req-retry-exhausted', time: new Date(at - 1.6e3).toISOString(), model: 'exhausted-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 3 attempt(s) on 3 account(s): codearts api code=500 http=500 msg=internal error' },
+   { request_id: 'req-auth', time: new Date(at - 1.55e3).toISOString(), model: 'auth-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 2 attempt(s) on 1 account(s): codearts api code=401 http=401 msg=unauthorized' },
+   { request_id: 'req-param', time: new Date(at - 1.45e3).toISOString(), model: 'param-model', ok: false, outcome: 'http_error', status: 400, error: 'upstream rejected request params: InferHub.001001005.400 Request param is invalid' },
+   { request_id: 'req-quota', time: new Date(at - 1.35e3).toISOString(), model: 'quota-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=502 http=502 msg=InferHub.4291.200 benefit exhausted' },
+   { request_id: 'req-legacy-upstream', time: new Date(at - 1.25e3).toISOString(), model: 'legacy-model', ok: false, outcome: 'http_error', status: 503, error: 'all accounts unavailable (disabled/cooldown): codearts api code=500 http=500 msg=internal error' },
+   { request_id: 'req-no-accounts', time: new Date(at - 1.4e3).toISOString(), model: 'unconfigured-model', ok: false, outcome: 'http_error', status: 503, error: 'no accounts configured' },
+   { request_id: 'req-token-invalid', time: new Date(at - 1.2e3).toISOString(), model: 'token-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 0 attempt(s) on 1 account(s): token invalid' },
+   { request_id: 'req-abnormal', time: new Date(at - 1e3).toISOString(), model: 'abnormal-model', ok: false, outcome: 'http_error', status: 502, error: 'Post "https://upstream": EOF' }
+ );
+ logPoll.cb(); await tick(); await tick();
+ const classified = ids.get('requestLogsBody').innerHTML;
+ const rowOf = model => classified.split('<tr>').find(tr => tr.includes(model)) || '';
+ for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符', '上游排队/限流', '上游超时', '上游服务异常', '账号鉴权失败', '请求参数错误', '福利额度耗尽']) {
+   assert(classified.includes('<span class="pill warn">' + label + '</span>'), '失败原因徽标缺少「' + label + '」：' + classified);
+ }
+ assert(classified.includes('<span class="pill bad">异常</span>'), '没归类的失败要挂红色「异常」：' + classified);
+ assert(rowOf('queue-model').includes('上游排队/限流') && !rowOf('queue-model').includes('异常'), '排队/限流不能归进「异常」：' + rowOf('queue-model'));
+ assert(rowOf('exhausted-model').includes('上游服务异常') && !rowOf('exhausted-model').includes('重试耗尽'), '耗尽只是现象，要显示 500 这个真实原因：' + rowOf('exhausted-model'));
+ assert(rowOf('timeout-model').includes('上游超时') && !rowOf('timeout-model').includes('重试耗尽'), 'APIG.0203 要按上游超时分类，不能叫重试耗尽：' + rowOf('timeout-model'));
+ assert(rowOf('auth-model').includes('账号鉴权失败'), '401 要按鉴权失败分类，不能被耗尽文案覆盖：' + rowOf('auth-model'));
+ assert(rowOf('param-model').includes('请求参数错误'), 'InferHub.001001005 要按参数错误分类：' + rowOf('param-model'));
+ assert(rowOf('quota-model').includes('福利额度耗尽') && !rowOf('quota-model').includes('排队'), 'InferHub.4291.200 不是 HTTP 429，不能误归限流：' + rowOf('quota-model'));
+ assert(rowOf('legacy-model').includes('上游服务异常') && !rowOf('legacy-model').includes('无可用账号'), '旧文案的底层 500 不能被外层无账号覆盖：' + rowOf('legacy-model'));
+ assert(rowOf('token-model').includes('账号鉴权失败'), 'token invalid 是账号鉴权问题，不能只按 0 次尝试归类：' + rowOf('token-model'));
+ assert(rowOf('unconfigured-model').includes('无可用账号'), '未配置账号也是无可用账号：' + rowOf('unconfigured-model'));
+ // 下拉选项带条数：描述的是已取回的窗口（进程 100 + 归档 200），不是全量历史。
+ // 17 条 = 既有 3 条（成功 / 失败 / 流式失败）+ 本次 14 条分类样例；成功 1，异常 3（failed-model、live-failure、abnormal-model）。
+ assert.equal(ids.get('requestOutcomeAll').textContent, '全部 (17)', '全部选项要带窗口内的总条数');
+ assert.equal(ids.get('requestOutcomeOk').textContent, '成功 (1)', '成功选项要带成功条数');
+ assert.equal(ids.get('requestOutcomeFail').textContent, '失败 (16)', '失败选项要带失败条数');
+ assert.equal(ids.get('requestOutcomeAbnormal').textContent, '异常 (3)', '异常选项要带未归类失败条数');
+ outcome.value = 'abnormal'; outcome.onchange();
+ const abnormalOnly = ids.get('requestLogsBody').innerHTML;
+ assert(abnormalOnly.includes('abnormal-model'), '异常筛选要保留未归类失败');
+ for (const model of ['cancel-model', 'missing-model', 'no-account-model', 'capability-model', 'queue-model', 'timeout-model', 'exhausted-model', 'auth-model', 'param-model', 'quota-model', 'legacy-model', 'unconfigured-model', 'token-model']) {
+   assert(!abnormalOnly.includes(model), '异常筛选要隐藏已归类失败：' + model);
+ }
+ assert(!abnormalOnly.includes('test-model'), '异常筛选不得包含成功记录');
+ outcome.value = ''; outcome.onchange();
  document.hidden = true; beforePoll = requests.length; logPoll.cb(); await tick();
  assert.equal(requests.length, beforePoll, 'hidden tabs must not poll');
  document.hidden = false;
