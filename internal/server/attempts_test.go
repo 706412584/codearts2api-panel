@@ -145,3 +145,77 @@ func TestUsageExposesLastUpstreamErrorForRetriedRequest(t *testing.T) {
 		t.Errorf("只应有一条错误记录，got=%v", payload.AttemptErrors)
 	}
 }
+
+// singleAccountPool 用给定端点建一个只有一个账号的池（测试里最贴近线上单账号形态）。
+func singleAccountPool(t *testing.T, name, endpoint string) *pool.Pool {
+	t.Helper()
+	a := auth.New(name, "tester", "domain", "token", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Accounts()[0].Client = upstream.NewWithChatEndpoint(5*time.Second, endpoint)
+	return p
+}
+
+// concurrentLimitUpstream 模拟上游并发会话上限（TM.00001041）：HTTP 400 + 业务错误体。
+func concurrentLimitUpstream(t *testing.T, calls *int32) *httptest.Server {
+	t.Helper()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)，请关闭部分会话后重试。"}`)
+	}))
+	t.Cleanup(up.Close)
+	return up
+}
+
+// 最后一次排队尝试之后已经没有下一次了：原实现在最后一轮仍然 sleep 一个重试间隔
+// （默认 10s）才把错误交给客户端。这里用 2s 间隔，断言请求远早于它返回。
+func TestQueueLimitDoesNotWaitAfterLastAttempt(t *testing.T) {
+	var calls int32
+	up := concurrentLimitUpstream(t, &calls)
+	p := singleAccountPool(t, "u-nowait", up.URL)
+	h := NewHandler(Config{Pool: p, APIKey: "k", MaxRotate: 1, QueueMaxAttempts: 1, QueueRetryDelay: 2 * time.Second})
+
+	start := time.Now()
+	rec := panelRequest(h, http.MethodPost, "/v1/chat/completions", chatBody("glm-5.2"), "k")
+	elapsed := time.Since(start)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("排队上限 1 时应只打一次上游，got=%d", got)
+	}
+	if elapsed >= time.Second {
+		t.Fatalf("最后一次尝试后不该再等重试间隔，耗时 %s", elapsed)
+	}
+}
+
+// 打到了上游、只是重试预算用完：错误要说明「试了几次、几个账号、上游原话」，
+// 不能再谎报「账号都不可用（disabled/cooldown）」——账号其实是健康的。
+func TestExhaustedRetriesReportUpstreamNotDisabledAccounts(t *testing.T) {
+	var calls int32
+	up := concurrentLimitUpstream(t, &calls)
+	p := singleAccountPool(t, "u-exhausted", up.URL)
+	h := NewHandler(Config{Pool: p, APIKey: "k", MaxRotate: 1, QueueMaxAttempts: 1})
+
+	rec := panelRequest(h, http.MethodPost, "/v1/chat/completions", chatBody("glm-5.2"), "k")
+	body := rec.Body.String()
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", rec.Code, body)
+	}
+	if !strings.Contains(body, `"upstream_retries_exhausted"`) {
+		t.Errorf("应报 upstream_retries_exhausted，got=%s", body)
+	}
+	if strings.Contains(body, "disabled/cooldown") {
+		t.Errorf("账号是健康的，不该报 disabled/cooldown：%s", body)
+	}
+	if !strings.Contains(body, "1 attempt(s) on 1 account(s)") || !strings.Contains(body, "TM.00001041") {
+		t.Errorf("应带上尝试次数、账号数与上游原始错误，got=%s", body)
+	}
+	if !p.Healthy("u-exhausted") {
+		t.Error("并发会话上限是瞬时错误，不该冷却账号")
+	}
+}

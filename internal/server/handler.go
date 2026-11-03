@@ -911,6 +911,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if errors.As(serr, &ae) && isQueueLimitError(ae) {
+				// 已经是最后一次尝试：等完也没有下一次了，等待只会把客户端看到
+				// 错误的时间往后推（实测每次白等 10s，attempts=3 时整条请求 30s）。
+				// 直接带着这次的上游错误收尾，交给外层换号或返回。
+				if retry+1 >= queueAttempts {
+					break
+				}
 				log.Printf("upstream queue limit retry=%d/%d account=%s, waiting %s", retry+1, queueAttempts, acct.Name, queueDelay)
 				// 释放锁让其他请求有机会，等待后重新获取
 				h.cfg.Pool.ReleaseLock(acct.Name)
@@ -1030,11 +1036,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, buildCompletion(model, comp.Reasoning, content, calls, finish, chatID, usageEstimate(msgs, comp)))
 		return
 	}
-	msg := "all accounts unavailable (disabled/cooldown)"
+	// 落到这里有两种完全不同的原因，不能再共用一句话：
+	// 一种是轮转时连一个健康账号都挑不出来（确实禁用/冷却中）；
+	// 另一种是挑到了账号、也真的打到了上游，只是重试预算用完了——账号多半是健康的，
+	// 把上游错误说成「账号都不可用」会让人去查根本不存在的账号故障。
 	if lastErr != nil {
-		msg += ": " + lastErr.Error()
+		writeOpenAIError(w, http.StatusServiceUnavailable, "upstream_retries_exhausted",
+			fmt.Sprintf("upstream attempts exhausted after %d attempt(s) on %d account(s): %s",
+				event.Attempts, len(tried), truncateMsg(lastErr.Error(), errorTextLimit)))
+		return
 	}
-	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", "all accounts unavailable (disabled/cooldown)")
 }
 
 // buildUpstreamMessages 把 OpenAI 消息原生映射为 CodeArts V2 chat-completions。
