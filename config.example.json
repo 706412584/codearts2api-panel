@@ -19,6 +19,24 @@
   "credits_auto_claim": true,
   "checkin_hours": [9, 21],
   "request_log_retention_days": 30,
+  "max_body_mb": 32,
+  "image_shrink": {
+    "enabled": true,
+    "trigger_body_mb": 4,
+    "target_image_mb": 2,
+    "target_total_mb": 4,
+    "max_dimension": 2048,
+    "quality": 85
+  },
+  "vision_bridge": {
+    "enabled": true,
+    "model": "Qwen3-VL-235B",
+    "max_images": 8,
+    "max_chars": 6000,
+    "max_tokens": 1500,
+    "timeout_seconds": 120,
+    "total_timeout_seconds": 90
+  },
   "watch": {
     "enabled": true,
     "poll_minutes": 30,

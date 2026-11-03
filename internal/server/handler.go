@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
@@ -58,6 +59,12 @@ type Config struct {
 	// Live 运行期配置快照：面板保存后热生效的字段从这里读。
 	// 为 nil 时（测试/裸用）回落到上面各字段的启动值。
 	Live *livecfg.Holder
+
+	// 以下是多模态相关策略的启动值；请求期一律读 live 快照
+	// （live 里没有时回落这里），这样面板改完立即生效。
+	MaxBodyBytes int64
+	ImageShrink  *imgshrink.Policy
+	VisionBridge *VisionBridgePolicy
 }
 
 // live 返回请求期配置快照。未注入 holder 时用启动字段拼一个等价快照，
@@ -78,6 +85,27 @@ func (h *Handler) live() livecfg.Snapshot {
 		OAuthCallbackHost: h.cfg.OAuthCallbackHost,
 		LoginClientID:     h.cfg.LoginConfig.ClientID,
 	}
+}
+
+// 测试/裸用时的回落：把启动值里的多模态策略补进快照。
+func (h *Handler) liveMultimodal(s livecfg.Snapshot) livecfg.Snapshot {
+	if h.cfg.Live != nil {
+		return s // 生产：一律以热配置快照为准，不能拿启动值把用户关掉的开关又打开
+	}
+	if s.MaxBodyBytes <= 0 {
+		s.MaxBodyBytes = h.cfg.MaxBodyBytes
+	}
+	if h.cfg.ImageShrink != nil && !s.ImageShrinkEnabled {
+		s.ImageShrinkEnabled = true
+		s.ImageShrink = *h.cfg.ImageShrink
+	}
+	// 注意：这里要判 Enabled，而不是只看指针非空 —— 测试/裸用里传 &Policy{Enabled:false}
+	// 表示"明确关闭"，不能被启动值重新打开。
+	if h.cfg.VisionBridge != nil && h.cfg.VisionBridge.Enabled && !s.VisionBridgeEnabled {
+		s.VisionBridgeEnabled = true
+		s.VisionBridge = *h.cfg.VisionBridge
+	}
+	return s
 }
 
 // noteError 用当前（可热改）阈值记一次失败。
@@ -116,7 +144,13 @@ const (
 	modelsFetchFailCooldown = 5 * time.Minute
 )
 
-const maxBodyBytes = 8 << 20
+// defaultMaxBodyBytes 聊天请求体默认上限。旧的硬编码 8MB 太小：一张 2560×1440 的截图
+// base64 后约 2~5MB，多图或长会话很容易越界，客户端只会拿到 413 而不是模型回答。
+// 实际上限由 config 的 max_body_mb 决定（默认 32MB），可热改。
+const defaultMaxBodyBytes = 32 << 20
+
+// maxAuthBytes 凭据导入（auth JSON）的上限，与聊天请求体无关。
+const maxAuthBytes = 8 << 20
 
 // Handler 主路由。
 type Handler struct {
@@ -736,13 +770,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_accounts", "no accounts configured; add one in the panel")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	limit := h.liveMultimodal(h.live()).MaxBodyBytes
+	if limit <= 0 {
+		limit = defaultMaxBodyBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}
-	if len(body) > maxBodyBytes {
-		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 8MB limit")
+	if int64(len(body)) > limit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			"request body exceeds "+humanBytes(limit)+" limit (config max_body_mb)")
 		return
 	}
 	req, err := parseChatRequest(body)
@@ -770,6 +809,34 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		model = req.Model
 	}
 	event.Model = safeLogLabel(model)
+
+	// 多模态前置处理，两步都在「模型已确定、还没发给上游」时做：
+	//   ① 缩图：上游媒体转换对单图有硬上限（实测请求体 ≈4.3MB / 图片 ≈3.2MB），
+	//      超了只能压小再发，否则拿到的是一句 ModelArts.81029；
+	//   ② 识图桥接：目标模型在本上游是纯文本时，先用 VL 模型把图转述成文字，
+	//      否则上游直接回 InferHub.001001020.406（非多模态）。
+	multi := h.liveMultimodal(h.live())
+	if multi.ImageShrinkEnabled {
+		shrinkMessageImages(req, multi.ImageShrink, int64(len(body)))
+	}
+	if multi.VisionBridgeEnabled && len(imagePartsOf(req)) > 0 {
+		policy := multi.VisionBridge.Normalized()
+		if supports, known := h.modelSupportsImages(model); known && !supports &&
+			!strings.EqualFold(upstream.CanonicalModel(policy.Model), upstream.CanonicalModel(model)) {
+			stats, bridgeErr := h.bridgeImages(r.Context(), req, policy)
+			switch {
+			case bridgeErr != nil && clientGone(r):
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			case bridgeErr != nil:
+				// 保持原样：让上游按 406 明确报错，别把图悄悄吞掉。
+				log.Printf("vision bridge failed model=%s: %v（原图保留）", model, bridgeErr)
+			case stats.Images > 0:
+				log.Printf("vision bridge model=%s vl=%s images=%d chars=%d cache_hits=%d",
+					model, stats.VLModel, stats.Images, stats.Chars, stats.CacheHits)
+			}
+		}
+	}
 
 	// 目录之外的模型 ID 不再往上游打：上游只会回 InferHub.002002009.404，
 	// 还白占一次并发会话与轮转名额。目录还没发现过时没有依据，放行交给上游。
@@ -937,6 +1004,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if serr != nil {
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
+			if clientGone(r) {
+				// 调用方自己断开了：上游必然报 context canceled / broken pipe。
+				log.Printf("client disconnected before upstream reply account=%s: %v", acct.Name, serr)
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			}
 			if isParamInvalidError(serr) {
 				// Client request-param problem: rotating accounts yields the same 400,
 				// and cooling accounts takes down the whole pool for minutes.
@@ -988,7 +1061,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				event.Outcome = reqlog.OutcomeStreamError
 				event.Error = werr.Error()
 				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
-				if !isParamInvalidError(werr) {
+				if !clientGone(r) && !isParamInvalidError(werr) {
 					h.noteError(acct.Name)
 				}
 			} else {
@@ -1003,6 +1076,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 		if aerr != nil {
 			lastUpstreamErr = aerr
+			if clientGone(r) {
+				log.Printf("client disconnected during aggregate account=%s: %v", acct.Name, aerr)
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			}
 			if isParamInvalidError(aerr) {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 					"upstream rejected request params: "+truncateMsg(aerr.Error(), errorTextLimit))
@@ -1264,6 +1342,13 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 	return false
 }
 
+// clientGone 报告「调用方自己走了」（断连/取消）。这类错误必须不记在账号头上：
+// 上游收到的是 context canceled / broken pipe，冷却整池 10 分钟纯属误伤
+// （2026-11-03 线上实测：客户端超时/回压交替把两个账号互相打进冷却）。
+func clientGone(r *http.Request) bool {
+	return r != nil && r.Context().Err() != nil
+}
+
 // isParamInvalidError 判断是否为上游「请求参数无效/模型能力不匹配」类错误。
 // 这类错误由请求内容决定：换账号结果相同，绝不能冷却账号（曾因此打停整池）。
 func isParamInvalidError(err error) bool {
@@ -1282,6 +1367,16 @@ func isParamInvalidError(err error) bool {
 		return false
 	}
 	low := strings.ToLower(message)
+	// InferHub.001001020「请求模型非多模态」= 请求里带了 image_url，但落到的是纯文本模型；
+	// InferHub.001001046 = 多模态内容格式不正确。两者都是「客户端请求内容」问题：换账号结果一样，
+	// 而上游把它们包成 HTTP 502，落进 handleUpstreamError 的 Status>=500 分支会把整个账号冷却
+	// 10 分钟（实测一次带图请求就把整池打停）。
+	// InferHub.ModelArts.81029 = 「Media conversion failed: downstream returned 413」，图片太大，
+	// 同样是请求内容问题（上游也包成 502）。
+	if strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "inferhub.001001046") ||
+		strings.Contains(low, "modelarts.81029") || strings.Contains(low, "media conversion failed") {
+		return true
+	}
 	return strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid") ||
 		strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "request model is not multimodal")
 }

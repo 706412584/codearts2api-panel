@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
@@ -43,6 +44,27 @@ func liveSnapshot(c *Config) livecfg.Snapshot {
 		KeepaliveIntervalMinutes: c.Watch.KeepaliveInterval,
 		MaxConcurrent:            c.MaxConcurrent,
 		KeepaliveWindow:          c.KeepaliveWindow,
+
+		MaxBodyBytes:       int64(c.MaxBodyMB) << 20,
+		ImageShrinkEnabled: c.ImageShrink.Enabled,
+		ImageShrink: imgshrink.Policy{
+			TriggerBytes:     int64(c.ImageShrink.TriggerBodyMB) << 20,
+			TargetImageBytes: c.ImageShrink.TargetImageMB << 20,
+			TargetTotalBytes: c.ImageShrink.TargetTotalMB << 20,
+			MaxDimension:     c.ImageShrink.MaxDimension,
+			Quality:          c.ImageShrink.Quality,
+		},
+		VisionBridgeEnabled: c.VisionBridge.Enabled,
+		VisionBridge: livecfg.VisionBridge{
+			Enabled:      c.VisionBridge.Enabled,
+			Model:        c.VisionBridge.Model,
+			MaxImages:    c.VisionBridge.MaxImages,
+			MaxChars:     c.VisionBridge.MaxChars,
+			MaxTokens:    c.VisionBridge.MaxTokens,
+			Timeout:      time.Duration(c.VisionBridge.TimeoutSeconds) * time.Second,
+			TotalTimeout: time.Duration(c.VisionBridge.TotalSeconds) * time.Second,
+			Prompt:       c.VisionBridge.Prompt,
+		},
 	}
 }
 

@@ -559,8 +559,20 @@ func (p *Pool) ReleaseLock(name string) {
 // 高并发请求在此排队等待槽位释放，而非立即失败跳号。
 // timeout=0 时等价于非阻塞 AcquireLock。
 func (p *Pool) AcquireLockWait(name string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
+	return p.AcquireLockWaitContext(context.Background(), name, timeout)
+}
+
+// AcquireLockWaitContext 等待并发槽位，取消或超时后不再获取槽位。
+func (p *Pool) AcquireLockWaitContext(ctx context.Context, name string, timeout time.Duration) bool {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
 		p.mu.Lock()
 		acquired := false
 		for _, a := range p.accounts {
@@ -579,11 +591,14 @@ func (p *Pool) AcquireLockWait(name string, timeout time.Duration) bool {
 		if acquired {
 			return true
 		}
-		if timeout <= 0 || time.Now().After(deadline) {
+		if timeout <= 0 {
 			return false
 		}
-		// 避免忙轮询：每次 100ms 重试。
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
