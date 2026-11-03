@@ -244,15 +244,16 @@ func (h *Handler) adminOAuthStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	port := h.listenPort()
-	cfg := h.cfg.LoginConfig
+	cfg := h.loginConfig()
+	callbackHost := h.live().OAuthCallbackHost
 	// 可选：把回调端口改写为公网反代地址的端口，让浏览器回调尽量命中 hub；
 	// 远端若仍无法回调则回退到 ticket 轮询通道，不影响登录完成。
-	if h.cfg.OAuthCallbackHost != "" {
-		if p := portOfCallbackHost(h.cfg.OAuthCallbackHost); p != 0 {
+	if callbackHost != "" {
+		if p := portOfCallbackHost(callbackHost); p != 0 {
 			port = p
 		}
 	}
-	if port < 10000 && h.cfg.OAuthCallbackHost != "" {
+	if port < 10000 && callbackHost != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "OAuth 回调端口必须为 10000–65535"})
 		return
 	}
@@ -344,7 +345,7 @@ func (h *Handler) adminOAuthPoll(w http.ResponseWriter, r *http.Request) {
 	}
 	h.loginMu.Unlock()
 
-	tok, err := h.cfg.OAuthClient.PollTicket(context.Background(), h.cfg.LoginConfig, sess.TicketID, sess.Secret)
+	tok, err := h.cfg.OAuthClient.PollTicket(context.Background(), h.loginConfig(), sess.TicketID, sess.Secret)
 	if err != nil || tok == nil || tok.UserName == "" || tok.Credentials.SecurityToken == "" {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok": true, "status": "pending", "message": "等待浏览器完成登录…",
@@ -401,7 +402,7 @@ func (h *Handler) adminOAuthImportCallback(w http.ResponseWriter, r *http.Reques
 	}
 	secret := callback.Query().Get("secret")
 	if code := callback.Query().Get("code"); code != "" {
-		tok, exchangeErr := h.cfg.OAuthClient.ExchangeCode(r.Context(), h.cfg.LoginConfig, code, sess.Verifier, sess.Port, sess.DPoPPrivateKey)
+		tok, exchangeErr := h.cfg.OAuthClient.ExchangeCode(r.Context(), h.loginConfig(), code, sess.Verifier, sess.Port, sess.DPoPPrivateKey)
 		if exchangeErr != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "status": "error", "message": exchangeErr.Error()})
 			return

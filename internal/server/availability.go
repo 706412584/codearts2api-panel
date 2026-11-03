@@ -221,8 +221,14 @@ func (h *Handler) probeModel(acct *pool.Account, model string) {
 	cred := upstream.SignCredential{AccessKeyID: ak, SecretAccessKey: sk, SecurityToken: token}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
+	// 探测也要按该账号的注册名发：大小写不对会拿到 002002009.404，把本来可用的
+	// 模型误记成不可用，/v1/models 就会把它藏起来。
+	modelID := upstream.CanonicalModel(model)
+	if exact, ok := upstream.CatalogModelID(acct.UID, model); ok {
+		modelID = exact
+	}
 	body := map[string]any{
-		"model":    upstream.CanonicalModel(model),
+		"model":    modelID,
 		"stream":   true,
 		"messages": []any{map[string]any{"role": "user", "content": "hi"}},
 	}

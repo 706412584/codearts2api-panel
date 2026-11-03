@@ -388,6 +388,11 @@ type ChatOptions struct {
 	TopP            *float64
 	Tools           []map[string]any
 	ToolChoice      any
+
+	// ExactModelID 是按账号目录解析好的精确模型 ID：设置后原样发出，不再过
+	// CanonicalModel —— 上游按注册名精确匹配，而全局大小写索引是跨账号的，
+	// 未必等于当前账号的注册名（见 upstream.CatalogModelID）。
+	ExactModelID string
 }
 
 // CanonicalModel 把用户友好模型 ID 映射为上游 InferHub 注册的模型 ID。
@@ -499,8 +504,12 @@ func (c *Client) ChatStreamWithOptions(ctx context.Context, chatID string, messa
 
 // chatBodyV2 组装 /api/v2/chat/completions 请求体（原生 OpenAI 形状）。
 func chatBodyV2(chatID string, messages []ChatMessage, model string, opts ChatOptions) map[string]any {
+	modelID := CanonicalModel(model)
+	if opts.ExactModelID != "" {
+		modelID = opts.ExactModelID
+	}
 	body := map[string]any{
-		"model":            CanonicalModel(model),
+		"model":            modelID,
 		"stream":           true,
 		"messages":         chatMessagesToOpenAI(messages),
 		"prompt_cache_key": chatID,
@@ -602,7 +611,8 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 	if resp.StatusCode >= 400 {
 		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(rawBody), 200), Path: EpChatV2}
+		// 与 embeddedSSEError 的 300 保持一致：面板「尝试次数」的 tooltip 直接展示这段文本。
+		return nil, &ApiError{Code: resp.StatusCode, Status: resp.StatusCode, Message: truncateStr(string(rawBody), 300), Path: EpChatV2}
 	}
 	return preflightSSE(resp.Body)
 }
@@ -665,8 +675,9 @@ func embeddedSSEError(data string) *ApiError {
 	case strings.Contains(low, "002002009") || strings.Contains(low, "not registered"):
 		// 模型级错误（该账号用不了这个模型）是客户端问题，不是上游故障。
 		status = http.StatusBadRequest
-	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid"):
-		// 请求参数无效（实测：tool_choice 对象形态触发）：客户端问题，不是账号故障。
+	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid") ||
+		strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "request model is not multimodal"):
+		// 请求参数无效或图像输入超出模型能力：客户端问题，不是账号故障。
 		status = http.StatusBadRequest
 	}
 	return &ApiError{Code: status, Status: status, Message: truncateStr(combined, 300), Path: EpChatV2}

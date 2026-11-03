@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"sort"
@@ -11,6 +12,17 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/pool"
+	"codearts2api-panel/internal/reqlog"
+)
+
+// 重试与冷却的默认值：Default() 与 normalize() 共用同一份，避免两处漂移
+// （历史上 README 写「queue_max_attempts 缺省=30」，运行时却按 1 次跑过）。
+const (
+	defaultSoftRate          = "60s"
+	defaultErrThreshold      = 3
+	defaultErrCooldown       = "10m"
+	defaultQueueRetrySeconds = 10
+	defaultQueueMaxAttempts  = 30
 )
 
 // Config 顶层配置。
@@ -64,6 +76,10 @@ type Config struct {
 	// 轮询看护（watch.poll_minutes）与它无关：轮询管 token，时点管签到。
 	CheckinHours []int `json:"checkin_hours"`
 
+	// RequestLogRetentionDays data/requests/ 归档保留天数（按文件 mtime 计算，默认 30）。
+	// 超过天数的文件由归档后台清理删除；<=0 视为未配置，回落默认值。
+	RequestLogRetentionDays int `json:"request_log_retention_days"`
+
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"`
 	} `json:"upstream"`
@@ -80,9 +96,12 @@ func Default() *Config {
 		StateFile:    "./data/state.json",
 		DefaultModel: "glm-5.2",
 	}
-	c.Cooldown.SoftRate = "60s"
-	c.Cooldown.ErrThresh = 3
-	c.Cooldown.ErrCooldown = "10m"
+	c.Cooldown.SoftRate = defaultSoftRate
+	c.Cooldown.ErrThresh = defaultErrThreshold
+	c.Cooldown.ErrCooldown = defaultErrCooldown
+	// 排队重试：上游并发/TPM 排队是瞬时的，默认每 10s 重试一次、最多 30 次（约 5 分钟）。
+	c.QueueRetrySeconds = defaultQueueRetrySeconds
+	c.QueueMaxAttempts = defaultQueueMaxAttempts
 	c.Watch.Enabled = true
 	c.Watch.PollMinutes = 30
 	c.Watch.RefreshSkewM = 30
@@ -92,6 +111,7 @@ func Default() *Config {
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
 	c.CheckinHours = []int{9, 21}
+	c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
 	return c
 }
 
@@ -257,6 +277,11 @@ func applyEnv(c *Config) {
 			c.CheckinHours = hours
 		}
 	}
+	if v := os.Getenv("CA2A_REQUEST_LOG_RETENTION_DAYS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.RequestLogRetentionDays = n
+		}
+	}
 }
 
 // parseHours 解析 "9,21" 形式的时点列表；没有任何合法值时报 not ok。
@@ -294,9 +319,7 @@ func (c *Config) validate() error {
 	if c.AdminKey == "" {
 		c.AdminKey = c.APIKey
 	}
-	if err := c.normalize(); err != nil {
-		return err
-	}
+	c.normalizeAndLog()
 	_, port, err := net.SplitHostPort(c.Listen)
 	if err != nil {
 		return fmt.Errorf("listen must be host:port: %w", err)
@@ -308,31 +331,54 @@ func (c *Config) validate() error {
 	if strings.TrimSpace(c.AuthDir) == "" || strings.TrimSpace(c.StateFile) == "" {
 		return fmt.Errorf("auth_dir and state_file must not be empty")
 	}
-	if c.SoftRateDur <= 0 || c.ErrCooldownDur <= 0 {
-		return fmt.Errorf("cooldown durations must be positive")
-	}
 	if duration, err := time.ParseDuration(c.KeepaliveWindow); err != nil || duration <= 0 {
 		return fmt.Errorf("keepalive_window must be a positive duration")
 	}
 	if c.MaxConcurrent < 1 {
 		return fmt.Errorf("max_concurrent must be positive")
 	}
-	if c.QueueRetrySeconds < 0 || c.QueueMaxAttempts < 0 {
-		return fmt.Errorf("queue retry settings must not be negative")
-	}
+	// 重试与冷却的取值不在这里拦：normalize 已把 0/负数/解析不了的值回写成默认值，
+	// 拒绝保存只会让「填了 0」的人卡在 400 上，反而看不到真实生效的是什么。
 	return nil
 }
 
-func (c *Config) normalize() error {
-	var err error
-	if c.SoftRateDur, err = time.ParseDuration(c.Cooldown.SoftRate); err != nil {
-		return fmt.Errorf("cooldown.soft_rate: %w", err)
+// normalizeAndLog 归一化并把被回写的字段写进服务日志（启动与保存两条路径共用）。
+func (c *Config) normalizeAndLog() {
+	for _, change := range c.normalize() {
+		log.Printf("config: %s 不是合法取值，已回写默认值", change)
 	}
-	if c.ErrCooldownDur, err = time.ParseDuration(c.Cooldown.ErrCooldown); err != nil {
-		return fmt.Errorf("cooldown.err_cooldown: %w", err)
+}
+
+// normalize 把运行期不可能生效的配置值回写成默认值，返回被改写的字段说明。
+//
+// 口径：落盘的 = 真正会生效的。此前 queue_max_attempts 填 0 会被请求路径静默钳成
+// 「1 次」、err_threshold 填 0 会被当成 3，而 config.json 里仍留着 0，运维从文件上
+// 完全看不出真实行为；现在 0/负数/解析不了的时长一律按「没配置」处理，回写默认值
+// （保存时由 settings.update 把结果落盘，面板表单随即显示回写后的值）。
+func (c *Config) normalize() []string {
+	changes := []string{}
+	if dur, err := time.ParseDuration(c.Cooldown.SoftRate); err != nil || dur <= 0 {
+		changes = append(changes, fmt.Sprintf("cooldown.soft_rate=%q → %s", c.Cooldown.SoftRate, defaultSoftRate))
+		c.Cooldown.SoftRate = defaultSoftRate
 	}
+	if dur, err := time.ParseDuration(c.Cooldown.ErrCooldown); err != nil || dur <= 0 {
+		changes = append(changes, fmt.Sprintf("cooldown.err_cooldown=%q → %s", c.Cooldown.ErrCooldown, defaultErrCooldown))
+		c.Cooldown.ErrCooldown = defaultErrCooldown
+	}
+	// 解析一次即可：上面已把非法值换成了合法默认值。
+	c.SoftRateDur, _ = time.ParseDuration(c.Cooldown.SoftRate)
+	c.ErrCooldownDur, _ = time.ParseDuration(c.Cooldown.ErrCooldown)
 	if c.Cooldown.ErrThresh <= 0 {
-		c.Cooldown.ErrThresh = 3
+		changes = append(changes, fmt.Sprintf("cooldown.err_threshold=%d → %d", c.Cooldown.ErrThresh, defaultErrThreshold))
+		c.Cooldown.ErrThresh = defaultErrThreshold
+	}
+	if c.QueueRetrySeconds <= 0 {
+		changes = append(changes, fmt.Sprintf("queue_retry_seconds=%d → %d", c.QueueRetrySeconds, defaultQueueRetrySeconds))
+		c.QueueRetrySeconds = defaultQueueRetrySeconds
+	}
+	if c.QueueMaxAttempts <= 0 {
+		changes = append(changes, fmt.Sprintf("queue_max_attempts=%d → %d", c.QueueMaxAttempts, defaultQueueMaxAttempts))
+		c.QueueMaxAttempts = defaultQueueMaxAttempts
 	}
 	if c.Upstream.TimeoutSeconds <= 0 {
 		c.Upstream.TimeoutSeconds = 120
@@ -363,7 +409,8 @@ func (c *Config) normalize() error {
 		c.ImageHandling = "passthrough"
 	case "analyze":
 	default:
-		return fmt.Errorf("image_handling must be \"passthrough\" or \"analyze\", got %q", c.ImageHandling)
+		changes = append(changes, fmt.Sprintf("image_handling=%q → passthrough", c.ImageHandling))
+		c.ImageHandling = "passthrough"
 	}
 	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
 	if hours := validHours(c.CheckinHours); len(hours) > 0 {
@@ -371,7 +418,12 @@ func (c *Config) normalize() error {
 	} else {
 		c.CheckinHours = []int{9, 21}
 	}
-	return nil
+	// 归档保留天数：0/负数等同于没配置，回落 30 天。不设上限——归档清理按文件
+	// mtime 逐轮执行，填很大的值只是不删文件，容量仍由 MaxBytes 兜底。
+	if c.RequestLogRetentionDays <= 0 {
+		c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
+	}
+	return changes
 }
 
 // ToPoolConfig 转换为 pool.Config。

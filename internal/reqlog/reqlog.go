@@ -29,6 +29,10 @@ const (
 	archiveFileGlob = "requests-*.jsonl"
 )
 
+// DefaultRetentionDays 归档保留天数的缺省值：配置没给（<=0）时按 30 天清理
+// data/requests/。与 cmd/server 的 request_log_retention_days 默认值同源。
+const DefaultRetentionDays = 30
+
 // NewRequestID 生成不含用户信息的本地请求 ID。
 func NewRequestID() string {
 	var b [8]byte
@@ -47,8 +51,10 @@ const (
 
 // Config 归档参数。Enabled=false 时仍保留内存指标。
 type Config struct {
-	Dir           string
-	Enabled       bool
+	Dir     string
+	Enabled bool
+	// RetentionDays 归档文件保留天数（按文件 mtime 判断）；<=0 用 DefaultRetentionDays。
+	// 面板保存配置后由 SetRetentionDays 热更新，不必重启进程。
 	RetentionDays int
 	MaxBytes      int64
 	FileMaxBytes  int64
@@ -74,6 +80,7 @@ type Event struct {
 	Error            string  `json:"error,omitempty"`
 	DurationMs       int64   `json:"duration_ms"`
 	TTFBMs           int64   `json:"ttfb_ms,omitempty"`
+	QueueMs          int64   `json:"queue_ms,omitempty"`
 	Attempts         int     `json:"attempts,omitempty"`
 	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64   `json:"completion_tokens,omitempty"`
@@ -255,8 +262,8 @@ func (r *Recorder) ReadArchive(limit int, filter Filter) ([]Event, error) {
 	return r.archive.read(limit, filter)
 }
 
-// historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档最多保留
-// 7 天，不能每次都重扫目录。缓存只挡重复扫描 —— 取值要与轮询间隔同量级，否则
+// historyTTL 归档回看的缓存时长：面板日志页每 5 秒轮询一次 usage，而归档保留
+// 30 天，不能每次都重扫目录。缓存只挡重复扫描 —— 取值要与轮询间隔同量级，否则
 // 刚落盘的请求要等缓存过期才出现。
 const historyTTL = 5 * time.Second
 
@@ -295,6 +302,294 @@ func (r *Recorder) History(limit int) *History {
 	return h
 }
 
+// Stats 一个时间窗口内的聚合结果。面板「请求用量」直接渲染这些数字：30 天的归档
+// 可能有几十万条记录，逐条传给浏览器既慢又没人看，聚合才是页面真正要的东西。
+// From/To 为零值表示该侧不设界。
+type Stats struct {
+	From          time.Time `json:"from"`
+	To            time.Time `json:"to"`
+	Archive       bool      `json:"archive"` // 是否有归档记录参与（false＝只有本进程的内存记录）
+	Completed     int64     `json:"completed"`
+	Succeeded     int64     `json:"succeeded"`
+	Failed        int64     `json:"failed"`
+	SuccessRate   float64   `json:"success_rate"`
+	AvgDurationMs float64   `json:"avg_duration_ms"`
+	// TTFTMs 只平均真正返回过首字的请求；TTFTSamples 为 0 时面板显示「—」。
+	TTFTMs      float64 `json:"ttft_ms"`
+	TTFTSamples int64   `json:"ttft_samples"`
+	// 缓存命中/未命中 token 合计；CacheSamples 为 0 表示这批记录都没上报缓存用量。
+	CacheHitTokens  int64 `json:"cache_hit_tokens"`
+	CacheMissTokens int64 `json:"cache_miss_tokens"`
+	CacheSamples    int64 `json:"cache_samples"`
+	// TokenSamples 为上报过用量的请求数：为 0 时三类 token 合计都没有意义。
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+	TokenSamples     int64 `json:"token_samples"`
+
+	Models   []ModelStat   `json:"models"`
+	Accounts []AccountStat `json:"accounts"`
+	Hours    []HourStat    `json:"hours"`
+}
+
+// ModelStat 按模型汇总。TPS 是输出速度（token/秒），按「输出 token ÷ (耗时 - 首字时间)」
+// 在样本上加权：不是逐条 tps 的平均，快请求不该和慢请求等权。
+type ModelStat struct {
+	Model            string  `json:"model"`
+	Requests         int64   `json:"requests"`
+	Succeeded        int64   `json:"succeeded"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CacheHitTokens   int64   `json:"cache_hit_tokens"`
+	CacheMissTokens  int64   `json:"cache_miss_tokens"`
+	CacheSamples     int64   `json:"cache_samples"`
+	TTFTMs           float64 `json:"ttft_ms"`
+	TTFTSamples      int64   `json:"ttft_samples"`
+	TPS              float64 `json:"tps"`
+}
+
+// AccountStat 按账号汇总（账号是「昵称(uid8)」这种脱敏标签，不是完整 UID）。
+type AccountStat struct {
+	Account          string `json:"account"`
+	Requests         int64  `json:"requests"`
+	Succeeded        int64  `json:"succeeded"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	TotalTokens      int64  `json:"total_tokens"`
+	CacheHitTokens   int64  `json:"cache_hit_tokens"`
+	CacheMissTokens  int64  `json:"cache_miss_tokens"`
+	CacheSamples     int64  `json:"cache_samples"`
+}
+
+// HourStat 按小时汇总，Time 是该小时的起始时刻（Unix 毫秒）。用绝对整点而不是
+// 「服务器本地 9 点」：前端按浏览器时区渲染标签，两边不会各说各话。
+type HourStat struct {
+	Time  int64 `json:"t"`
+	Count int64 `json:"count"`
+}
+
+// WindowStats 聚合 [from,to] 内的请求：内存里还没落盘的那几十条 + 归档里的全部匹配记录，
+// 按 request_id 去重（同一条请求可能既在内存里又已经刷到磁盘）。
+// 读取失败的文件会被跳过并返回第一个错误 —— 一个坏文件不该让整页数字消失。
+func (r *Recorder) WindowStats(from, to time.Time) (Stats, error) {
+	acc := newStatsAcc()
+	seen := map[string]bool{}
+	if r != nil {
+		// 先收内存里的记录：它们一定比归档里的新，且可能还没刷盘。
+		r.mu.Lock()
+		for _, e := range r.recent {
+			if !inWindow(e.Time, from, to) {
+				continue
+			}
+			if e.RequestID != "" {
+				seen[e.RequestID] = true
+			}
+			acc.add(e)
+		}
+		r.mu.Unlock()
+	}
+	var err error
+	if r != nil && r.archive != nil && r.archive.enabled() {
+		var archived int64
+		err = r.archive.scan(Filter{From: from, To: to}, func(e Event) {
+			if e.RequestID != "" && seen[e.RequestID] {
+				return
+			}
+			archived++
+			acc.add(e)
+		})
+		acc.archive = archived > 0
+	}
+	return acc.finish(from, to), err
+}
+
+// inWindow 判断事件时间是否落在窗口内；零值边界表示该侧不设界。
+func inWindow(at, from, to time.Time) bool {
+	if !from.IsZero() && at.Before(from) {
+		return false
+	}
+	if !to.IsZero() && at.After(to) {
+		return false
+	}
+	return true
+}
+
+// groupAcc 一组请求的累计量：窗口总计、按模型、按账号共用同一套口径。
+type groupAcc struct {
+	requests     int64
+	succeeded    int64
+	durationSum  int64
+	prompt       int64
+	completion   int64
+	total        int64
+	cacheHit     int64
+	cacheMiss    int64
+	cacheSamples int64
+	ttftSum      int64
+	ttftSamples  int64
+	tokenSamples int64
+	// genMs / genTokens 只累计「既有首字又有总耗时」的那些请求：
+	// 没有首字时间的记录算不出生成段落，混进去会把 TPS 拉成假的。
+	genMs     int64
+	genTokens int64
+}
+
+func (g *groupAcc) observe(e Event) {
+	g.requests++
+	if e.OK {
+		g.succeeded++
+	}
+	g.durationSum += e.DurationMs
+
+	hit, miss := cacheTokens(e)
+	if hit > 0 || miss > 0 {
+		g.cacheHit += hit
+		g.cacheMiss += miss
+		g.cacheSamples++
+	}
+
+	prompt, completion, total := e.PromptTokens, e.CompletionTokens, e.TotalTokens
+	if total == 0 {
+		total = prompt + completion
+	}
+	g.prompt += prompt
+	g.completion += completion
+	g.total += total
+	if prompt > 0 || completion > 0 || total > 0 {
+		g.tokenSamples++
+	}
+
+	// 首字只统计真的吐出过响应的请求：失败在首字之前、非流式没记录的都不参与。
+	if e.TTFBMs > 0 {
+		g.ttftSum += e.TTFBMs
+		g.ttftSamples++
+		// 生成段落 = 总耗时 - 首字时间；非正数说明时间戳异常，别把 TPS 算成无穷大。
+		if gen := e.DurationMs - e.TTFBMs; gen > 0 {
+			g.genMs += gen
+			g.genTokens += completion
+		}
+	}
+}
+
+func (g *groupAcc) ttftMs() float64 {
+	if g.ttftSamples == 0 {
+		return 0
+	}
+	return round1(float64(g.ttftSum) / float64(g.ttftSamples))
+}
+
+func (g *groupAcc) tps() float64 {
+	if g.genMs <= 0 {
+		return 0
+	}
+	return round1(float64(g.genTokens) * 1000 / float64(g.genMs))
+}
+
+// cacheTokens 取一条请求的缓存命中/未命中 token。老归档只存了命中数，未命中按
+// prompt 差值补；两个都是 0 就是「上游没上报缓存」，调用方据此跳过。
+func cacheTokens(e Event) (hit, miss int64) {
+	hit, miss = e.CacheHitTokens, e.CacheMissTokens
+	// 全命中时 prompt-hit=0，和「上报了 0 未命中」得到同一个数，不必区分。
+	if miss == 0 && hit > 0 {
+		if derived := e.PromptTokens - hit; derived > 0 {
+			miss = derived
+		}
+	}
+	return hit, miss
+}
+
+// statsAcc 聚合过程中的可变状态；对外只暴露 finish 出来的不可变 Stats。
+type statsAcc struct {
+	archive  bool
+	group    groupAcc
+	models   map[string]*groupAcc
+	accounts map[string]*groupAcc
+	hours    map[int64]int64
+}
+
+func newStatsAcc() *statsAcc {
+	return &statsAcc{models: map[string]*groupAcc{}, accounts: map[string]*groupAcc{}, hours: map[int64]int64{}}
+}
+
+func (a *statsAcc) add(e Event) {
+	a.group.observe(e)
+	model := a.models[e.Model]
+	if model == nil {
+		model = &groupAcc{}
+		a.models[e.Model] = model
+	}
+	model.observe(e)
+	account := a.accounts[e.Account]
+	if account == nil {
+		account = &groupAcc{}
+		a.accounts[e.Account] = account
+	}
+	account.observe(e)
+	a.hours[e.Time.UTC().Truncate(time.Hour).UnixMilli()]++
+}
+
+func (a *statsAcc) finish(from, to time.Time) Stats {
+	g := a.group
+	s := Stats{
+		From: from, To: to, Archive: a.archive,
+		Completed: g.requests, Succeeded: g.succeeded,
+		CacheHitTokens: g.cacheHit, CacheMissTokens: g.cacheMiss, CacheSamples: g.cacheSamples,
+		PromptTokens: g.prompt, CompletionTokens: g.completion, TotalTokens: g.total,
+		TTFTMs: g.ttftMs(), TTFTSamples: g.ttftSamples, TokenSamples: g.tokenSamples,
+		Models:   make([]ModelStat, 0, len(a.models)),
+		Accounts: make([]AccountStat, 0, len(a.accounts)),
+		Hours:    make([]HourStat, 0, len(a.hours)),
+	}
+	s.Failed = s.Completed - s.Succeeded
+	if s.Completed > 0 {
+		s.SuccessRate = round1(float64(s.Succeeded) / float64(s.Completed) * 100)
+		s.AvgDurationMs = round1(float64(g.durationSum) / float64(s.Completed))
+	}
+	for name, m := range a.models {
+		s.Models = append(s.Models, ModelStat{
+			Model: name, Requests: m.requests, Succeeded: m.succeeded,
+			PromptTokens: m.prompt, CompletionTokens: m.completion, TotalTokens: m.total,
+			CacheHitTokens: m.cacheHit, CacheMissTokens: m.cacheMiss, CacheSamples: m.cacheSamples,
+			TTFTMs: m.ttftMs(), TTFTSamples: m.ttftSamples, TPS: m.tps(),
+		})
+	}
+	for name, ac := range a.accounts {
+		s.Accounts = append(s.Accounts, AccountStat{
+			Account: name, Requests: ac.requests, Succeeded: ac.succeeded,
+			PromptTokens: ac.prompt, CompletionTokens: ac.completion, TotalTokens: ac.total,
+			CacheHitTokens: ac.cacheHit, CacheMissTokens: ac.cacheMiss, CacheSamples: ac.cacheSamples,
+		})
+	}
+	// 按 token 降序、小时按时间升序：面板直接照序渲染，不用再排一遍。
+	sort.Slice(s.Models, func(i, j int) bool {
+		if s.Models[i].TotalTokens == s.Models[j].TotalTokens {
+			return s.Models[i].Model < s.Models[j].Model
+		}
+		return s.Models[i].TotalTokens > s.Models[j].TotalTokens
+	})
+	sort.Slice(s.Accounts, func(i, j int) bool {
+		if s.Accounts[i].TotalTokens == s.Accounts[j].TotalTokens {
+			return s.Accounts[i].Account < s.Accounts[j].Account
+		}
+		return s.Accounts[i].TotalTokens > s.Accounts[j].TotalTokens
+	})
+	for at, count := range a.hours {
+		s.Hours = append(s.Hours, HourStat{Time: at, Count: count})
+	}
+	sort.Slice(s.Hours, func(i, j int) bool { return s.Hours[i].Time < s.Hours[j].Time })
+	return s
+}
+
+// SetRetentionDays 热更新归档保留天数（面板保存配置后调用）。后台清理每秒一轮，
+// 新值最多一秒后生效，不必触发一次同步清理。
+func (r *Recorder) SetRetentionDays(days int) {
+	if r == nil || r.archive == nil {
+		return
+	}
+	r.archive.setRetentionDays(days)
+}
+
 // Close 刷盘并停止后台归档。
 func (r *Recorder) Close() {
 	if r == nil || r.archive == nil {
@@ -322,6 +617,8 @@ type archiveWriter struct {
 	path string
 	day  string
 	size int64
+	// retMu 保护 cfg.RetentionDays：prune 每秒读，面板保存时热更新写。
+	retMu sync.Mutex
 }
 
 func newArchiveWriter(cfg Config) *archiveWriter {
@@ -329,7 +626,7 @@ func newArchiveWriter(cfg Config) *archiveWriter {
 		return &archiveWriter{cfg: cfg}
 	}
 	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 7
+		cfg.RetentionDays = DefaultRetentionDays
 	}
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 100 << 20
@@ -549,7 +846,7 @@ func (w *archiveWriter) prune() {
 	}
 	items := make([]item, 0, len(entries))
 	var total int64
-	cutoff := time.Now().AddDate(0, 0, -w.cfg.RetentionDays)
+	cutoff := time.Now().AddDate(0, 0, -w.retentionDays())
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -615,23 +912,52 @@ func (w *archiveWriter) read(limit int, filter Filter) ([]Event, error) {
 	return out, nil
 }
 
+// scan 逐行把窗口内的归档事件交给 fn，不把整批记录留在内存里 —— 30 天的归档可能
+// 有几十万条，聚合不需要同时持有它们。单个文件读失败不中断：其余文件的记录照旧算数，
+// 最后把第一个错误交回去说明「这份统计不完整」。
+func (w *archiveWriter) scan(filter Filter, fn func(Event)) error {
+	if !w.enabled() {
+		return nil
+	}
+	entries, err := os.ReadDir(w.cfg.Dir)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, "requests-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+		if err := scanFile(filepath.Join(w.cfg.Dir, name), filter, fn); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func readFile(path string, filter Filter) ([]Event, error) {
+	out := []Event{}
+	err := scanFile(path, filter, func(e Event) { out = append(out, e) })
+	return out, err
+}
+
+func scanFile(path string, filter Filter, fn func(Event)) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
-	var out []Event
 	for scanner.Scan() {
 		var e Event
 		if json.Unmarshal(scanner.Bytes(), &e) != nil || !filter.match(e) {
 			continue
 		}
-		out = append(out, e)
+		fn(e)
 	}
-	return out, scanner.Err()
+	return scanner.Err()
 }
 
 func (f Filter) match(e Event) bool {
@@ -697,6 +1023,22 @@ func (w *archiveWriter) close() {
 		close(w.stop)
 		<-w.done
 	})
+}
+
+// retentionDays 当前保留天数；配置没给（<=0）时回落 DefaultRetentionDays。
+func (w *archiveWriter) retentionDays() int {
+	w.retMu.Lock()
+	defer w.retMu.Unlock()
+	if w.cfg.RetentionDays > 0 {
+		return w.cfg.RetentionDays
+	}
+	return DefaultRetentionDays
+}
+
+func (w *archiveWriter) setRetentionDays(days int) {
+	w.retMu.Lock()
+	w.cfg.RetentionDays = days
+	w.retMu.Unlock()
 }
 
 func (w *archiveWriter) setErr(err error) {

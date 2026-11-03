@@ -38,17 +38,28 @@ type ModelInfo struct {
 	Notice string `json:"notice,omitempty"`
 	// Tag 上游模型标签（如「闲时折扣」），面板以紫色徽标展示；空串表示无标签。
 	Tag string `json:"model_tag,omitempty"`
-	// DisplayEnabled / SupportsImages 保留上游原始布尔值：nil 表示上游没给这个字段，
-	// 面板据此决定是否显示「隐藏模型」「视觉理解」徽标（nil 时都不显示）。
+	// DisplayEnabled / SupportsImages 保留上游原始布尔值：nil 表示上游没给这个字段。
+	// 面板据此决定徽标：DisplayEnabled 只有明确 false 才标「辅助模型」；SupportsImages
+	// 是 true 标「视觉理解」，否则（含 nil）标「纯文本」—— 上游只在支持图片时才回这个字段。
 	DisplayEnabled *bool `json:"display_enabled,omitempty"`
 	SupportsImages *bool `json:"supports_images,omitempty"`
 }
 
-// 内置模型种子（大小写归一用）。
-var seedKnownModels = []string{
-	"GLM-5.2", "GLM-5.2-ArkTS-SPARK", "GLM-5.1", "GLM-4.7",
-	"OpenPangu-2.0-Pro", "OpenPangu-2.0-Flash",
-	"Qwen3-VL-235B", "Qwen3.5-397B-A17B-VL", "Qwen3.6-27B-VL",
+// seedKnownModels 是目录发现之前的大小写兜底：key 为小写 ID，value 必须是上游
+// InferHub 注册的 model_id，不是展示用的 model_name。
+//
+// 盘古系列就是踩过的坑：上游注册名是全小写 openpangu-2.0-pro，OpenPangu-2.0-Pro
+// 只是展示名，照它调用会稳定撞 InferHub.002002009.404（2026-11-02 实测）。同理
+// GLM-5.2-ArkTS-SPARK 也是展示名（model_id 为 glm-5.2-sft-harmony），不作种子。
+var seedKnownModels = map[string]string{
+	"glm-5.2":              "GLM-5.2",
+	"glm-5.1":              "GLM-5.1",
+	"glm-4.7":              "GLM-4.7",
+	"openpangu-2.0-pro":    "openpangu-2.0-pro",
+	"openpangu-2.0-flash":  "openpangu-2.0-flash",
+	"qwen3-vl-235b":        "Qwen3-VL-235B",
+	"qwen3.5-397b-a17b-vl": "Qwen3.5-397B-A17B-VL",
+	"qwen3.6-27b-vl":       "Qwen3.6-27B-VL",
 }
 
 // accountCatalog 一个账号的模型目录快照。
@@ -60,17 +71,8 @@ type accountCatalog struct {
 var catalog = struct {
 	sync.RWMutex
 	accounts map[string]*accountCatalog // accountID -> 目录
-	known    map[string]string          // lower(id) -> 精确 ID（跨账号，大小写归一）
+	known    map[string]string          // lower(id) -> 精确 ID（只存目录发现结果，跨账号）
 }{accounts: map[string]*accountCatalog{}, known: map[string]string{}}
-
-func init() {
-	catalog.known = make(map[string]string, len(seedKnownModels))
-	for _, id := range seedKnownModels {
-		if _, ok := catalog.known[strings.ToLower(id)]; !ok {
-			catalog.known[strings.ToLower(id)] = id
-		}
-	}
-}
 
 // SetAccountModels 整体替换某账号的模型目录（不是增补：套餐轮换后旧模型不得残留）。
 func SetAccountModels(accountID string, infos []ModelInfo) {
@@ -117,16 +119,44 @@ func AccountCatalogStale(accountID string) bool {
 	return !ok || time.Since(ac.fetched) >= CatalogTTL
 }
 
-// lookupKnownModel 按小写 ID 查精确模型 ID（种子 + 已发现模型）。
+// lookupKnownModel 按小写 ID 查精确模型 ID：账号目录里发现的结果优先，种子只
+// 兜底目录里还没有的模型 —— 种子是猜的大小写，目录才是上游注册的事实。
 func lookupKnownModel(id string) (string, bool) {
 	key := strings.ToLower(strings.TrimSpace(id))
 	if key == "" {
 		return "", false
 	}
 	catalog.RLock()
-	defer catalog.RUnlock()
 	exact, ok := catalog.known[key]
+	catalog.RUnlock()
+	if ok {
+		return exact, true
+	}
+	exact, ok = seedKnownModels[key]
 	return exact, ok
+}
+
+// CatalogModelID 返回该账号目录里与 id 大小写不敏感匹配的精确模型 ID。
+//
+// 上游按注册名精确匹配，而 lookupKnownModel 的索引是跨账号的：同一个模型在不同
+// 账号可以注册成不同大小写，全局索引只能记住一个。发请求前按「当前账号自己的
+// 目录」定大小写，守卫放行的 ID 才一定调得通（目录未发现或没登记时返回 false，
+// 调用方照旧走 CanonicalModel）。
+func CatalogModelID(accountID, id string) (string, bool) {
+	key := strings.ToLower(strings.TrimSpace(id))
+	if accountID == "" || key == "" {
+		return "", false
+	}
+	models, ok := AccountModels(accountID)
+	if !ok {
+		return "", false
+	}
+	for _, mi := range models {
+		if strings.ToLower(mi.ID) == key {
+			return mi.ID, true
+		}
+	}
+	return "", false
 }
 
 // MergeModels 合并多路模型列表：按小写 ID 去重，参数更全的优先。

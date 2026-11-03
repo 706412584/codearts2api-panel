@@ -6,7 +6,53 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// 保存时非法值回写默认值：0/负数/解析不了的时长不再报 400，而是按默认值落盘，
+// 面板拿到的也是回写后的值（表单立刻显示 10/30，而不是存完还是 0）。
+func TestSettingsRewriteInvalidRetryAndCooldownToDefaults(t *testing.T) {
+	t.Setenv("CA2A_API_KEY", "")
+	t.Setenv("CA2A_ADMIN_KEY", "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := ensureConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	store := &fileSettings{path: path}
+	got, err := store.Update(map[string]any{
+		"queue_retry_seconds": 0,
+		"queue_max_attempts":  -3,
+		"cooldown": map[string]any{
+			"err_threshold": 0,
+			"soft_rate":     "not-a-duration",
+			"err_cooldown":  "-5m",
+		},
+	})
+	if err != nil {
+		t.Fatalf("非法值应回写默认值而不是拒绝保存: %v", err)
+	}
+	if got["queue_retry_seconds"] != float64(10) || got["queue_max_attempts"] != float64(30) {
+		t.Fatalf("返回给面板的 queue 值未回写: %v / %v", got["queue_retry_seconds"], got["queue_max_attempts"])
+	}
+	cooldown, _ := got["cooldown"].(map[string]any)
+	if cooldown["err_threshold"] != float64(3) || cooldown["soft_rate"] != "60s" || cooldown["err_cooldown"] != "10m" {
+		t.Fatalf("返回给面板的 cooldown 值未回写: %v", cooldown)
+	}
+	// 磁盘上也必须是回写后的值：否则重启后运行期与文件又对不上。
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.QueueRetrySeconds != 10 || cfg.QueueMaxAttempts != 30 {
+		t.Fatalf("落盘的 queue 未归一化: %d / %d", cfg.QueueRetrySeconds, cfg.QueueMaxAttempts)
+	}
+	if cfg.Cooldown.ErrThresh != 3 || cfg.Cooldown.SoftRate != "60s" || cfg.Cooldown.ErrCooldown != "10m" {
+		t.Fatalf("落盘的 cooldown 未归一化: %+v", cfg.Cooldown)
+	}
+	if cfg.SoftRateDur != time.Minute || cfg.ErrCooldownDur != 10*time.Minute {
+		t.Fatalf("解析后的时长不符: %s / %s", cfg.SoftRateDur, cfg.ErrCooldownDur)
+	}
+}
 
 func TestEnsureConfigCreatesDistinctSecretsAndDoesNotOverwrite(t *testing.T) {
 	t.Setenv("CA2A_API_KEY", "")
@@ -84,7 +130,7 @@ func TestSettingsPreservesSecretsAndUnknownFieldsAndRejectsInvalidPatch(t *testi
 	}
 	good, _ := os.ReadFile(path)
 	for _, patch := range []map[string]any{
-		{"cooldown": map[string]any{"soft_rate": "invalid-duration"}},
+		// 时长/次数类的非法值不再拒绝保存：见 TestSettingsRewriteInvalidRetryAndCooldownToDefaults。
 		{"listen": "localhost:99999"},
 		{"keepalive_window": "-1s"},
 		{"api_key": nil},

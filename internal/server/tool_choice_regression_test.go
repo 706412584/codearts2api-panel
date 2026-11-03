@@ -175,6 +175,24 @@ func TestChatCompletionsParamInvalidDoesNotRotateOrCoolAccounts(t *testing.T) {
 	}
 }
 
+func TestChatCompletionsNonMultimodalErrorDoesNotCoolAccounts(t *testing.T) {
+	var attempts atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error_code":"InferHub.001001020.406","error_msg":"The request model is not multimodal"}`)
+	}))
+	defer backend.Close()
+	h, p := toolChoiceTestHandler(t, backend.URL)
+	payload := `{"model":"deepseek-v4.1-flash-1017","messages":[{"role":"user","content":[{"type":"text","text":"describe image"},{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+	if rec.Code != http.StatusBadRequest || attempts.Load() != 1 {
+		t.Fatalf("model capability error should not rotate: status=%d attempts=%d body=%s", rec.Code, attempts.Load(), rec.Body.String())
+	}
+	assertToolChoicePoolHealthy(t, p)
+}
+
 func TestChatCompletionsServerErrorsStillCoolAccounts(t *testing.T) {
 	var attempts atomic.Int32
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

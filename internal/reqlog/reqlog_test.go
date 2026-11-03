@@ -227,6 +227,66 @@ func TestArchiveFilterByTimeRange(t *testing.T) {
 	}
 }
 
+// 保留天数按文件 mtime 判断：超过天数的文件被删，边界内的原样留下；
+// 面板保存配置后 SetRetentionDays 立刻改变下一轮清理的口径，不必重启进程。
+func TestArchivePruneHonorsRetentionDays(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, ageDays int) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("x\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().AddDate(0, 0, -ageDays)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	fresh := write("requests-2026-11-02.jsonl", 1)
+	mid := write("requests-2026-10-20.jsonl", 13)
+	old := write("requests-2026-09-01.jsonl", 62)
+
+	w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, RetentionDays: 30, MaxBytes: 1 << 20}, done: make(chan struct{})}
+	w.prune()
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("62 天前的归档应被删除（保留 30 天）: %v", err)
+	}
+	if _, err := os.Stat(mid); err != nil {
+		t.Fatalf("13 天前的归档必须保留: %v", err)
+	}
+
+	// 面板把保留天数改小：下一轮清理就按新值删掉 13 天前那份。
+	w.setRetentionDays(7)
+	w.prune()
+	if _, err := os.Stat(mid); !os.IsNotExist(err) {
+		t.Fatalf("保留 7 天后 13 天前的归档应被删除: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("1 天前的归档必须保留: %v", err)
+	}
+}
+
+// 未配置保留天数时按 30 天清理（与 cmd/server 的默认值同源），不是「全删」。
+func TestArchiveRetentionDefaultsToThirtyDays(t *testing.T) {
+	if got := (&archiveWriter{cfg: Config{}}).retentionDays(); got != DefaultRetentionDays {
+		t.Fatalf("retention = %d, want %d", got, DefaultRetentionDays)
+	}
+	if DefaultRetentionDays != 30 {
+		t.Fatalf("默认保留天数 = %d，配置文档写的是 30 天", DefaultRetentionDays)
+	}
+	// 经 New() 传入 0 也要落到默认值上，避免后台清理按 0 天删光。
+	r := New(Config{Enabled: true, Dir: t.TempDir()})
+	defer r.Close()
+	if got := r.archive.retentionDays(); got != DefaultRetentionDays {
+		t.Fatalf("New(RetentionDays=0) retention = %d, want %d", got, DefaultRetentionDays)
+	}
+	// 面板保存后热更新：立刻读新值。
+	r.SetRetentionDays(5)
+	if got := r.archive.retentionDays(); got != 5 {
+		t.Fatalf("hot-updated retention = %d, want 5", got)
+	}
+}
+
 func TestArchiveQueueDropCounter(t *testing.T) {
 	w := &archiveWriter{
 		cfg:  Config{Enabled: true, Dir: t.TempDir()},
@@ -325,5 +385,112 @@ func TestHistoryWithoutArchiveIsNil(t *testing.T) {
 	}
 	if h := New(Config{Enabled: true, Dir: t.TempDir()}).History(10); h != nil {
 		t.Fatalf("history = %+v, want nil for an empty archive", h)
+	}
+}
+
+// 窗口聚合：卡片要的数字在服务端一次算完（含内存里还没落盘的那几条），
+// 不把逐条记录传给浏览器。
+func TestWindowStatsAggregates(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	const alice, bob = "alice(uid00001)", "bob(uid00002)"
+
+	// 前一个「进程」把三条写进归档，模拟重启后由磁盘提供数据。
+	before := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 30})
+	before.Record(Event{Time: base, RequestID: "a", Model: "glm-5.2", Account: alice, Status: 200, OK: true, Outcome: OutcomeSuccess,
+		DurationMs: 300, TTFBMs: 200, PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheHitTokens: 60, CacheMissTokens: 40})
+	before.Record(Event{Time: base.Add(time.Minute), RequestID: "b", Model: "glm-5.2", Account: alice, Status: 500, Outcome: OutcomeHTTPError, DurationMs: 300})
+	before.Record(Event{Time: base.Add(2 * time.Minute), RequestID: "c", Model: "qwen", Account: bob, Status: 200, OK: true, Outcome: OutcomeSuccess,
+		DurationMs: 500, TTFBMs: 400, PromptTokens: 50, CompletionTokens: 10, TotalTokens: 60, CacheHitTokens: 50})
+	before.Close()
+
+	after := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 30})
+	defer after.Close()
+	// 内存里这条还没刷盘；另一条落在窗口外，必须被排除。
+	after.Record(Event{Time: base.Add(3 * time.Minute), RequestID: "d", Model: "qwen", Account: bob, Status: 200, OK: true, Outcome: OutcomeSuccess,
+		DurationMs: 400, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15})
+	after.Record(Event{Time: base.AddDate(0, 0, -40), RequestID: "old", Model: "glm-5.2", Status: 200, OK: true, Outcome: OutcomeSuccess, DurationMs: 1000})
+
+	stats, err := after.WindowStats(base.Add(-time.Minute), time.Now())
+	if err != nil {
+		t.Fatalf("window stats: %v", err)
+	}
+	if !stats.Archive {
+		t.Error("归档有记录，stats.Archive 应为 true")
+	}
+	if stats.Completed != 4 || stats.Succeeded != 3 || stats.Failed != 1 {
+		t.Fatalf("counts = %d/%d/%d, want 4/3/1", stats.Completed, stats.Succeeded, stats.Failed)
+	}
+	if stats.AvgDurationMs != 375 || stats.SuccessRate != 75 {
+		t.Fatalf("avg duration=%v success=%v, want 375/75", stats.AvgDurationMs, stats.SuccessRate)
+	}
+	// 首字只平均报过的两条（200/400），没有首字的请求不参与。
+	if stats.TTFTMs != 300 || stats.TTFTSamples != 2 {
+		t.Fatalf("ttft = %v over %d samples, want 300 over 2", stats.TTFTMs, stats.TTFTSamples)
+	}
+	// 老数据只有命中数：未命中按 prompt-hit 补出来。
+	if stats.CacheHitTokens != 110 || stats.CacheMissTokens != 40 || stats.CacheSamples != 2 {
+		t.Fatalf("cache = %d/%d over %d, want 110/40 over 2", stats.CacheHitTokens, stats.CacheMissTokens, stats.CacheSamples)
+	}
+	if stats.PromptTokens != 160 || stats.CompletionTokens != 35 || stats.TotalTokens != 195 || stats.TokenSamples != 3 {
+		t.Fatalf("tokens = %d/%d/%d over %d", stats.PromptTokens, stats.CompletionTokens, stats.TotalTokens, stats.TokenSamples)
+	}
+
+	// 按模型：glm-5.2 的 TPS = 20 token / (300-200)ms = 200 token/s。
+	if len(stats.Models) != 2 || stats.Models[0].Model != "glm-5.2" {
+		t.Fatalf("models = %+v, want glm-5.2 first", stats.Models)
+	}
+	glm := stats.Models[0]
+	if glm.Requests != 2 || glm.Succeeded != 1 || glm.PromptTokens != 100 || glm.CompletionTokens != 20 || glm.TotalTokens != 120 {
+		t.Fatalf("glm row = %+v", glm)
+	}
+	if glm.CacheHitTokens != 60 || glm.CacheMissTokens != 40 || glm.CacheSamples != 1 {
+		t.Fatalf("glm cache = %+v", glm)
+	}
+	if glm.TTFTMs != 200 || glm.TTFTSamples != 1 || glm.TPS != 200 {
+		t.Fatalf("glm ttft/tps = %+v, want 200ms and 200 tok/s", glm)
+	}
+	// qwen：只有 c 有首字，10 token / 100ms = 100 token/s。
+	if qwen := stats.Models[1]; qwen.Model != "qwen" || qwen.TPS != 100 || qwen.TotalTokens != 75 {
+		t.Fatalf("qwen row = %+v", qwen)
+	}
+
+	// 按账号：与按模型同一口径，按 token 降序。
+	if len(stats.Accounts) != 2 || stats.Accounts[0].Account != alice || stats.Accounts[0].TotalTokens != 120 {
+		t.Fatalf("accounts = %+v, want alice first", stats.Accounts)
+	}
+	if bobRow := stats.Accounts[1]; bobRow.Account != bob || bobRow.Requests != 2 || bobRow.Succeeded != 2 || bobRow.PromptTokens != 60 {
+		t.Fatalf("bob row = %+v", bobRow)
+	}
+
+	if len(stats.Hours) == 0 {
+		t.Fatal("hourly buckets must not be empty")
+	}
+
+	// 窗口收窄到只剩最后一条：内存记录仍在，聚合随之变化。
+	tail, err := after.WindowStats(base.Add(150*time.Second), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail.Completed != 1 || tail.TotalTokens != 15 || tail.TTFTSamples != 0 {
+		t.Fatalf("narrow window = %+v, want only the in-memory record", tail)
+	}
+	// 没有首字样本时算不出 TPS，不能退化成 0 秒除出来的无穷大。
+	if tail.Models[0].TPS != 0 || tail.Models[0].TTFTSamples != 0 {
+		t.Fatalf("tps without ttft = %+v", tail.Models[0])
+	}
+}
+
+// 归档关闭时窗口聚合只看内存，不报错也不声称读过归档。
+func TestWindowStatsWithoutArchive(t *testing.T) {
+	r := New(Config{})
+	defer r.Close()
+	r.Record(Event{RequestID: "mem", Status: 200, OK: true, Outcome: OutcomeSuccess})
+	stats, err := r.WindowStats(time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Completed != 1 || stats.Archive {
+		t.Fatalf("memory-only stats = %+v", stats)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -16,6 +17,9 @@ import (
 type fileSettings struct {
 	mu   sync.Mutex
 	path string
+	// apply 落盘成功后热应用配置并返回仍需重启的字段（由 main 注入）。
+	// 为 nil 表示没有可热应用的组件（测试/裸用），全部按"无需重启"返回。
+	apply func(*Config) []string
 }
 
 func configMap(c *Config) (map[string]any, error) {
@@ -45,6 +49,10 @@ func (s *fileSettings) readLocked() (map[string]any, error) {
 		return nil, err
 	}
 	mergeConfig(base, values)
+	// 面板上显示的就是运行期会用的值：非法值按默认值回显，别让人以为 0 真的生效了。
+	// 这里尽力而为——手工改坏的类型（如 err_threshold 写成字符串）留给 update 报错，
+	// 读取阶段仍把原样内容交给面板，否则配置页会整页打不开。
+	_, _ = normalizeSettings(base)
 	return base, nil
 }
 
@@ -77,18 +85,29 @@ func mergeConfig(base, patch map[string]any) {
 }
 
 func (s *fileSettings) Update(patch map[string]any) (map[string]any, error) {
+	values, _, err := s.update(patch)
+	return values, err
+}
+
+// UpdateLive 保存配置并热应用，返回仍需重启的字段名（面板据此提示）。
+func (s *fileSettings) UpdateLive(patch map[string]any) (map[string]any, []string, error) {
+	return s.update(patch)
+}
+
+// update 校验 → 落盘 → 热应用。校验失败不写盘；热应用只在落盘成功后执行。
+func (s *fileSettings) update(patch map[string]any) (map[string]any, []string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	values, err := s.readLocked()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Empty redacted keys mean "keep"; null or a non-string is invalid.
 	for _, key := range []string{"api_key", "admin_key"} {
 		if value, present := patch[key]; present {
 			text, ok := value.(string)
 			if !ok {
-				return nil, fmt.Errorf("%s must be a string", key)
+				return nil, nil, fmt.Errorf("%s must be a string", key)
 			}
 			if text == "" {
 				patch[key] = values[key]
@@ -96,22 +115,78 @@ func (s *fileSettings) Update(patch map[string]any) (map[string]any, error) {
 		}
 	}
 	mergeConfig(values, patch)
+	// 归一化：非法值（0/负数/解析不了的时长）回写成默认值，并把结果写回待落盘的 map。
+	// 这样「文件里写的」就是「运行时真正用的」——否则 queue_max_attempts: 0 在文件里
+	// 看着像「不重试」，实际却按默认值跑，面板上的数字也就没法信任。
+	changes, err := normalizeSettings(values)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, change := range changes {
+		log.Printf("config: %s 不是合法取值，已回写默认值", change)
+	}
 	raw, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	candidate := Default()
 	if err := json.Unmarshal(raw, candidate); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+		return nil, nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	applyEnv(candidate)
 	if err := candidate.validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := writeConfigAtomic(s.path, append(raw, '\n')); err != nil {
+		return nil, nil, err
+	}
+	var restart []string
+	if s.apply != nil {
+		restart = s.apply(candidate)
+	}
+	// 返回落盘后的那份配置（数字统一成 JSON 解码后的形态），面板据此回填表单，
+	// 用户立刻能看到 0 被改成了 10/30，而不是存完还是 0。
+	written := map[string]any{}
+	if err := json.Unmarshal(raw, &written); err != nil {
+		return nil, nil, err
+	}
+	return redactConfig(written), restart, nil
+}
+
+// normalizeSettings 按 Config.normalize 的口径修正待读写/待落盘的配置 map，返回被
+// 改写的字段说明。只回写重试与冷却这五处，其余键（含面板不认识的扩展字段）原样保留。
+func normalizeSettings(values map[string]any) ([]string, error) {
+	candidate := Default()
+	raw, err := json.Marshal(values)
+	if err != nil {
 		return nil, err
 	}
-	return redactConfig(values), nil
+	if err := json.Unmarshal(raw, candidate); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
+	changes := candidate.normalize()
+	setConfigValue(values, "cooldown.soft_rate", candidate.Cooldown.SoftRate)
+	setConfigValue(values, "cooldown.err_threshold", candidate.Cooldown.ErrThresh)
+	setConfigValue(values, "cooldown.err_cooldown", candidate.Cooldown.ErrCooldown)
+	setConfigValue(values, "queue_retry_seconds", candidate.QueueRetrySeconds)
+	setConfigValue(values, "queue_max_attempts", candidate.QueueMaxAttempts)
+	return changes, nil
+}
+
+// setConfigValue 按 "a.b" 路径写回一个值，父级不是对象时补一个。
+// 只用来把归一化结果写进待落盘的 map，其余键（含面板不认识的扩展字段）原样保留。
+func setConfigValue(values map[string]any, path string, value any) {
+	keys := strings.Split(path, ".")
+	target := values
+	for _, key := range keys[:len(keys)-1] {
+		next, ok := target[key].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			target[key] = next
+		}
+		target = next
+	}
+	target[keys[len(keys)-1]] = value
 }
 
 func writeConfigAtomic(path string, raw []byte) error {

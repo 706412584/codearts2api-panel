@@ -27,6 +27,55 @@ func TestCanonicalModelKnownIndex(t *testing.T) {
 	}
 }
 
+// 盘古系列上游注册名是全小写，OpenPangu-2.0-Pro 只是展示名：种子和目录发现都必须
+// 给出小写 ID，否则每次调用都撞 InferHub.002002009.404（2026-11-02 实测）。
+func TestCanonicalModelPanguUsesRegisteredID(t *testing.T) {
+	catalog.Lock()
+	delete(catalog.known, "openpangu-2.0-pro")
+	catalog.Unlock()
+
+	if got := CanonicalModel("OpenPangu-2.0-Pro"); got != "openpangu-2.0-pro" {
+		t.Fatalf("目录发现前应回落到小写注册名，got=%q", got)
+	}
+	SetAccountModels("t-pangu", []ModelInfo{{ID: "openpangu-2.0-pro", ContextWindow: 524288}})
+
+	tests := []struct{ in, want string }{
+		{"OpenPangu-2.0-Pro", "openpangu-2.0-pro"},
+		{"OPENPANGU-2.0-PRO", "openpangu-2.0-pro"},
+		{"openpangu-2.0-pro", "openpangu-2.0-pro"},
+		{"OpenPangu-2.0-Flash", "openpangu-2.0-flash"},
+	}
+	for _, tc := range tests {
+		if got := CanonicalModel(tc.in); got != tc.want {
+			t.Errorf("CanonicalModel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// 同一模型在不同账号注册成不同大小写时，发请求要按该账号自己的注册名，
+// 而不是跨账号的全局索引（全局只能记住一个写法）。
+func TestCatalogModelIDUsesAccountRegistrationCase(t *testing.T) {
+	SetAccountModels("t-case-lower", []ModelInfo{{ID: "qwen9-case-probe"}})
+	SetAccountModels("t-case-mixed", []ModelInfo{{ID: "Qwen9-Case-Probe"}})
+
+	for _, tc := range []struct{ account, in, want string }{
+		{"t-case-lower", "Qwen9-Case-Probe", "qwen9-case-probe"},
+		{"t-case-lower", "QWEN9-CASE-PROBE", "qwen9-case-probe"},
+		{"t-case-mixed", "qwen9-case-probe", "Qwen9-Case-Probe"},
+	} {
+		got, ok := CatalogModelID(tc.account, tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("CatalogModelID(%q, %q) = %q, %v; want %q", tc.account, tc.in, got, ok, tc.want)
+		}
+	}
+	if _, ok := CatalogModelID("t-case-lower", "absent-model"); ok {
+		t.Error("目录里没登记的 ID 不应命中")
+	}
+	if _, ok := CatalogModelID("t-case-unknown", "qwen9-case-probe"); ok {
+		t.Error("目录未发现的账号不应命中")
+	}
+}
+
 func TestSetAccountModelsReplacesCatalog(t *testing.T) {
 	SetAccountModels("acct-rot", []ModelInfo{{ID: "rotated-model", ContextWindow: 1024}})
 	if _, ok := AccountModels("acct-rot"); !ok {
@@ -80,7 +129,7 @@ func TestFetchModelsUsesAgentAndBuiltinSources(t *testing.T) {
 			if r.Header.Get("Agent-Type") != "PromptCenter" {
 				t.Errorf("builtin 接口需带 Agent-Type: PromptCenter，got=%q", r.Header.Get("Agent-Type"))
 			}
-			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"OpenPangu-2.0-Pro","context_window":524288,"display_enabled":true,"supports_images":false,"credit":[{"ratio_display":"0.7x"}]}]}`)
+			_, _ = io.WriteString(w, `{"builtinModels":[{"model_id":"openpangu-2.0-pro","context_window":524288,"display_enabled":true,"supports_images":false,"credit":[{"ratio_display":"0.7x"}]}]}`)
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)

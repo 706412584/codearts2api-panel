@@ -7,7 +7,37 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+// 归一化把「运行期不可能生效」的值回写成默认值，并回报改了哪些字段：
+// queue_* 填 0 过去会被请求路径静默钳成 1 次，文件里却留着 0，看不出真实行为。
+func TestNormalizeRewritesInvalidRetryAndCooldownValues(t *testing.T) {
+	c := Default()
+	c.Cooldown.SoftRate = "nope"
+	c.Cooldown.ErrCooldown = "0s"
+	c.Cooldown.ErrThresh = 0
+	c.QueueRetrySeconds = 0
+	c.QueueMaxAttempts = -2
+
+	changes := c.normalize()
+	if len(changes) != 5 {
+		t.Fatalf("应回报 5 处回写，got=%v", changes)
+	}
+	if c.Cooldown.SoftRate != "60s" || c.SoftRateDur != time.Minute {
+		t.Errorf("soft_rate 未回写: %q / %s", c.Cooldown.SoftRate, c.SoftRateDur)
+	}
+	if c.Cooldown.ErrCooldown != "10m" || c.ErrCooldownDur != 10*time.Minute {
+		t.Errorf("err_cooldown 未回写: %q / %s", c.Cooldown.ErrCooldown, c.ErrCooldownDur)
+	}
+	if c.Cooldown.ErrThresh != 3 || c.QueueRetrySeconds != 10 || c.QueueMaxAttempts != 30 {
+		t.Errorf("回写后的值不符: thresh=%d retry=%d attempts=%d", c.Cooldown.ErrThresh, c.QueueRetrySeconds, c.QueueMaxAttempts)
+	}
+	// 默认值本身不能被当成非法值反复改写（否则每次保存都会变一次）。
+	if got := Default().normalize(); len(got) != 0 {
+		t.Fatalf("默认配置不该产生回写: %v", got)
+	}
+}
 
 func TestCreditsAutoClaimConfigAndEnv(t *testing.T) {
 	t.Setenv("CA2A_API_KEY", "test-key")
@@ -173,6 +203,42 @@ func TestStripJSONCommentsEdgeCases(t *testing.T) {
 	// 孤立的 '/' 不能 panic 或死循环（结果是否合法 JSON 无所谓）。
 	for _, in := range []string{"{", "/", `{"a":1}/`, `{"a":1}/*`} {
 		_ = stripJSONComments([]byte(in))
+	}
+}
+
+// 归档保留天数：默认 30 天；配置可改；0/负数等同于没配置（回落 30，而不是删光）；
+// env 用整数覆盖。
+func TestRequestLogRetentionDaysConfigAndEnv(t *testing.T) {
+	t.Setenv("CA2A_API_KEY", "test-key")
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "")
+	if cfg, err := Load(""); err != nil || cfg.RequestLogRetentionDays != 30 {
+		t.Fatalf("default retention = %d err=%v, want 30", cfg.RequestLogRetentionDays, err)
+	}
+
+	write := func(body string) string {
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 7 {
+		t.Fatalf("configured retention = %d err=%v, want 7", cfg.RequestLogRetentionDays, err)
+	}
+	for _, body := range []string{`{"request_log_retention_days":0}`, `{"request_log_retention_days":-5}`} {
+		if cfg, err := Load(write(body)); err != nil || cfg.RequestLogRetentionDays != 30 {
+			t.Fatalf("%s: retention = %d err=%v, want default 30", body, cfg.RequestLogRetentionDays, err)
+		}
+	}
+
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "90")
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 90 {
+		t.Fatalf("env override ignored: retention=%d err=%v", cfg.RequestLogRetentionDays, err)
+	}
+	// 非法 env 不覆盖配置文件里的值。
+	t.Setenv("CA2A_REQUEST_LOG_RETENTION_DAYS", "forever")
+	if cfg, err := Load(write(`{"request_log_retention_days":7}`)); err != nil || cfg.RequestLogRetentionDays != 7 {
+		t.Fatalf("invalid env must keep config value: retention=%d err=%v", cfg.RequestLogRetentionDays, err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -194,7 +195,7 @@ func TestFailureErrorIsBoundedAndRedacted(t *testing.T) {
 		t.Fatalf("unsafe failure error: %+v", recent)
 	}
 	h.finishRequest(reqlog.Event{Error: strings.Repeat("错误", 100)}, observed, time.Now())
-	if recent = h.cfg.RequestLog.Snapshot().Recent; len(recent[0].Error) > 160 || !utf8.ValidString(recent[0].Error) {
+	if recent = h.cfg.RequestLog.Snapshot().Recent; len(recent[0].Error) > errorTextLimit || !utf8.ValidString(recent[0].Error) {
 		t.Fatalf("unbounded or invalid error: %q", recent[0].Error)
 	}
 }
@@ -285,5 +286,55 @@ func TestUsageWithoutArchiveHasNoHistory(t *testing.T) {
 	}
 	if body.History != nil {
 		t.Fatalf("history without an archive: %s", raw.Body.String())
+	}
+}
+
+// 用量页的 30 天视图走 window=1：服务端扫归档并聚合，只回数字和按模型/按小时的汇总，
+// 不把逐条记录传下来；不带 window 的请求保持原样，日志页还要逐条记录。
+func TestUsageWindowAggregates(t *testing.T) {
+	dir := t.TempDir()
+	rec := reqlog.New(reqlog.Config{Enabled: true, Dir: dir, RetentionDays: 30})
+	defer rec.Close()
+	at := time.Now().Add(-time.Minute).Truncate(time.Second)
+	rec.Record(reqlog.Event{
+		Time: at, RequestID: "win-1", Model: "glm-5.2", Status: 200, OK: true, Outcome: reqlog.OutcomeSuccess,
+		DurationMs: 100, TTFBMs: 200, PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
+	})
+	p, _ := pool.New(nil, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, RequestLog: rec})
+
+	query := "/admin/api/usage?window=1&from=" + url.QueryEscape(at.Add(-time.Minute).Format(time.RFC3339)) +
+		"&to=" + url.QueryEscape(at.Add(time.Minute).Format(time.RFC3339))
+	raw := panelRequest(h, http.MethodGet, query, "", "")
+	var stats reqlog.Stats
+	if err := json.Unmarshal(raw.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("decode window stats: %v (%s)", err, raw.Body.String())
+	}
+	if stats.Completed != 1 || stats.Succeeded != 1 || stats.TotalTokens != 15 || stats.TTFTSamples != 1 {
+		t.Fatalf("window stats = %+v", stats)
+	}
+	if len(stats.Models) != 1 || stats.Models[0].Model != "glm-5.2" || len(stats.Hours) != 1 {
+		t.Fatalf("window breakdown = %+v / %+v", stats.Models, stats.Hours)
+	}
+
+	// 窗口外一条都不算：面板据此显示空状态，而不是拿全量糊上去。
+	outside := "/admin/api/usage?window=1&from=" + url.QueryEscape(at.Add(time.Hour).Format(time.RFC3339))
+	raw = panelRequest(h, http.MethodGet, outside, "", "")
+	stats = reqlog.Stats{}
+	if err := json.Unmarshal(raw.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Completed != 0 || len(stats.Models) != 0 {
+		t.Fatalf("out-of-window stats = %+v", stats)
+	}
+
+	// 非窗口请求仍是逐条记录（运行日志页用）。
+	var body usagePayload
+	raw = panelRequest(h, http.MethodGet, "/admin/api/usage", "", "")
+	if err := json.Unmarshal(raw.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Recent) != 1 || body.Recent[0].RequestID != "win-1" {
+		t.Fatalf("plain usage must keep the per-request rows: %s", raw.Body.String())
 	}
 }

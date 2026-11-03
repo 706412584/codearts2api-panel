@@ -70,7 +70,7 @@ func lastPassedFire(now time.Time, hours []int) time.Time {
 // 因此这里不必逐号判断；今天的时点都还没到（例如 08:00 启动）则什么都不做，
 // 等 09:00 的时点。
 func (s *Scheduler) catchUpCheckin(ctx context.Context, now time.Time) {
-	last := lastPassedFire(now, s.cfg.CheckinHours)
+	last := lastPassedFire(now, s.config().CheckinHours)
 	if last.IsZero() {
 		return
 	}
@@ -79,10 +79,20 @@ func (s *Scheduler) catchUpCheckin(ctx context.Context, now time.Time) {
 }
 
 // runCheckinLoop 等到每个签到时点后执行一次，阻塞直到 ctx 取消。
+//
+// 每轮重读配置：改 checkin_hours 后下一次等待即按新时点；关掉 credits_auto_claim
+// 或 watch.enabled 时原地空转，重新打开自动恢复。
 func (s *Scheduler) runCheckinLoop(ctx context.Context) {
 	for {
-		next := nextFire(time.Now(), s.cfg.CheckinHours)
-		log.Printf("next credit checkin at %s (hours=%v)", next.Format("2006-01-02 15:04"), s.cfg.CheckinHours)
+		cfg := s.config()
+		if !cfg.Enabled || !cfg.CreditsAutoClaim {
+			if !s.sleepCtx(ctx, time.Minute) {
+				return
+			}
+			continue
+		}
+		next := nextFire(time.Now(), cfg.CheckinHours)
+		log.Printf("next credit checkin at %s (hours=%v)", next.Format("2006-01-02 15:04"), cfg.CheckinHours)
 		if !s.wait(ctx, next) {
 			return
 		}
@@ -94,15 +104,16 @@ func (s *Scheduler) runCheckinLoop(ctx context.Context) {
 // 定时、启动补领与手动「全员签到」都走这里；单账号领取由 pool 串行化，
 // 已了结的账号在池内直接短路，不会重复请求上游。
 func (s *Scheduler) RunCheckinNow(ctx context.Context) {
-	for _, acct := range s.cfg.Pool.Accounts() {
+	p := s.config().Pool
+	for _, acct := range p.Accounts() {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		if !s.cfg.Pool.Enabled(acct.Name) {
+		if !p.Enabled(acct.Name) {
 			continue
 		}
 		claimCtx, cancel := context.WithTimeout(ctx, time.Minute)
-		result, err := s.cfg.Pool.Checkin(claimCtx, acct.Name)
+		result, err := p.Checkin(claimCtx, acct.Name)
 		cancel()
 		if err != nil {
 			log.Printf("credit checkin failed account=%s err=%v", acct.Name, err)

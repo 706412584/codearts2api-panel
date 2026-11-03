@@ -83,3 +83,53 @@ func TestRefreshSkewControlsThreshold(t *testing.T) {
 		t.Fatalf("剩余 2h、skew=1h 不应触发刷新: %v", err)
 	}
 }
+
+// SetMaxConcurrentAll 热更新并发上限：已加载账号与新加入账号都按新值，非正值忽略。
+func TestSetMaxConcurrentAllAppliesToExistingAndNewAccounts(t *testing.T) {
+	p, err := New(nil, Config{MaxConcurrent: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddAccount(auth.New("u1", "n1", "d1", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	p.SetMaxConcurrentAll(2)
+	for _, row := range p.List() {
+		if row["max_concurrent"] != 2 {
+			t.Fatalf("existing account not updated: %+v", row)
+		}
+	}
+	p.AddAccount(auth.New("u2", "n2", "d2", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	for _, row := range p.List() {
+		if row["max_concurrent"] != 2 {
+			t.Fatalf("account added after hot update = %+v", row)
+		}
+	}
+	p.SetMaxConcurrentAll(0) // 非正值不生效，避免把上限清零
+	for _, row := range p.List() {
+		if row["max_concurrent"] != 2 {
+			t.Fatalf("zero must be ignored: %+v", row)
+		}
+	}
+}
+
+// SetKeepaliveWindow 热更新保活窗口，NeedKeepalive 立即按新值判定。
+func TestSetKeepaliveWindowHotUpdate(t *testing.T) {
+	p, err := New(nil, Config{KeepaliveWindow: time.Hour}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.AddAccount(auth.New("u1", "n1", "d1", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
+	if p.NeedKeepalive("u1") {
+		t.Fatal("fresh account must not need keepalive")
+	}
+	p.PingKeepalive("u1")
+	p.SetKeepaliveWindow(time.Nanosecond)
+	// Windows 单调时钟粒度粗：紧接着调用 time.Since 会拿到 0，0 > 1ns 为假。
+	// 睡一小会让「Ping 之后已过窗口」这个前提成立，测试才确定性地测到热更新。
+	time.Sleep(time.Millisecond)
+	if !p.NeedKeepalive("u1") {
+		t.Fatal("shrunken window must trigger keepalive")
+	}
+	if p.keepaliveWindow() != time.Nanosecond {
+		t.Fatalf("window not stored: %s", p.keepaliveWindow())
+	}
+}

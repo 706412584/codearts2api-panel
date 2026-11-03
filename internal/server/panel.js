@@ -7,7 +7,7 @@
     accounts: ['账号池', '管理凭据、查看账户状态与额度。'],
     models: ['模型目录', '查看模型通道与能力，复制 ID 接入客户端。'],
     usage: ['请求用量', '当前进程的请求指标与近期用量。'],
-    config: ['服务配置', '管理网关配置，保存后重启服务生效。'],
+    config: ['服务配置', '管理网关配置，保存即热生效；装配期字段需重启。'],
     logs: ['运行日志', '检查最近请求、错误与服务运行状态。']
   };
   const readStorage = (storage, name) => { try { return storage.getItem(name) || ''; } catch { return ''; } };
@@ -15,6 +15,7 @@
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
   let authenticated = false, authEpoch = 0, refreshID = 0;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
+  let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
   let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
   let theme = readStorage(localStorage, THEME_STORAGE) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
@@ -190,14 +191,13 @@
       // 模型 ID 列的原生 tooltip：模型描述，有 notice 时追加一行。
       const tip = [m.model_desc, m.notice].filter(Boolean).join('\n');
       const title = tip ? ' title="' + esc(tip).replace(/\n/g, '&#10;') + '"' : '';
-      // 徽标行：上游标签（紫）、被隐藏的模型（橘）、图片能力（绿=支持 / 橘=纯文本）。
-      // 图片能力三态都显示：上游明确声明 false 时标「纯文本」，避免用户拿它发图
-      // 却只拿到 502；上游未声明该字段时不打标，保留「未知」。
+      // 徽标行：上游标签（紫）、被隐藏的模型（橘）、输入模态（绿＝视觉理解 / 灰＝纯文本）。
+      // 上游只在支持图片时才回 supports_images，因此「不是 true」就是纯文本；
+      // 这样每个模型都能一眼看出能不能贴图，不必点开。
       const badges = [
         m.model_tag ? '<span class="pill tag">' + esc(m.model_tag) + '</span>' : '',
-        m.display_enabled === false ? '<span class="pill warn">隐藏模型</span>' : '',
-        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '',
-        m.supports_images === false ? '<span class="pill warn">纯文本</span>' : ''
+        m.display_enabled === false ? '<span class="pill warn">辅助模型</span>' : '',
+        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>'
       ].filter(Boolean).join('');
       const badgeRow = badges ? '<div class="model-badges">' + badges + '</div>' : '';
       return '<tr><td class="mono"' + title + '>' + esc(m.id) + name + badgeRow + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
@@ -210,21 +210,54 @@
     try { await navigator.clipboard.writeText(button.dataset.copyModel); toast('模型 ID 已复制'); } catch { toast('浏览器无法访问剪贴板，请选中模型 ID 复制。', true); }
   };
   function eventOK(event) { return event.ok === true || (event.ok === undefined && event.status >= 200 && event.status < 300 && event.outcome !== 'stream_error'); }
+  // 失败原因分类：先认具体原因，最后才落到「账号池没有可用账号」；全对不上就是「异常」。
+  // 只读归档里的 error 原文，不额外请求后端，历史记录也能跟着分类。
+  // 排队/限流必须排在「重试耗尽」之前：耗尽文案里嵌着最后一次上游错误（常是 TM.00001041），
+  // 先认具体原因，才不会把「上游并发已满」笼统地说成「重试耗尽」。
+  function failureKind(row) {
+    if (eventOK(row)) return '';
+    const text = String(row.error || '').toLowerCase();
+    if (String(row.outcome || '').toLowerCase() === 'interrupted' ||
+        /context canceled|context cancelled|client disconnected|client canceled|client cancelled/.test(text)) return 'cancel';
+    if (/not multimodal|inferhub\.001001020/.test(text)) return 'capability';
+    if (/not registered|not in the model catalog|model .*not available|not available on any configured account/.test(text)) return 'missing';
+    if (/tm\.00001041|81111\.429|tpm limit|concurren|并发|(?:code|http)=429/.test(text)) return 'queue_limit';
+    // 只有真打过上游（attempts ≥ 1）才算「重试耗尽」；0 次说明候选账号全卡在校验/凭据阶段，
+    // 那是账号不可用，不是重试预算用完。
+    if (/upstream attempts exhausted after [1-9]\d* attempt/.test(text)) return 'retry_exhausted';
+    if (/all accounts unavailable|no healthy account|no available account|no accounts configured|upstream attempts exhausted after 0 attempt/.test(text)) return 'no_account';
+    return 'abnormal';
+  }
+  const FAILURE_BADGES = {
+    cancel: ['客户端取消', 'warn'],
+    missing: ['模型不存在', 'warn'],
+    no_account: ['无可用账号', 'warn'],
+    capability: ['模型能力不符', 'warn'],
+    queue_limit: ['上游排队/限流', 'warn'],
+    retry_exhausted: ['重试耗尽', 'warn'],
+    abnormal: ['异常', 'bad'],
+  };
+  function failureBadge(row) {
+    const kind = failureKind(row);
+    if (!kind) return '';
+    const [label, tone] = FAILURE_BADGES[kind];
+    return '<span class="pill ' + tone + '">' + label + '</span>';
+  }
+  // 异常筛选只留没归进已知失败分支的请求；成功行没有失败原因，不会被选中。
+  function matchesOutcomeFilter(row, filter) {
+    if (filter === 'abnormal') return failureKind(row) === 'abnormal';
+    return eventOK(row) === (filter === 'ok');
+  }
   function tokenTotal(event) {
     if (event.total_tokens !== undefined && event.total_tokens !== null) return Number(event.total_tokens) || 0;
     return (Number(event.prompt_tokens) || 0) + (Number(event.completion_tokens) || 0);
   }
   // 进程指标随重启清零，归档（data/requests）才是跨重启的账本：两者合并去重后展示，
   // 归档里还没落盘的新请求也照样出现在列表里。没有归档时才退回纯进程数据。
-  function usageTotals(recent) {
-    let succeeded = 0, duration = 0;
-    for (const row of recent) { succeeded += Number(eventOK(row)); duration += Number(row.duration_ms) || 0; }
-    return { completed: recent.length, succeeded, failed: recent.length - succeeded, avg_duration_ms: recent.length ? duration / recent.length : 0 };
-  }
   function usageView(data) {
     const live = Array.isArray(data.recent) ? data.recent : [];
     const archived = data.history && Array.isArray(data.history.recent) ? data.history.recent : [];
-    if (!archived.length) return { fromArchive: false, recent: live, totals: data };
+    if (!archived.length) return { fromArchive: false, recent: live };
     const seen = new Set(), merged = [];
     for (const row of [...live, ...archived]) {
       const key = row.request_id || [row.time, row.model, row.status, row.duration_ms].join('|');
@@ -232,29 +265,103 @@
       seen.add(key); merged.push(row);
     }
     merged.sort((a, b) => new Date(b.time) - new Date(a.time));
-    return { fromArchive: true, recent: merged, totals: usageTotals(merged) };
+    return { fromArchive: true, recent: merged };
   }
-  function renderUsage(data) {
-    const view = usageView(data), recent = view.recent, totals = view.totals;
-    $('usageCompleted').textContent = number(totals.completed);
-    $('usageSuccess').textContent = totals.completed > 0 ? (Number(totals.succeeded || 0) / totals.completed * 100).toFixed(1) + '%' : '—';
-    $('usageOutcomes').textContent = '成功 ' + number(totals.succeeded) + ' · 失败 ' + number(totals.failed);
-    $('usageDuration').textContent = duration(totals.avg_duration_ms);
-    $('usageTokens').textContent = recent.length ? number(recent.reduce((sum, row) => sum + tokenTotal(row), 0)) : '—';
-    $('usageCompletedNote').textContent = view.fromArchive ? '本地归档 data/requests（含重启前的记录）' : '当前服务进程累计';
-    $('usageChartNote').textContent = view.fromArchive
-      ? '本地归档 data/requests 最近 ' + recent.length + ' 条记录按小时聚合，新请求落盘后自动计入。'
-      : '基于最近 ' + recent.length + ' 条记录，按小时聚合；进程重启后指标重新累计。';
-    const grouped = new Map();
-    recent.forEach(row => { const id = row.model || '未知模型'; const g = grouped.get(id) || { requests: 0, succeeded: 0, tokens: 0, duration: 0 }; g.requests++; g.succeeded += Number(eventOK(row)); g.tokens += tokenTotal(row); g.duration += Number(row.duration_ms) || 0; grouped.set(id, g); });
-    $('usageModelsBody').innerHTML = [...grouped].sort((a, b) => b[1].tokens - a[1].tokens).map(([id, g]) => '<tr><td class="mono">' + esc(id) + '</td><td>' + number(g.requests) + '</td><td>' + number(g.succeeded) + '</td><td>' + number(g.tokens) + '</td><td>' + duration(g.duration / g.requests) + '</td></tr>').join('') || emptyRow(5, '暂无请求。通过 /v1/chat/completions 发起对话后可查看用量。');
-    renderChart(recent);
+  // —— 请求用量 ——
+  // 数据由服务端按窗口聚合（/admin/api/usage?window=1&from&to）：30 天的归档可能几十万条，
+  // 逐条拉回浏览器既慢又没人看；这里只负责选窗口、发查询、渲染聚合结果。
+  const USAGE_RANGES = { today: '今天', '24h': '近 24 小时', '3d': '近 3 天', '7d': '近 7 天', '30d': '近 30 天', custom: '自定义' };
+  const USAGE_HOURS = { '24h': 24, '3d': 72, '7d': 168, '30d': 720 };
+  let usageRange = '30d', usageCustom = { from: '', to: '' };
+  function usageWindow() {
+    const now = new Date();
+    if (usageRange === 'custom') {
+      const parse = value => { const at = value ? new Date(value) : null; return at && !Number.isNaN(at.getTime()) ? at : null; };
+      // 两端都留空＝不设界（等同「全部」）；只填一端就只卡那一端。
+      return { from: parse(usageCustom.from), to: parse(usageCustom.to), label: USAGE_RANGES.custom };
+    }
+    if (usageRange === 'today') {
+      const start = new Date(now); start.setHours(0, 0, 0, 0);
+      return { from: start, to: now, label: USAGE_RANGES.today };
+    }
+    const hours = USAGE_HOURS[usageRange] || USAGE_HOURS['30d'];
+    return { from: new Date(now.getTime() - hours * 3600e3), to: now, label: USAGE_RANGES[usageRange] || USAGE_RANGES['30d'] };
   }
-  function renderChart(recent) {
-    const hours = new Map();
-    recent.forEach(row => { const t = new Date(row.time || row.ts).getTime(); if (Number.isFinite(t)) { const h = Math.floor(t / 3600000) * 3600000; hours.set(h, (hours.get(h) || 0) + 1); } });
-    const points = [...hours].sort((a, b) => a[0] - b[0]);
-    if (!points.length) { $('usageChart').textContent = '暂无请求数据。完成一次模型调用后刷新此页。'; return; }
+  // datetime-local 只认本地时间串，toISOString 是 UTC，会差出时区那几个小时。
+  function localInputValue(date) {
+    const pad = value => String(value).padStart(2, '0');
+    return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + 'T' + pad(date.getHours()) + ':' + pad(date.getMinutes());
+  }
+  // 窗口交给服务端算：from/to 用绝对时刻（RFC3339），两边不用各自解释一遍时间。
+  function usageQuery() {
+    const win = usageWindow(), parts = ['window=1'];
+    if (win.from) parts.push('from=' + encodeURIComponent(win.from.toISOString()));
+    if (win.to) parts.push('to=' + encodeURIComponent(win.to.toISOString()));
+    return parts.join('&');
+  }
+  function renderUsage(stats) {
+    const s = stats || {}, win = usageWindow(), label = win.label;
+    // 控件始终跟着状态走：刷新、切页、登出后再回来，下拉框不会和实际生效的范围对不上。
+    $('usageRange').value = usageRange;
+    $('usageCustom').hidden = usageRange !== 'custom';
+    const completed = Number(s.completed) || 0;
+    const hit = Number(s.cache_hit_tokens) || 0, miss = Number(s.cache_miss_tokens) || 0;
+    const cacheSamples = Number(s.cache_samples) || 0, tokenSamples = Number(s.token_samples) || 0;
+    $('usageCompleted').textContent = number(completed);
+    $('usageSuccess').textContent = completed > 0 ? (Number(s.success_rate) || 0).toFixed(1) + '%' : '—';
+    $('usageOutcomes').textContent = '成功 ' + number(s.succeeded || 0) + ' · 失败 ' + number(s.failed || 0);
+    $('usageDuration').textContent = completed > 0 ? duration(s.avg_duration_ms) : '—';
+    $('usageTTFT').textContent = Number(s.ttft_samples) > 0 ? duration(s.ttft_ms) : '—';
+    $('usageCacheHit').textContent = cacheSamples > 0 && hit + miss > 0 ? (hit / (hit + miss) * 100).toFixed(1) + '%' : '—';
+    $('usageCacheNote').textContent = cacheSamples > 0 ? '命中 ' + number(hit) + ' · 未命中 ' + number(miss) : '上游未上报缓存用量';
+    $('usagePromptTokens').textContent = tokenSamples > 0 ? number(s.prompt_tokens) : '—';
+    $('usageCompletionTokens').textContent = tokenSamples > 0 ? number(s.completion_tokens) : '—';
+    $('usageTokens').textContent = tokenSamples > 0 ? number(s.total_tokens) : '—';
+    $('usageCompletedNote').textContent = label + ' · ' + number(completed) + ' 条请求' + (s.archive ? '（含本地归档）' : '');
+    $('usageChartNote').textContent = label + ' · ' + (Array.isArray(s.hours) ? s.hours.length : 0) + ' 个有请求的小时' + (s.archive ? '；含本地归档 data/requests' : '') + '。';
+    lastUsageStats = s;
+    renderSummary(s);
+    renderChart(Array.isArray(s.hours) ? s.hours : [], label);
+  }
+  // 汇总表两种口径：同一份窗口聚合里同时有 models 和 accounts，切换不必重新查询。
+  // TPS 由服务端按「输出 token ÷ (耗时 - 首字时间)」加权算好，前端只负责显示。
+  let summaryMode = 'model', lastUsageStats = {};
+  function cacheRate(hit, miss) { return hit + miss > 0 ? (hit / (hit + miss) * 100).toFixed(1) + '%' : '—'; }
+  function renderSummary(stats) {
+    const s = stats || {}, byAccount = summaryMode === 'account';
+    const head = byAccount
+      ? ['账号', '请求', '成功', '输入', '缓存命中率', '输出', '总Token']
+      : ['模型', '请求', '成功', '输入', '缓存命中率', '输出', '总Token', '平均TTFT', '输出TPS'];
+    const rows = (byAccount ? s.accounts : s.models) || [];
+    $('summaryMode').value = summaryMode;
+    $('usageSummaryTitle').textContent = byAccount ? '按账号汇总' : '按模型汇总';
+    $('usageSummaryNote').textContent = usageWindow().label + ' · ' + number(rows.length) + (byAccount ? ' 个账号' : ' 个模型');
+    $('usageSummaryHead').innerHTML = '<tr>' + head.map(text => '<th>' + esc(text) + '</th>').join('') + '</tr>';
+    $('usageModelsBody').innerHTML = rows.map(row => {
+      const cells = [
+        esc(byAccount ? row.account || '未知账号' : row.model || '未知模型'),
+        number(row.requests),
+        number(row.succeeded),
+        number(row.prompt_tokens),
+        cacheRate(Number(row.cache_hit_tokens) || 0, Number(row.cache_miss_tokens) || 0),
+        number(row.completion_tokens),
+        number(row.total_tokens),
+      ];
+      // 平均 TTFT 与输出 TPS 只对模型口径有意义：账号维度回答的是「谁在用、用了多少」。
+      if (!byAccount) {
+        cells.push(Number(row.ttft_samples) > 0 ? duration(row.ttft_ms) : '—');
+        cells.push(Number(row.tps) > 0 ? Number(row.tps).toFixed(1) : '—');
+      }
+      return '<tr>' + cells.map((cell, index) => index === 0 ? '<td class="mono">' + cell + '</td>' : '<td>' + cell + '</td>').join('') + '</tr>';
+    }).join('') || emptyRow(head.length, '该时间段内没有请求。换个范围或点「查询」再试。');
+  }
+  $('summaryMode').onchange = () => {
+    summaryMode = $('summaryMode').value || 'model';
+    renderSummary(lastUsageStats);
+  };
+  function renderChart(hours, rangeLabel = '') {
+    const points = hours.map(hour => [Number(hour.t), Number(hour.count) || 0]).filter(point => Number.isFinite(point[0])).sort((a, b) => a[0] - b[0]);
+    if (!points.length) { $('usageChart').textContent = (rangeLabel ? rangeLabel + '：' : '') + '没有请求数据。'; return; }
     const W = 1000, H = 220, left = 38, top = 12, bottom = 36, usableH = H - top - bottom;
     const max = Math.max(4, Math.ceil(Math.max(...points.map(p => p[1])) / 4) * 4);
     const slot = (W - left - 12) / points.length, width = Math.min(64, slot * .62);
@@ -263,17 +370,42 @@
     points.forEach(([t, count], i) => { const x = left + slot * (i + .5), height = count / max * usableH, label = new Date(t).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', hour12: false }); svg += '<rect class="chart-bar" x="' + (x - width / 2) + '" y="' + (top + usableH - height) + '" width="' + width + '" height="' + height + '" rx="3"><title>' + esc(label) + '：' + count + ' 次请求</title></rect>'; if (i % Math.max(1, Math.ceil(points.length / 8)) === 0) svg += '<text x="' + x + '" y="207" text-anchor="middle">' + esc(label) + '</text>'; });
     $('usageChart').innerHTML = svg + '</svg>';
   }
+  // 预设范围选中即查；自定义要点「查询」才查，免得两个框还没填完就先扫一遍归档。
+  // 切到自定义时先拿「近 24 小时」垫底，用户看到的是有值的输入框而不是两个空框。
+  $('usageRange').onchange = () => {
+    usageRange = $('usageRange').value || '30d';
+    if (usageRange === 'custom') {
+      const now = new Date();
+      if (!$('usageFrom').value) $('usageFrom').value = localInputValue(new Date(now.getTime() - 24 * 3600e3));
+      if (!$('usageTo').value) $('usageTo').value = localInputValue(now);
+      usageCustom = { from: $('usageFrom').value, to: $('usageTo').value };
+    }
+    refresh();
+  };
+  $('usageQuery').onclick = () => {
+    usageCustom = { from: $('usageFrom').value, to: $('usageTo').value };
+    refresh();
+  };
   function renderRequestLogs(data) {
     const view = usageView(data);
     requestRows = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
     requestRowsFromArchive = view.fromArchive;
+    requestAttemptErrors = (data && data.attempt_errors) || {};
     paintRequestLogs();
+  }
+  // 尝试次数：重试过（>1）才把最后一次上游错误挂到单元格的原生 tooltip 上；
+  // 没有错误就不给 title，鼠标移上去不会弹出空提示。
+  function attemptsCell(row) {
+    const attempts = Number(row.attempts);
+    const shown = Number.isFinite(attempts) && attempts > 0 ? String(attempts) : '—';
+    const failure = attempts > 1 ? requestAttemptErrors[row.request_id] : '';
+    return '<td class="number"' + (failure ? ' title="' + esc(failure) + '"' : '') + '>' + esc(shown) + '</td>';
   }
   // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
   function paintRequestLogs() {
     const filter = $('requestOutcome').value;
-    const rows = filter ? requestRows.filter(row => eventOK(row) === (filter === 'ok')) : requestRows;
-    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(6, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
+    const rows = filter ? requestRows.filter(row => matchesOutcomeFilter(row, filter)) : requestRows;
+    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="request-result"><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + failureBadge(row) + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(Number(row.ttfb_ms) > 0 ? duration(row.ttfb_ms) : '—') + (Number(row.attempts) > 1 && Number(row.queue_ms) > 0 ? '<small class="request-queue">含排队 ' + esc(duration(row.queue_ms).replace(' ', '')) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(row.cache_hit_tokens || 0)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(9, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
   }
   function renderRuntimeLogs() {
     const box = $('runtimeLogs');
@@ -323,6 +455,7 @@
     ['cfgRefreshSkew', 'watch.refresh_skew_minutes', 'int'],
     ['cfgKeepaliveInterval', 'watch.keepalive_interval_minutes', 'int'],
     ['cfgCheckinHours', 'checkin_hours', 'hours'],
+    ['cfgRequestLogRetentionDays', 'request_log_retention_days', 'int'],
   ];
   const configPathGet = (source, path) => path.split('.').reduce((value, key) => (value === null || value === undefined ? undefined : value[key]), source);
   function configPathSet(target, path, value) {
@@ -411,19 +544,25 @@
       try { config = readConfigForm(loadedConfig); }
       catch (error) { toast('表单有无效值：' + error.message, true); return; }
     }
+    const newAdminKey = $('newAdminKey').value.trim();
     config.api_key = $('newAPIKey').value || config.api_key || '';
-    config.admin_key = $('newAdminKey').value || config.admin_key || '';
+    config.admin_key = newAdminKey || config.admin_key || '';
     $('newAPIKey').value = ''; $('newAdminKey').value = '';
     $('saveConfigButton').disabled = true;
     try {
       const data = await api('config', { method: 'PUT', body: JSON.stringify(config) });
       if (data.ok === false) throw new Error(data.message || '保存失败');
+      // 热生效后旧密钥立即失效：本次会话改用新管理密钥，避免下一次轮询被 401。
+      if (newAdminKey) { adminKey = newAdminKey; writeStorage(sessionStorage, KEY_STORAGE, adminKey); }
       loadedConfig = { ...(data.config || config), api_key: '', admin_key: '' };
       $('configEditor').value = configForEditor(loadedConfig);
       fillConfigForm(loadedConfig);
       markConfigClean();
-      $('configNotice').textContent = '配置已保存，重启服务后生效。若修改管理密钥，请在重启后使用新密钥连接。';
-      toast('配置已保存，请重启服务以应用修改。');
+      const restart = Array.isArray(data.restart_required) ? data.restart_required.filter(Boolean) : [];
+      $('configNotice').textContent = restart.length
+        ? '配置已保存并热生效；标有「需重启」的字段需重启服务后生效。'
+        : '配置已保存并立即生效。';
+      toast(restart.length ? '配置已保存并热生效，标有「需重启」的字段待重启服务后生效' : '配置已保存并立即生效');
     } catch (error) { toast(error.message, true); }
     finally { $('saveConfigButton').disabled = false; }
   };
@@ -435,7 +574,7 @@
     try {
       if (page === 'accounts') renderOverview(await api('overview'));
       else if (page === 'models') { const data = await api('models' + (forceModels ? '?refresh=1' : '')); models = data.data || []; renderModels(); if (forceModels) toast('模型目录已重新获取'); }
-      else if (page === 'usage') renderUsage(await api('usage'));
+      else if (page === 'usage') renderUsage(await api('usage?' + usageQuery()));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') await loadLogs();
       if (id === refreshID) $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -457,7 +596,7 @@
     authEpoch++; refreshID++; adminKey = ''; authenticated = false; writeStorage(sessionStorage, KEY_STORAGE, ''); stopOAuth();
     accounts = []; models = []; runtimeLogs = []; serverStartedAt = 0; $('uptime').textContent = '—';
     $('configEditor').value = ''; $('configEditor').dataset.dirty = 'false'; $('newAPIKey').value = ''; $('newAdminKey').value = '';
-    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
+    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
     renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({});
     $('pageLoading').hidden = true; $('pageError').hidden = true; $('refreshButton').disabled = false; showLogin();
   };
