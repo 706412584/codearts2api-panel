@@ -628,6 +628,12 @@ func embeddedSSEError(data string) *ApiError {
 	case strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid"):
 		// 请求参数无效（实测：tool_choice 对象形态触发）：客户端问题，不是账号故障。
 		status = http.StatusBadRequest
+	case strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "inferhub.001001046"):
+		// 请求内容与模型能力不匹配（带图打到纯文本模型 / 图片格式错）：客户端问题，不是账号故障。
+		status = http.StatusBadRequest
+	case strings.Contains(low, "modelarts.81029") || strings.Contains(low, "media conversion failed"):
+		// 图片过大导致媒体转换失败（上游常包成 502）：客户端问题，不是账号故障。
+		status = http.StatusBadRequest
 	}
 	return &ApiError{Code: status, Status: status, Message: truncateStr(combined, 300), Path: EpChatV2}
 }

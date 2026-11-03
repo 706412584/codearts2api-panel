@@ -937,6 +937,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if serr != nil {
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
+			if clientGone(r) {
+				// 调用方自己断开了：上游必然报 context canceled / broken pipe。
+				log.Printf("client disconnected before upstream reply account=%s: %v", acct.Name, serr)
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			}
 			if isParamInvalidError(serr) {
 				// Client request-param problem: rotating accounts yields the same 400,
 				// and cooling accounts takes down the whole pool for minutes.
@@ -988,7 +994,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				event.Outcome = reqlog.OutcomeStreamError
 				event.Error = werr.Error()
 				log.Printf("chat stream account=%s error: %v", acct.Name, werr)
-				if !isParamInvalidError(werr) {
+				if !clientGone(r) && !isParamInvalidError(werr) {
 					h.noteError(acct.Name)
 				}
 			} else {
@@ -1003,6 +1009,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 		if aerr != nil {
 			lastUpstreamErr = aerr
+			if clientGone(r) {
+				log.Printf("client disconnected during aggregate account=%s: %v", acct.Name, aerr)
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			}
 			if isParamInvalidError(aerr) {
 				writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 					"upstream rejected request params: "+truncateMsg(aerr.Error(), errorTextLimit))
@@ -1264,6 +1275,13 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 	return false
 }
 
+// clientGone 报告「调用方自己走了」（断连/取消）。这类错误必须不记在账号头上：
+// 上游收到的是 context canceled / broken pipe，冷却整池 10 分钟纯属误伤
+// （2026-11-03 线上实测：客户端超时/回压交替把两个账号互相打进冷却）。
+func clientGone(r *http.Request) bool {
+	return r != nil && r.Context().Err() != nil
+}
+
 // isParamInvalidError 判断是否为上游「请求参数无效」类错误（InferHub.001001005）。
 // 这类错误是客户端请求形状问题：换账号结果相同，绝不能冷却账号（曾因此打停整池）。
 func isParamInvalidError(err error) bool {
@@ -1282,6 +1300,16 @@ func isParamInvalidError(err error) bool {
 		return false
 	}
 	low := strings.ToLower(message)
+	// InferHub.001001020「请求模型非多模态」= 请求里带了 image_url，但落到的是纯文本模型；
+	// InferHub.001001046 = 多模态内容格式不正确。两者都是「客户端请求内容」问题：换账号结果一样，
+	// 而上游把它们包成 HTTP 502，落进 handleUpstreamError 的 Status>=500 分支会把整个账号冷却
+	// 10 分钟（实测一次带图请求就把整池打停）。
+	// InferHub.ModelArts.81029 = 「Media conversion failed: downstream returned 413」，图片太大，
+	// 同样是请求内容问题（上游也包成 502）。
+	if strings.Contains(low, "inferhub.001001020") || strings.Contains(low, "inferhub.001001046") ||
+		strings.Contains(low, "modelarts.81029") || strings.Contains(low, "media conversion failed") {
+		return true
+	}
 	return strings.Contains(low, "inferhub.001001005") || strings.Contains(low, "request param is invalid")
 }
 
