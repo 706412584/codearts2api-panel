@@ -38,6 +38,9 @@ type Snapshot struct {
 	MaxConcurrent            int
 	KeepaliveWindow          string
 
+	// ModelRefreshMinutes 模型目录后台续期巡检间隔（分钟）。0 表示未配置，用内置默认。
+	ModelRefreshMinutes int
+
 	// MaxBodyBytes 聊天请求体上限（0 表示用默认值）。
 	MaxBodyBytes int64
 

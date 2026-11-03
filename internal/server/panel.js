@@ -492,6 +492,7 @@
     ['cfgPollMinutes', 'watch.poll_minutes', 'int'],
     ['cfgRefreshSkew', 'watch.refresh_skew_minutes', 'int'],
     ['cfgKeepaliveInterval', 'watch.keepalive_interval_minutes', 'int'],
+    ['cfgModelRefreshMinutes', 'model_refresh_minutes', 'int'],
     ['cfgCheckinHours', 'checkin_hours', 'hours'],
     ['cfgRequestLogRetentionDays', 'request_log_retention_days', 'int'],
   ];
