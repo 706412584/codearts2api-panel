@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -171,6 +172,46 @@ func TestAnthropicModelResolution(t *testing.T) {
 	}
 	if got := h.resolveAnthropicModel(""); got != "glm-5.2" {
 		t.Errorf("空 model 应回落默认，got=%q", got)
+	}
+}
+
+// 非流式请求打到上游时，若客户端没显式要思考档位，不得注入 reasoning_effort——
+// 否则 glm-5.3-flash（拒绝 medium）会被上游 502，Claude Code 里选它必失败。
+func TestAnthropicDoesNotInjectReasoningEffort(t *testing.T) {
+	var got map[string]any
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	t.Cleanup(up.Close)
+	a := auth.New("anth-effort", "user", "domain", "token", "ak", "sk",
+		time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	upstream.SetAccountModels("anth-effort", []upstream.ModelInfo{{ID: "GLM-5.2"}})
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{MaxConcurrent: 2}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, acct := range p.Accounts() {
+		acct.Client = upstream.NewWithChatEndpoint(5*time.Second, up.URL)
+	}
+	h := NewHandler(Config{Pool: p, APIKey: "k", DefaultModel: "glm-5.2", MaxRotate: 1})
+
+	body := `{"model":"claude-sonnet-4-5","max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`
+	if w := anthropicRequest(h, body); w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	if v, ok := got["reasoning_effort"]; ok {
+		t.Errorf("未显式要档位时不得注入 reasoning_effort，实际=%v", v)
+	}
+
+	// 显式给了 thinking 时应当透传档位。
+	got = nil
+	body2 := `{"model":"claude-sonnet-4-5","max_tokens":50,"thinking":{"type":"enabled","budget_tokens":2048},"messages":[{"role":"user","content":"hi"}]}`
+	_ = anthropicRequest(h, body2)
+	if got == nil || got["reasoning_effort"] == nil || got["reasoning_effort"] == "" {
+		t.Errorf("显式 thinking 时应透传档位，实际 reasoning_effort=%v", got["reasoning_effort"])
 	}
 }
 

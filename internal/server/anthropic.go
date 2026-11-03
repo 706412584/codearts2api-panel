@@ -112,6 +112,17 @@ func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 	if areq.Stream {
 		creq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}
+	// apicompat 的转换会**无条件**填 reasoning_effort：客户端没给 output_config.effort
+	// 时默认 "medium"。问题是有些模型（实测 glm-5.3-flash）拒绝 medium —— 上游回
+	// ModelArts.81001「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」，
+	// 于是 Claude Code 里选它必 502，客户端再回退到主模型，表现为"选了 5.3-flash
+	// 却用了 5.3"。OpenAI 路径不带这个字段所以没这问题。
+	//
+	// 这里让 Anthropic 路径与 OpenAI 路径同口径：客户端**显式**要求档位（thinking 或
+	// output_config.effort）才透传，否则清空，交给上游用模型自己的默认思考行为。
+	if areq.Thinking == nil && (areq.OutputConfig == nil || strings.TrimSpace(areq.OutputConfig.Effort) == "") {
+		creq.ReasoningEffort = ""
+	}
 	chatBody, err := json.Marshal(creq)
 	if err != nil {
 		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "marshal request: "+err.Error())
