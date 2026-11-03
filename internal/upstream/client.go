@@ -150,6 +150,18 @@ func NewWithChatEndpoint(timeout time.Duration, endpoint string) *Client {
 	return c
 }
 
+// NewWithBaseURL 构造指向自定义 snap-access 主机的客户端：chat 与模型目录
+// （useragents/detail/builtin）都打到该 base。用于端到端测试整条链路，
+// 尤其是「目录未发现 → 补拉目录」这类跨 chat 与目录发现两部分的路径
+// （NewWithChatEndpoint 只改 chat，覆盖不到目录发现）。
+func NewWithBaseURL(timeout time.Duration, baseURL string) *Client {
+	c := New(timeout)
+	if b := strings.TrimSpace(baseURL); b != "" {
+		c.snapBase = strings.TrimSuffix(b, "/")
+	}
+	return c
+}
+
 // chatEndpoint 返回本次请求要用的 chat-completions 地址。
 func (c *Client) chatEndpoint() string {
 	if c.chatURL != "" {
