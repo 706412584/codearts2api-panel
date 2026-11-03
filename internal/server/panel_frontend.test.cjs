@@ -175,7 +175,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  outcome.value = ''; outcome.onchange();
  assert(ids.get('requestLogsBody').innerHTML.includes('test-model') && ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '全部筛选恢复所有记录');
  assert.equal(requests.length, beforeFilter, '筛选不得触发额外请求');
- assert(html.includes('<option value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
+ assert(html.includes('<option id="requestOutcomeAbnormal" value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
  // 失败原因徽标：四个已知分支黄色，「异常」红色；异常筛选只留没归类的失败。
  const at = Date.now();
  usage.recent.push(
@@ -202,6 +202,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(rowOf('exhausted-model').includes('重试耗尽') && !rowOf('exhausted-model').includes('异常'), '真重试到预算用完才算「重试耗尽」：' + rowOf('exhausted-model'));
  assert(rowOf('token-model').includes('无可用账号'), '0 次尝试（账号校验失败）是账号不可用，不是重试耗尽：' + rowOf('token-model'));
  assert(rowOf('unconfigured-model').includes('无可用账号'), '未配置账号也是无可用账号：' + rowOf('unconfigured-model'));
+ // 下拉选项带条数：描述的是已取回的窗口（进程 100 + 归档 200），不是全量历史。
+ // 12 条 = 既有 3 条（成功 / 失败 / 流式失败）+ 本次 9 条分类样例；成功 1，异常 3（failed-model、live-failure、abnormal-model）。
+ assert.equal(ids.get('requestOutcomeAll').textContent, '全部 (12)', '全部选项要带窗口内的总条数');
+ assert.equal(ids.get('requestOutcomeOk').textContent, '成功 (1)', '成功选项要带成功条数');
+ assert.equal(ids.get('requestOutcomeFail').textContent, '失败 (11)', '失败选项要带失败条数');
+ assert.equal(ids.get('requestOutcomeAbnormal').textContent, '异常 (3)', '异常选项要带未归类失败条数');
  outcome.value = 'abnormal'; outcome.onchange();
  const abnormalOnly = ids.get('requestLogsBody').innerHTML;
  assert(abnormalOnly.includes('abnormal-model'), '异常筛选要保留未归类失败');

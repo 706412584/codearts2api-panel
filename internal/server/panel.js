@@ -401,8 +401,22 @@
     const failure = attempts > 1 ? requestAttemptErrors[row.request_id] : '';
     return '<td class="number"' + (failure ? ' title="' + esc(failure) + '"' : '') + '>' + esc(shown) + '</td>';
   }
+  // 下拉选项带条数：数字只描述已取回的这一批窗口（进程 100 条 + 归档 200 条），不是全量历史。
+  // 「异常」与筛选判定同源（failureKind），不会出现「显示 3 条、点进去 2 条」的对不上。
+  function paintOutcomeCounts() {
+    let ok = 0, abnormal = 0;
+    for (const row of requestRows) {
+      if (eventOK(row)) ok++;
+      else if (failureKind(row) === 'abnormal') abnormal++;
+    }
+    $('requestOutcomeAll').textContent = '全部 (' + number(requestRows.length) + ')';
+    $('requestOutcomeOk').textContent = '成功 (' + number(ok) + ')';
+    $('requestOutcomeFail').textContent = '失败 (' + number(requestRows.length - ok) + ')';
+    $('requestOutcomeAbnormal').textContent = '异常 (' + number(abnormal) + ')';
+  }
   // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
   function paintRequestLogs() {
+    paintOutcomeCounts();
     const filter = $('requestOutcome').value;
     const rows = filter ? requestRows.filter(row => matchesOutcomeFilter(row, filter)) : requestRows;
     $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="request-result"><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + failureBadge(row) + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(Number(row.ttfb_ms) > 0 ? duration(row.ttfb_ms) : '—') + (Number(row.attempts) > 1 && Number(row.queue_ms) > 0 ? '<small class="request-queue">含排队 ' + esc(duration(row.queue_ms).replace(' ', '')) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(row.cache_hit_tokens || 0)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(9, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
