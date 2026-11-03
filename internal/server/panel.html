@@ -43,6 +43,29 @@
         <div class="field-grid"><div><label for="cfgMaxConcurrent">单账号并发上限</label><input id="cfgMaxConcurrent" type="number" min="1" step="1"></div><div><label for="cfgKeepaliveWindow">保活窗口</label><input id="cfgKeepaliveWindow" autocomplete="off" placeholder="10m"></div><div><label for="cfgQueueRetrySeconds">排队重试间隔（秒） <span class="muted">（上游排队/限流后隔多久重试）</span></label><input id="cfgQueueRetrySeconds" type="number" min="0" step="1" placeholder="10"></div><div><label for="cfgQueueMaxAttempts">排队重试次数 <span class="muted">（单账号最多打几次上游）</span></label><input id="cfgQueueMaxAttempts" type="number" min="0" step="1" placeholder="30"></div></div>
         <h3 class="group-title">冷却与上游</h3>
         <div class="field-grid"><div><label for="cfgSoftRate">软限流冷却 <span class="muted">（429 限流时冷却账号）</span></label><input id="cfgSoftRate" autocomplete="off" placeholder="60s"></div><div><label for="cfgErrThreshold">连续错误阈值 <span class="muted">（账号连续错几次才冷却）</span></label><input id="cfgErrThreshold" type="number" min="1" step="1" placeholder="3"></div><div><label for="cfgErrCooldown">错误冷却时长 <span class="muted">（命中阈值后冷却多久）</span></label><input id="cfgErrCooldown" autocomplete="off" placeholder="10m"></div><div><label for="cfgTimeoutSeconds">上游超时（秒） <span class="muted">（需重启）</span></label><input id="cfgTimeoutSeconds" type="number" min="1" step="1"></div></div>
+        <h3 class="group-title">多模态请求</h3>
+        <div class="field-grid"><div><label for="cfgMaxBodyMB">请求体上限（MB） <span class="muted">（凭据导入仍限制为 8MB）</span></label><input id="cfgMaxBodyMB" type="number" min="1" max="512" step="1" placeholder="32"></div></div>
+        <h3 class="group-title">图片压缩</h3>
+        <div class="checks"><label class="check" for="cfgImageShrinkEnabled"><input id="cfgImageShrinkEnabled" type="checkbox">自动压缩内联 PNG / JPEG 图片</label></div>
+        <div class="field-grid">
+          <div><label for="cfgImageShrinkTriggerBodyMB">请求体触发阈值（MB）</label><input id="cfgImageShrinkTriggerBodyMB" type="number" min="1" step="1" placeholder="4"></div>
+          <div><label for="cfgImageShrinkTargetImageMB">单张图片目标（MB）</label><input id="cfgImageShrinkTargetImageMB" type="number" min="1" step="1" placeholder="2"></div>
+          <div><label for="cfgImageShrinkTargetTotalMB">图片合计目标（MB）</label><input id="cfgImageShrinkTargetTotalMB" type="number" min="1" step="1" placeholder="4"></div>
+          <div><label for="cfgImageShrinkMaxDimension">最长边上限（像素）</label><input id="cfgImageShrinkMaxDimension" type="number" min="1" step="1" placeholder="2048"></div>
+          <div><label for="cfgImageShrinkQuality">JPEG 质量 <span class="muted">（1–100）</span></label><input id="cfgImageShrinkQuality" type="number" min="1" max="100" step="1" placeholder="85"></div>
+        </div>
+        <h3 class="group-title">视觉转述</h3>
+        <div class="checks"><label class="check" for="cfgVisionBridgeEnabled"><input id="cfgVisionBridgeEnabled" type="checkbox">为纯文本模型转述内联图片</label></div>
+        <p class="muted">先用视觉模型将图片转为文字，再交给原模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间。</p>
+        <div class="field-grid">
+          <div><label for="cfgVisionBridgeModel">转述模型</label><input id="cfgVisionBridgeModel" autocomplete="off" placeholder="Qwen3-VL-235B"></div>
+          <div><label for="cfgVisionBridgeMaxImages">最多转述图片（张）</label><input id="cfgVisionBridgeMaxImages" type="number" min="1" max="32" step="1" placeholder="8"></div>
+          <div><label for="cfgVisionBridgeMaxChars">单张转述字符上限</label><input id="cfgVisionBridgeMaxChars" type="number" min="1" max="100000" step="1" placeholder="6000"></div>
+          <div><label for="cfgVisionBridgeMaxTokens">单张转述输出 Token 上限</label><input id="cfgVisionBridgeMaxTokens" type="number" min="1" step="1" placeholder="1500"></div>
+          <div><label for="cfgVisionBridgeTimeoutSeconds">单张转述超时（秒）</label><input id="cfgVisionBridgeTimeoutSeconds" type="number" min="1" step="1" placeholder="120"></div>
+          <div><label for="cfgVisionBridgeTotalTimeoutSeconds">全部转述总预算（秒）</label><input id="cfgVisionBridgeTotalTimeoutSeconds" type="number" min="1" step="1" placeholder="90"></div>
+        </div>
+        <label for="cfgVisionBridgePrompt">转述提示词 <span class="muted">（可选，留空使用默认提示词）</span></label><textarea id="cfgVisionBridgePrompt" rows="4" placeholder="概括图片、逐行转写文字并描述关键布局。"></textarea>
         <h3 class="group-title">后台任务</h3>
         <div class="checks"><label class="check" for="cfgWatchEnabled"><input id="cfgWatchEnabled" type="checkbox">后台凭据看护</label><label class="check" for="cfgCreditsAutoClaim"><input id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label></div>
         <div class="field-grid"><div><label for="cfgPollMinutes">轮询间隔（分钟）</label><input id="cfgPollMinutes" type="number" min="1" step="1"></div><div><label for="cfgRefreshSkew">续期窗口（分钟）</label><input id="cfgRefreshSkew" type="number" min="1" step="1"></div><div><label for="cfgKeepaliveInterval">保活间隔（分钟）</label><input id="cfgKeepaliveInterval" type="number" min="1" step="1"></div><div><label for="cfgCheckinHours">签到时点 <span class="muted">（本地小时，逗号分隔；空=默认 9,21）</span></label><input id="cfgCheckinHours" autocomplete="off" placeholder="9, 21"></div></div>

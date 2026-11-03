@@ -275,7 +275,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 
 重试与冷却五项（`cooldown.soft_rate` / `cooldown.err_threshold` / `cooldown.err_cooldown` / `queue_retry_seconds` / `queue_max_attempts`）的非法值——`0`、负数、解析不了的时长——一律按「没配置」处理：启动时按默认值跑，面板保存时直接把默认值写回配置文件，面板显示的也就是运行期真正生效的值。
 
-多模态参数可在 Raw JSON 中编辑，保存后热生效，表单模式会保留这些字段。`max_body_mb`、`image_shrink` 和 `vision_bridge` 中需要归一化的参数也会在保存时回写实际默认值。缩图默认在请求体超过 4MB 或图片超预算时触发，目标为单张 2MB、合计 4MB、最长边 2048 像素、JPEG 质量 85；小图保持原样，WebP/GIF 和远程图片不参与缩图。
+多模态参数可在表单的「多模态请求」「图片压缩」「视觉转述」分组或 Raw JSON 中编辑，保存后热生效。`max_body_mb`、`image_shrink` 和 `vision_bridge` 中需要归一化的参数也会在保存时回写实际默认值。缩图默认在请求体超过 4MB 或图片超预算时触发，目标为单张 2MB、合计 4MB、最长边 2048 像素、JPEG 质量 85；小图保持原样，WebP/GIF 和远程图片不参与缩图。
 
 视觉转述给纯文本模型的是图片的文字描述，精细颜色和布局仍应直接使用视觉模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间；默认最多处理 8 张图，总预算 90 秒。超出图片数量或任一转述失败时保留全部原图，由上游按模型能力判定请求。可用 `vision_bridge.enabled=false` 单独关闭转述，或用 `image_shrink.enabled=false` 关闭缩图。
 

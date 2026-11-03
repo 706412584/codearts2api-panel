@@ -32,9 +32,34 @@ const selector = s => s === '.view' ? all.filter(e => e.classes.has('view')) : /
 const storage = () => { const values = new Map(); return { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }; };
 const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
 const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
+const configFixture = {
+ listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret', max_body_mb: 48,
+ image_shrink: { enabled: true, trigger_body_mb: 6, target_image_mb: 3, target_total_mb: 7, max_dimension: 1600, quality: 78, extension: { preserved: 'image' } },
+ vision_bridge: { enabled: true, model: 'Qwen3-VL-235B', max_images: 6, max_chars: 7000, max_tokens: 1600, timeout_seconds: 110, total_timeout_seconds: 85, prompt: '先概括图片。\n逐行转写文字。', extension: { preserved: 'vision' } },
+ extension: { preserved: true },
+};
+const multimodalControls = [
+ ['cfgMaxBodyMB', 48, 64],
+ ['cfgImageShrinkEnabled', true, false], ['cfgImageShrinkTriggerBodyMB', 6, 5],
+ ['cfgImageShrinkTargetImageMB', 3, 2], ['cfgImageShrinkTargetTotalMB', 7, 4],
+ ['cfgImageShrinkMaxDimension', 1600, 1800], ['cfgImageShrinkQuality', 78, 82],
+ ['cfgVisionBridgeEnabled', true, false], ['cfgVisionBridgeModel', 'Qwen3-VL-235B', 'kimi-k2.6-vl'],
+ ['cfgVisionBridgeMaxImages', 6, 4], ['cfgVisionBridgeMaxChars', 7000, 8000],
+ ['cfgVisionBridgeMaxTokens', 1600, 2000], ['cfgVisionBridgeTimeoutSeconds', 110, 80],
+ ['cfgVisionBridgeTotalTimeoutSeconds', 85, 100], ['cfgVisionBridgePrompt', '先概括图片。\n逐行转写文字。', '请按顺序描述。\n保留表格。'],
+];
+for (const [id, value] of multimodalControls) {
+ assert(ids.has(id), 'multimodal control is missing from panel.html: ' + id);
+ const input = ids.get(id);
+ assert.equal(input.tagName, id === 'cfgVisionBridgePrompt' ? 'textarea' : 'input', 'wrong control element: ' + id);
+ if (typeof value !== 'string') assert(input.attrs.includes('type="' + (typeof value === 'boolean' ? 'checkbox' : 'number') + '"'), 'wrong input type: ' + id);
+ let parent = input.parentElement;
+ while (parent && parent.id !== 'configForm') parent = parent.parentElement;
+ assert(parent, 'multimodal control must be inside the config form: ' + id);
+}
 const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, attempt_errors: { 'req-retried': 'upstream 429: TPM <limit> & retry later' }, recent: [{ request_id: 'req-retried', time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, attempts: 3, total_tokens: 1200, completion_tokens: 200, duration_ms: 500, prompt_tokens: 1000, cache_hit_tokens: 800, cache_miss_tokens: 200, ttfb_ms: 300, queue_ms: 10100 }, { request_id: 'req-first-try', time: new Date().toISOString(), model: 'failed-model', ok: false, outcome: 'http_error', status: 503, attempts: 1, error: 'upstream <failed> & unavailable', duration_ms: 100, ttfb_ms: 900 }] };
 const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, prompt_tokens: 700000, completion_tokens: 400000, total_tokens: 1100000, cache_hit_tokens: 500000, cache_miss_tokens: 200000, cache_samples: 90, ttft_ms: 1800, ttft_samples: 120, tps: 42.5 }, { model: 'plain-model', requests: 4, succeeded: 4, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 0, cache_miss_tokens: 0, cache_samples: 0, ttft_ms: 0, ttft_samples: 0, tps: 0 }], accounts: [{ account: 'alice(uid00001)', requests: 100, succeeded: 99, prompt_tokens: 600000, completion_tokens: 300000, total_tokens: 900000, cache_hit_tokens: 400000, cache_miss_tokens: 200000, cache_samples: 80 }, { account: 'bob(uid00002)', requests: 32, succeeded: 31, prompt_tokens: 100100, completion_tokens: 100050, total_tokens: 200150, cache_hit_tokens: 100000, cache_miss_tokens: 0, cache_samples: 10 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
-const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
+const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: configFixture, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  vm.runInContext(script, context);
@@ -233,19 +258,33 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(ids.get('configForm').hidden, false, 'config page must default to the form');
  assert.equal(ids.get('configRaw').hidden, true);
  assert.equal(ids.get('cfgListen').value, ':7866');
+ for (const [id, value] of multimodalControls) {
+   assert.equal(typeof value === 'boolean' ? ids.get(id).checked : ids.get(id).value, typeof value === 'boolean' ? value : String(value), 'multimodal config did not load: ' + id);
+ }
  const beforeMode = requests.length;
  ids.get('configModeRaw').onclick(); await tick(); await tick();
  assert(requests.length > beforeMode, 'switching mode must re-read the config file');
  assert.equal(ids.get('configForm').hidden, true); assert.equal(ids.get('configRaw').hidden, false);
  assert(ids.get('configEditor').value.includes('"listen": ":7866"'));
- ids.get('configEditor').value = JSON.stringify({ listen: ':9000', custom_keep: true });
+ const rawConfig = { listen: ':9000', custom_keep: true, max_body_mb: 96, image_shrink: { enabled: false, quality: 62, raw_extra: 'keep' }, vision_bridge: { enabled: true, prompt: 'Raw\nprompt', raw_extra: { keep: true } } };
+ ids.get('configEditor').value = JSON.stringify(rawConfig);
  await ids.get('saveConfigButton').onclick();
  const rawSave = JSON.parse(requests.filter(r => r.opts.method === 'PUT').at(-1).opts.body);
  assert.equal(rawSave.listen, ':9000', 'raw mode must save the editor content');
  assert.equal(rawSave.custom_keep, true, 'raw mode must keep unknown fields');
+ assert.equal(rawSave.max_body_mb, 96);
+ assert.deepEqual(rawSave.image_shrink, rawConfig.image_shrink, 'Raw mode must save image config without form overrides');
+ assert.deepEqual(rawSave.vision_bridge, rawConfig.vision_bridge, 'Raw mode must keep vision config and nested extensions');
  ids.get('configModeForm').onclick(); await tick(); await tick();
  assert.equal(ids.get('configForm').hidden, false);
  assert.equal(ids.get('cfgListen').value, ':7866', 'switching back must re-read the file, not the raw edit');
+ for (const [id, value, edited] of multimodalControls) {
+   const input = ids.get(id);
+   assert.equal(typeof value === 'boolean' ? input.checked : input.value, typeof value === 'boolean' ? value : String(value), 'switching back must reload multimodal config: ' + id);
+   if (typeof edited === 'boolean') { input.checked = edited; input.onchange(); }
+   else { input.value = String(edited); input.oninput(); }
+   assert.equal(ids.get('configEditor').dataset.dirty, 'true', 'editing must mark config dirty: ' + id);
+ }
  ids.get('cfgPollMinutes').value = '15';
  ids.get('cfgCheckinHours').value = '8, 20';
  ids.get('cfgRequestLogRetentionDays').value = '14';
@@ -254,8 +293,24 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(formSave.watch.poll_minutes, 15, 'form mode must save the form values');
  assert.deepEqual(formSave.checkin_hours, [8, 20]);
  assert.equal(formSave.listen, ':7866', 'untouched form fields keep the loaded value');
+ assert.equal(formSave.max_body_mb, 64);
+ const savedImageShrink = { enabled: false, trigger_body_mb: 5, target_image_mb: 2, target_total_mb: 4, max_dimension: 1800, quality: 82, extension: { preserved: 'image' } };
+ const savedVisionBridge = { enabled: false, model: 'kimi-k2.6-vl', max_images: 4, max_chars: 8000, max_tokens: 2000, timeout_seconds: 80, total_timeout_seconds: 100, prompt: '请按顺序描述。\n保留表格。', extension: { preserved: 'vision' } };
+ assert.deepEqual(formSave.image_shrink, savedImageShrink, 'form must save every image field and keep nested extensions');
+ assert.deepEqual(formSave.vision_bridge, savedVisionBridge, 'form must save every vision field, multiline prompt and nested extensions');
+ assert.deepEqual(formSave.extension, { preserved: true }, 'form must keep top-level extensions');
+ assert.equal(ids.get('cfgImageShrinkEnabled').checked, false, 'saved image switch must remain off');
+ assert.equal(ids.get('cfgVisionBridgeEnabled').checked, false, 'saved vision switch must remain off');
  assert.equal(ids.get('configEditor').dataset.dirty, 'false', 'saving must clear the dirty flag');
  assert(!ids.get('configEditor').value.includes('server-secret')); assert(!ids.get('configEditor').value.includes('api-secret'));
+ ids.get('cfgImageShrinkEnabled').checked = true; ids.get('cfgImageShrinkEnabled').onchange();
+ ids.get('cfgVisionBridgeEnabled').checked = true; ids.get('cfgVisionBridgeEnabled').onchange();
+ await ids.get('saveConfigButton').onclick();
+ const reenabledSave = JSON.parse(requests.filter(r => r.opts.method === 'PUT').at(-1).opts.body);
+ assert.deepEqual(reenabledSave.image_shrink, { ...savedImageShrink, enabled: true }, 're-enabling image shrink must keep the edited policy');
+ assert.deepEqual(reenabledSave.vision_bridge, { ...savedVisionBridge, enabled: true }, 're-enabling vision bridge must keep the edited policy');
+ assert.equal(ids.get('cfgImageShrinkEnabled').checked, true);
+ assert.equal(ids.get('cfgVisionBridgeEnabled').checked, true);
  ids.get('newAdminKey').value = 'rotated-secret'; ids.get('newAPIKey').value = 'new-api-secret';
  await ids.get('saveConfigButton').onclick();
  assert.equal(ids.get('newAdminKey').value, ''); assert.equal(ids.get('newAPIKey').value, ''); assert(!ids.get('configEditor').value.includes('rotated-secret')); assert(ids.get('configNotice').textContent.includes('需重启'), '保存后横幅要说明有字段需重启: ' + ids.get('configNotice').textContent);
