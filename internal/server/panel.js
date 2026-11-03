@@ -210,6 +210,36 @@
     try { await navigator.clipboard.writeText(button.dataset.copyModel); toast('模型 ID 已复制'); } catch { toast('浏览器无法访问剪贴板，请选中模型 ID 复制。', true); }
   };
   function eventOK(event) { return event.ok === true || (event.ok === undefined && event.status >= 200 && event.status < 300 && event.outcome !== 'stream_error'); }
+  // 失败原因分类：先认具体原因，最后才落到「账号池没有可用账号」；全对不上就是「异常」。
+  // 只读归档里的 error 原文，不额外请求后端，历史记录也能跟着分类。
+  function failureKind(row) {
+    if (eventOK(row)) return '';
+    const text = String(row.error || '').toLowerCase();
+    if (String(row.outcome || '').toLowerCase() === 'interrupted' ||
+        /context canceled|context cancelled|client disconnected|client canceled|client cancelled/.test(text)) return 'cancel';
+    if (/not multimodal|inferhub\.001001020/.test(text)) return 'capability';
+    if (/not registered|not in the model catalog|model .*not available|not available on any configured account/.test(text)) return 'missing';
+    if (/all accounts unavailable|no healthy account|no available account/.test(text)) return 'no_account';
+    return 'abnormal';
+  }
+  const FAILURE_BADGES = {
+    cancel: ['客户端取消', 'warn'],
+    missing: ['模型不存在', 'warn'],
+    no_account: ['无可用账号', 'warn'],
+    capability: ['模型能力不符', 'warn'],
+    abnormal: ['异常', 'bad'],
+  };
+  function failureBadge(row) {
+    const kind = failureKind(row);
+    if (!kind) return '';
+    const [label, tone] = FAILURE_BADGES[kind];
+    return '<span class="pill ' + tone + '">' + label + '</span>';
+  }
+  // 异常筛选只留没归进四个已知失败分支的请求；成功行没有失败原因，不会被选中。
+  function matchesOutcomeFilter(row, filter) {
+    if (filter === 'abnormal') return failureKind(row) === 'abnormal';
+    return eventOK(row) === (filter === 'ok');
+  }
   function tokenTotal(event) {
     if (event.total_tokens !== undefined && event.total_tokens !== null) return Number(event.total_tokens) || 0;
     return (Number(event.prompt_tokens) || 0) + (Number(event.completion_tokens) || 0);
@@ -366,8 +396,8 @@
   // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
   function paintRequestLogs() {
     const filter = $('requestOutcome').value;
-    const rows = filter ? requestRows.filter(row => eventOK(row) === (filter === 'ok')) : requestRows;
-    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(Number(row.ttfb_ms) > 0 ? duration(row.ttfb_ms) : '—') + (Number(row.attempts) > 1 && Number(row.queue_ms) > 0 ? '<small class="request-queue">含排队 ' + esc(duration(row.queue_ms).replace(' ', '')) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(row.cache_hit_tokens || 0)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(9, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
+    const rows = filter ? requestRows.filter(row => matchesOutcomeFilter(row, filter)) : requestRows;
+    $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="request-result"><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + failureBadge(row) + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(Number(row.ttfb_ms) > 0 ? duration(row.ttfb_ms) : '—') + (Number(row.attempts) > 1 && Number(row.queue_ms) > 0 ? '<small class="request-queue">含排队 ' + esc(duration(row.queue_ms).replace(' ', '')) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(row.cache_hit_tokens || 0)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(9, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
   }
   function renderRuntimeLogs() {
     const box = $('runtimeLogs');

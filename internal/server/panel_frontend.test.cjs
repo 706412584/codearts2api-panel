@@ -175,6 +175,28 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  outcome.value = ''; outcome.onchange();
  assert(ids.get('requestLogsBody').innerHTML.includes('test-model') && ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '全部筛选恢复所有记录');
  assert.equal(requests.length, beforeFilter, '筛选不得触发额外请求');
+ assert(html.includes('<option value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
+ // 失败原因徽标：四个已知分支黄色，「异常」红色；异常筛选只留没归类的失败。
+ const at = Date.now();
+ usage.recent.push(
+   { request_id: 'req-cancel', time: new Date(at - 5e3).toISOString(), model: 'cancel-model', ok: false, outcome: 'http_error', status: 503, error: 'Post "https://upstream": context canceled' },
+   { request_id: 'req-missing', time: new Date(at - 4e3).toISOString(), model: 'missing-model', ok: false, outcome: 'http_error', status: 404, error: 'model test1 is not in the model catalog' },
+   { request_id: 'req-no-account', time: new Date(at - 3e3).toISOString(), model: 'no-account-model', ok: false, outcome: 'http_error', status: 503, error: 'all accounts unavailable (disabled/cooldown)' },
+   { request_id: 'req-capability', time: new Date(at - 2e3).toISOString(), model: 'capability-model', ok: false, outcome: 'http_error', status: 400, error: 'upstream rejected request params: InferHub.001001020.406 The request model is not multimodal' },
+   { request_id: 'req-abnormal', time: new Date(at - 1e3).toISOString(), model: 'abnormal-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=400 msg={"error_code":"TM.00001041"}' }
+ );
+ logPoll.cb(); await tick(); await tick();
+ const classified = ids.get('requestLogsBody').innerHTML;
+ for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符']) {
+   assert(classified.includes('<span class="pill warn">' + label + '</span>'), '失败原因徽标缺少「' + label + '」：' + classified);
+ }
+ assert(classified.includes('<span class="pill bad">异常</span>'), '没归类的失败要挂红色「异常」：' + classified);
+ outcome.value = 'abnormal'; outcome.onchange();
+ const abnormalOnly = ids.get('requestLogsBody').innerHTML;
+ assert(abnormalOnly.includes('abnormal-model'), '异常筛选要保留未归类失败');
+ assert(!abnormalOnly.includes('cancel-model') && !abnormalOnly.includes('missing-model') && !abnormalOnly.includes('no-account-model') && !abnormalOnly.includes('capability-model'), '异常筛选要隐藏已归类失败');
+ assert(!abnormalOnly.includes('test-model'), '异常筛选不得包含成功记录');
+ outcome.value = ''; outcome.onchange();
  document.hidden = true; beforePoll = requests.length; logPoll.cb(); await tick();
  assert.equal(requests.length, beforePoll, 'hidden tabs must not poll');
  document.hidden = false;
