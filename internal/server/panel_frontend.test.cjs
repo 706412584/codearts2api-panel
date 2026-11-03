@@ -183,18 +183,31 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
    { request_id: 'req-missing', time: new Date(at - 4e3).toISOString(), model: 'missing-model', ok: false, outcome: 'http_error', status: 404, error: 'model test1 is not in the model catalog' },
    { request_id: 'req-no-account', time: new Date(at - 3e3).toISOString(), model: 'no-account-model', ok: false, outcome: 'http_error', status: 503, error: 'all accounts unavailable (disabled/cooldown)' },
    { request_id: 'req-capability', time: new Date(at - 2e3).toISOString(), model: 'capability-model', ok: false, outcome: 'http_error', status: 400, error: 'upstream rejected request params: InferHub.001001020.406 The request model is not multimodal' },
-   { request_id: 'req-abnormal', time: new Date(at - 1e3).toISOString(), model: 'abnormal-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=400 msg={"error_code":"TM.00001041"}' }
+   // 11:48:11 那条真实记录：queue_max_attempts=1 时 TM.00001041 一次都没重试就 503，
+   // 本质是上游并发已满（排队/限流），不能归进红色「异常」。
+   { request_id: 'req-queue-limit', time: new Date(at - 1.8e3).toISOString(), model: 'queue-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=400 http=400 path=/api/v2/chat/completions msg={"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)，请关闭部分会话后重试。"}' },
+   { request_id: 'req-retry-exhausted', time: new Date(at - 1.6e3).toISOString(), model: 'exhausted-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 3 attempt(s) on 3 account(s): codearts api code=500 http=500 msg=internal error' },
+   { request_id: 'req-no-accounts', time: new Date(at - 1.4e3).toISOString(), model: 'unconfigured-model', ok: false, outcome: 'http_error', status: 503, error: 'no accounts configured' },
+   { request_id: 'req-token-invalid', time: new Date(at - 1.2e3).toISOString(), model: 'token-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 0 attempt(s) on 1 account(s): token invalid' },
+   { request_id: 'req-abnormal', time: new Date(at - 1e3).toISOString(), model: 'abnormal-model', ok: false, outcome: 'http_error', status: 502, error: 'Post "https://upstream": EOF' }
  );
  logPoll.cb(); await tick(); await tick();
  const classified = ids.get('requestLogsBody').innerHTML;
- for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符']) {
+ const rowOf = model => classified.split('<tr>').find(tr => tr.includes(model)) || '';
+ for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符', '上游排队/限流', '重试耗尽']) {
    assert(classified.includes('<span class="pill warn">' + label + '</span>'), '失败原因徽标缺少「' + label + '」：' + classified);
  }
  assert(classified.includes('<span class="pill bad">异常</span>'), '没归类的失败要挂红色「异常」：' + classified);
+ assert(rowOf('queue-model').includes('上游排队/限流') && !rowOf('queue-model').includes('异常'), '排队/限流不能归进「异常」：' + rowOf('queue-model'));
+ assert(rowOf('exhausted-model').includes('重试耗尽') && !rowOf('exhausted-model').includes('异常'), '真重试到预算用完才算「重试耗尽」：' + rowOf('exhausted-model'));
+ assert(rowOf('token-model').includes('无可用账号'), '0 次尝试（账号校验失败）是账号不可用，不是重试耗尽：' + rowOf('token-model'));
+ assert(rowOf('unconfigured-model').includes('无可用账号'), '未配置账号也是无可用账号：' + rowOf('unconfigured-model'));
  outcome.value = 'abnormal'; outcome.onchange();
  const abnormalOnly = ids.get('requestLogsBody').innerHTML;
  assert(abnormalOnly.includes('abnormal-model'), '异常筛选要保留未归类失败');
- assert(!abnormalOnly.includes('cancel-model') && !abnormalOnly.includes('missing-model') && !abnormalOnly.includes('no-account-model') && !abnormalOnly.includes('capability-model'), '异常筛选要隐藏已归类失败');
+ for (const model of ['cancel-model', 'missing-model', 'no-account-model', 'capability-model', 'queue-model', 'exhausted-model', 'unconfigured-model', 'token-model']) {
+   assert(!abnormalOnly.includes(model), '异常筛选要隐藏已归类失败：' + model);
+ }
  assert(!abnormalOnly.includes('test-model'), '异常筛选不得包含成功记录');
  outcome.value = ''; outcome.onchange();
  document.hidden = true; beforePoll = requests.length; logPoll.cb(); await tick();

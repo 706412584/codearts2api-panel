@@ -212,6 +212,8 @@
   function eventOK(event) { return event.ok === true || (event.ok === undefined && event.status >= 200 && event.status < 300 && event.outcome !== 'stream_error'); }
   // 失败原因分类：先认具体原因，最后才落到「账号池没有可用账号」；全对不上就是「异常」。
   // 只读归档里的 error 原文，不额外请求后端，历史记录也能跟着分类。
+  // 排队/限流必须排在「重试耗尽」之前：耗尽文案里嵌着最后一次上游错误（常是 TM.00001041），
+  // 先认具体原因，才不会把「上游并发已满」笼统地说成「重试耗尽」。
   function failureKind(row) {
     if (eventOK(row)) return '';
     const text = String(row.error || '').toLowerCase();
@@ -219,7 +221,11 @@
         /context canceled|context cancelled|client disconnected|client canceled|client cancelled/.test(text)) return 'cancel';
     if (/not multimodal|inferhub\.001001020/.test(text)) return 'capability';
     if (/not registered|not in the model catalog|model .*not available|not available on any configured account/.test(text)) return 'missing';
-    if (/all accounts unavailable|no healthy account|no available account/.test(text)) return 'no_account';
+    if (/tm\.00001041|81111\.429|tpm limit|concurren|并发|(?:code|http)=429/.test(text)) return 'queue_limit';
+    // 只有真打过上游（attempts ≥ 1）才算「重试耗尽」；0 次说明候选账号全卡在校验/凭据阶段，
+    // 那是账号不可用，不是重试预算用完。
+    if (/upstream attempts exhausted after [1-9]\d* attempt/.test(text)) return 'retry_exhausted';
+    if (/all accounts unavailable|no healthy account|no available account|no accounts configured|upstream attempts exhausted after 0 attempt/.test(text)) return 'no_account';
     return 'abnormal';
   }
   const FAILURE_BADGES = {
@@ -227,6 +233,8 @@
     missing: ['模型不存在', 'warn'],
     no_account: ['无可用账号', 'warn'],
     capability: ['模型能力不符', 'warn'],
+    queue_limit: ['上游排队/限流', 'warn'],
+    retry_exhausted: ['重试耗尽', 'warn'],
     abnormal: ['异常', 'bad'],
   };
   function failureBadge(row) {
@@ -235,7 +243,7 @@
     const [label, tone] = FAILURE_BADGES[kind];
     return '<span class="pill ' + tone + '">' + label + '</span>';
   }
-  // 异常筛选只留没归进四个已知失败分支的请求；成功行没有失败原因，不会被选中。
+  // 异常筛选只留没归进已知失败分支的请求；成功行没有失败原因，不会被选中。
   function matchesOutcomeFilter(row, filter) {
     if (filter === 'abnormal') return failureKind(row) === 'abnormal';
     return eventOK(row) === (filter === 'ok');
