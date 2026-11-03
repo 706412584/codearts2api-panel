@@ -446,9 +446,6 @@ func (h *Handler) saveLoginResult(tok *upstream.TokenResponse, codeVerifier stri
 		return err
 	}
 	if p := h.cfg.Pool.AddAccount(a); p != nil && p.Auth != nil {
-		// 刚登录的账号先不探测：用户很可能马上就要用，探测占用的上游会话
-		// 槽位释放很慢，会把第一个真实请求挤到排队。
-		noteTraffic(a.UserID)
 		log.Printf("webui login success user_id=%s name=%s", a.UserID, a.UserName)
 	} else {
 		log.Printf("webui login saved user_id=%s name=%s (pool add failed)", a.UserID, a.UserName)
@@ -508,7 +505,7 @@ func firstNonEmpty(vals ...string) string {
 // models
 // ---------------------------------------------------------------------------
 
-// models 返回模型列表：优先动态（缓存 1h），失败回退静态表（仅精确模型名）。
+// models 返回账号实际上游目录中的模型列表。
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -518,67 +515,7 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 
 // modelList 动态获取模型列表并包装成 OpenAI 格式。
 func (h *Handler) modelList(force bool) []map[string]any {
-	entries := modelEntries(h.fetchDynamicModels(force))
-	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
-	// 只在动态结果上过滤会让被下架的模型又从静态表冒出来。
-	// 未知（还没探测出结论）的保留：宁可让用户试，也别把可用模型藏起来。
-	if len(entries) > 0 {
-		kept := make([]map[string]any, 0, len(entries))
-		for _, e := range entries {
-			id, _ := e["id"].(string)
-			if !h.modelKnownUnusable(id) {
-				kept = append(kept, e)
-			}
-		}
-		if len(kept) > 0 {
-			entries = kept
-		}
-	}
-	// 刚发现到的模型还没有可用性结论：后台补一轮探测，供后续请求过滤。
-	// （首次请求返回的是「发现结果」，之后才收敛到「真实可用」。）
-	h.probeUnknownAsync()
-	return entries
-}
-
-// probeUnknownAsync 后台探测「还没有结论」的模型，不阻塞请求。
-func (h *Handler) probeUnknownAsync() {
-	availability.Lock()
-	busy := availability.sweeping
-	if !busy {
-		availability.sweeping = true
-	}
-	availability.Unlock()
-	if busy {
-		return
-	}
-	go func() {
-		defer func() {
-			availability.Lock()
-			availability.sweeping = false
-			availability.Unlock()
-		}()
-		h.runProbes(h.pendingProbes())
-	}()
-}
-
-// modelKnownUnusable 报告该模型是否在**所有**健康账号上都被判定为不可用。
-// 只要有一个账号没结论或可用，就返回 false（列表保留该模型）。
-func (h *Handler) modelKnownUnusable(model string) bool {
-	anyKnown, allUnusable := false, true
-	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
-		st, _ := modelAvailability(acct.UID, model)
-		if st == availUnknown {
-			return false // 还没结论，别急着下架
-		}
-		anyKnown = true
-		if st != availUnusable {
-			allUnusable = false
-		}
-	}
-	return anyKnown && allUnusable
+	return modelEntries(h.fetchDynamicModels(force))
 }
 
 // modelEntries 把账号模型目录包装成 OpenAI /v1/models 条目。
@@ -859,14 +796,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	msgs := buildUpstreamMessages(req, toolsOn)
 
-	// 已经确认「所有健康账号都用不了这个模型」时直接快速失败：不必再打上游、
-	// 也不必把账号轮转一遍（轮转只会拿到同样的 not registered）。
-	if h.modelKnownUnusable(model) {
-		writeOpenAIError(w, http.StatusNotFound, "model_not_available",
-			"model "+model+" is not available on any configured account")
-		return
-	}
-
 	tried := map[string]bool{}
 	var lastErr error
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -947,7 +876,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		var rc io.ReadCloser
 		var serr error
 		authRetried := false
-		noteTraffic(acct.UID) // 有真实流量：本轮探测整体避让
 		queueAttempts, queueDelay := h.live().QueueMaxAttempts, h.live().QueueRetryDelay
 		if queueAttempts < 1 {
 			queueAttempts = 1
@@ -1026,10 +954,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
-		// 真实调用成功：记下「这个账号能用这个模型」，供 /v1/models 过滤参考。
-		markUsable(acct.UID, model)
-		noteTraffic(acct.UID)
-
 		w.Header().Set("X-Codearts-Chat-Id", chatID)
 
 		storeChat := func() {
@@ -1304,6 +1228,18 @@ func buildCompletion(model, reasoning, content string, calls []openAIToolCall, f
 	return resp
 }
 
+// upstreamUnavailableReason 把上游错误归类为「该模型对这个账号不可用」，否则返回空串。
+func upstreamUnavailableReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "002002009") || strings.Contains(msg, "not registered") {
+		return "模型未在当前账号注册"
+	}
+	return ""
+}
+
 // handleUpstreamError 记录错误并决定是否处罚账号。
 // 返回 true 表示这是「模型对这个账号不可用」的模型级错误：调用方应立即结束
 // 轮转并向客户端返回明确错误（换账号也是同样的结果）。
@@ -1318,7 +1254,6 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 		// 5xx，落到下面的 `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测
 		// 调用一个未注册模型，整个账号被冷却，后续正常请求全部失败。
 		if reason := upstreamUnavailableReason(err); reason != "" {
-			markUnusable(acct.UID, model, reason)
 			log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, reason)
 			return true
 		}

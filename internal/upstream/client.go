@@ -529,12 +529,6 @@ func sessionIDFor(chatID string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// SendChatV2 发送自定义 OpenAI 兼容 body 到 /api/v2/chat/completions。
-// 鉴权：x-auth-token（STS security token）+ 华为云 SDK-HMAC-SHA256 AK/SK 签名。
-func (c *Client) SendChatV2(ctx context.Context, body map[string]any, traceID string, cred SignCredential, userToken string) (io.ReadCloser, error) {
-	return c.sendChatV2(ctx, body, traceID, cred, userToken, "", "")
-}
-
 // sendChatV2 发送聊天请求并返回 SSE 流。
 //
 // chatID/sessionID 作为请求亲和与 prompt cache 标识（不代替 messages 里的语义历史）。
