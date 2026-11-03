@@ -62,6 +62,7 @@ type uidBody struct {
 	UID     string `json:"uid"`
 	Account string `json:"account"`
 	Reason  string `json:"reason"`
+	Note    string `json:"note"`
 }
 
 func readUIDBody(r *http.Request) (uidBody, error) {
@@ -238,6 +239,24 @@ func (h *Handler) adminClearCooldown(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已清冷却 " + body.UID})
+}
+
+// adminSetNote 设置账号备注（纯本地字段，不参与上游请求）。
+func (h *Handler) adminSetNote(w http.ResponseWriter, r *http.Request) {
+	body, err := readUIDBody(r)
+	if err != nil || body.UID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "uid required"})
+		return
+	}
+	if len(body.Note) > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "备注过长（上限 200 字节）"})
+		return
+	}
+	if !h.cfg.Pool.SetNote(body.UID, body.Note) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "message": "account not found"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "备注已保存"})
 }
 
 func (h *Handler) pickTargets(uid string) []string {

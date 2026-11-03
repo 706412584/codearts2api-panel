@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,41 +37,41 @@ type Account struct {
 	Auth   *auth.Auth       `json:"-"`
 	Client *upstream.Client `json:"-"`
 
-	mu                  sync.Mutex
-	refreshMu           sync.Mutex
-	checkinMu           sync.Mutex
-	checkin             *CheckinStatus
-	lastCheckinDay      string // 每日签到已了结的本地日期（"2006-01-02"），跨零点自然失效
-	checkinClaimed      bool   // 该日真的签到成功/已领；只有它为真才显示「已签」
-	newUserSettled      bool   // 新手注册活动已了结，单账号只领一次
-	balanceMu           sync.Mutex
-	creditBalance       *upstream.CreditBalance
-	balanceUpdatedAt    time.Time
-	creditBalanceError  string
-	removed             bool
-	lastValidated       time.Time
-	errCount            int
-	coolUntil           time.Time
-	coolKind            CoolKind
-	disabled            bool
-	disabledReason      string
-	lastErr             string
-	activeConcurrent    int       // 当前活跃并发请求数
-	maxConcurrent       int       // 最大允许并发数
-	keepaliveLastPing   time.Time // 最后保活心跳时间
+	mu                 sync.Mutex
+	refreshMu          sync.Mutex
+	checkinMu          sync.Mutex
+	checkin            *CheckinStatus
+	lastCheckinDay     string // 每日签到已了结的本地日期（"2006-01-02"），跨零点自然失效
+	checkinClaimed     bool   // 该日真的签到成功/已领；只有它为真才显示「已签」
+	newUserSettled     bool   // 新手注册活动已了结，单账号只领一次
+	balanceMu          sync.Mutex
+	creditBalance      *upstream.CreditBalance
+	balanceUpdatedAt   time.Time
+	creditBalanceError string
+	removed            bool
+	lastValidated      time.Time
+	errCount           int
+	coolUntil          time.Time
+	coolKind           CoolKind
+	disabled           bool
+	disabledReason     string
+	lastErr            string
+	activeConcurrent   int       // 当前活跃并发请求数
+	maxConcurrent      int       // 最大允许并发数
+	keepaliveLastPing  time.Time // 最后保活心跳时间
 }
 
 // Config 池配置。
 type Config struct {
-	ErrThreshold     int
-	ErrCooldown      time.Duration
-	SoftCooldown     time.Duration
-	RefreshSkew      time.Duration        // token 到期前多久自动刷新
-	MaxConcurrent    int                  // 单账号最大并发数（默认 5）
-	KeepaliveWindow  time.Duration        // 保活心跳窗口，超过此时间无活动则发送心跳
-	LoginConfig      upstream.LoginConfig // OAuth/refresh 端点；零值使用生产默认
-	CheckinClient    CheckinClient        // 可选活动客户端；nil 使用账号 Client
-	BalanceClient    BalanceClient
+	ErrThreshold    int
+	ErrCooldown     time.Duration
+	SoftCooldown    time.Duration
+	RefreshSkew     time.Duration        // token 到期前多久自动刷新
+	MaxConcurrent   int                  // 单账号最大并发数（默认 5）
+	KeepaliveWindow time.Duration        // 保活心跳窗口，超过此时间无活动则发送心跳
+	LoginConfig     upstream.LoginConfig // OAuth/refresh 端点；零值使用生产默认
+	CheckinClient   CheckinClient        // 可选活动客户端；nil 使用账号 Client
+	BalanceClient   BalanceClient
 }
 
 // Pool 账号池。
@@ -118,7 +119,7 @@ func New(auths []*auth.Auth, cfg Config, stateFile string) (*Pool, error) {
 			maxConcurrent:     cfg.MaxConcurrent,
 			keepaliveLastPing: time.Now(),
 		}
-			p.accounts = append(p.accounts, acct)
+		p.accounts = append(p.accounts, acct)
 	}
 	p.loadState()
 	return p, nil
@@ -214,31 +215,32 @@ func (p *Pool) List() []map[string]any {
 			credentialType = "oauth"
 		}
 		out = append(out, map[string]any{
-			"name":                  a.Name,
-			"uid":                   a.UID,
-			"nickname":              a.UserName,
-			"user_name":             a.UserName,
-			"default_model":         a.DefaultModel,
-			"credits":               credit,
-			"credit_balance":        a.creditBalance,
-			"balance_updated_at":    optionalTime(a.balanceUpdatedAt),
-			"credit_balance_error":  a.creditBalanceError,
-			"refreshable":           a.Auth.Refreshable(),
-			"credential_type":       credentialType,
-			"checkin":               a.checkin,
-			"checkin_done":          a.lastCheckinDay == today && a.checkinClaimed,
-			"last_checkin_day":      a.lastCheckinDay,
-			"new_user_settled":      a.newUserSettled,
-			"disabled":              a.disabled,
-			"cooling":               cooling,
-			"until":                 until,
-			"err_count":             a.errCount,
-			"reason":                reason,
-			"last_error":            a.lastErr,
-			"active_concurrent":     a.activeConcurrent,
-			"max_concurrent":        a.maxConcurrent,
-			"token_remaining":       remaining,
-			"expires_at":            expires,
+			"name":                 a.Name,
+			"uid":                  a.UID,
+			"nickname":             a.UserName,
+			"user_name":            a.UserName,
+			"note":                 a.Auth.Note,
+			"default_model":        a.DefaultModel,
+			"credits":              credit,
+			"credit_balance":       a.creditBalance,
+			"balance_updated_at":   optionalTime(a.balanceUpdatedAt),
+			"credit_balance_error": a.creditBalanceError,
+			"refreshable":          a.Auth.Refreshable(),
+			"credential_type":      credentialType,
+			"checkin":              a.checkin,
+			"checkin_done":         a.lastCheckinDay == today && a.checkinClaimed,
+			"last_checkin_day":     a.lastCheckinDay,
+			"new_user_settled":     a.newUserSettled,
+			"disabled":             a.disabled,
+			"cooling":              cooling,
+			"until":                until,
+			"err_count":            a.errCount,
+			"reason":               reason,
+			"last_error":           a.lastErr,
+			"active_concurrent":    a.activeConcurrent,
+			"max_concurrent":       a.maxConcurrent,
+			"token_remaining":      remaining,
+			"expires_at":           expires,
 		})
 		a.mu.Unlock()
 	}
@@ -302,6 +304,31 @@ func (p *Pool) ClearCooldown(name string) bool {
 		}
 	}
 	return false
+}
+
+// SetNote 设置账号备注（写盘）。备注是纯本地字段，不参与任何上游请求。
+// 空字符串表示清除备注。返回 false 表示账号不存在。
+func (p *Pool) SetNote(name, note string) bool {
+	p.mu.Lock()
+	var target *Account
+	for _, a := range p.accounts {
+		if a.Name == name || a.UID == name {
+			target = a
+			break
+		}
+	}
+	p.mu.Unlock()
+	if target == nil || target.Auth == nil {
+		return false
+	}
+	target.mu.Lock()
+	target.Auth.Note = strings.TrimSpace(note)
+	target.mu.Unlock()
+	if err := target.Auth.Save(); err != nil {
+		log.Printf("pool save note account=%s: %v", name, err)
+		return false
+	}
+	return true
 }
 
 // SyncToDir 用磁盘 auths 全量对齐。
@@ -1160,14 +1187,14 @@ func (p *Pool) loadState() {
 		return
 	}
 	var data []struct {
-		Name      string                   `json:"name"`
-		ErrCount  int                      `json:"err_count"`
-		CoolUntil time.Time                `json:"cool_until"`
-		Disabled  bool                     `json:"disabled"`
-		Reason    string                   `json:"reason"`
-		LastErr   string                   `json:"last_error"`
-		Credit    *upstream.CreditBalance  `json:"credit_balance"`
-		BalanceAt time.Time                `json:"balance_updated_at"`
+		Name      string                  `json:"name"`
+		ErrCount  int                     `json:"err_count"`
+		CoolUntil time.Time               `json:"cool_until"`
+		Disabled  bool                    `json:"disabled"`
+		Reason    string                  `json:"reason"`
+		LastErr   string                  `json:"last_error"`
+		Credit    *upstream.CreditBalance `json:"credit_balance"`
+		BalanceAt time.Time               `json:"balance_updated_at"`
 		// 签到账本：重启后仍要知道「今天已签」「新手已领」，否则重启即重复打上游。
 		// checkin_claimed 用指针读：更早的账本只有日期（写入即代表已签），不能因缺字段
 		// 把已签的账号在升级当天显示成未签。
@@ -1213,14 +1240,14 @@ func (p *Pool) saveStateErr() error {
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
 	type entry struct {
-		Name      string                   `json:"name"`
-		ErrCount  int                      `json:"err_count"`
-		CoolUntil time.Time                `json:"cool_until"`
-		Disabled  bool                     `json:"disabled"`
-		Reason    string                   `json:"reason"`
-		LastErr   string                   `json:"last_error"`
-		Credit    *upstream.CreditBalance  `json:"credit_balance"`
-		BalanceAt time.Time                `json:"balance_updated_at"`
+		Name      string                  `json:"name"`
+		ErrCount  int                     `json:"err_count"`
+		CoolUntil time.Time               `json:"cool_until"`
+		Disabled  bool                    `json:"disabled"`
+		Reason    string                  `json:"reason"`
+		LastErr   string                  `json:"last_error"`
+		Credit    *upstream.CreditBalance `json:"credit_balance"`
+		BalanceAt time.Time               `json:"balance_updated_at"`
 		// 签到账本：持久化「今日已签」「新手已领」，重启后不重复请求上游。
 		LastCheckinDay string `json:"last_checkin_day,omitempty"`
 		CheckinClaimed bool   `json:"checkin_claimed,omitempty"`

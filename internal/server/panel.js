@@ -16,7 +16,7 @@
   let authenticated = false, authEpoch = 0, refreshID = 0, overviewInFlight = false;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
   let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
-  let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', logsLoading = false;
+  let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', noteUID = '', logsLoading = false;
   let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
   let theme = readStorage(localStorage, THEME_STORAGE) || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 
@@ -130,7 +130,7 @@
   }
   function renderAccounts() {
     const query = $('accountSearch').value.toLowerCase().trim();
-    const filtered = accounts.filter(a => [a.nickname, a.user_name, a.uid, a.name].join(' ').toLowerCase().includes(query));
+    const filtered = accounts.filter(a => [a.nickname, a.user_name, a.note, a.uid, a.name].join(' ').toLowerCase().includes(query));
     $('accountsBody').innerHTML = filtered.map(a => {
       const uid = String(a.uid || a.name || '');
       const state = a.disabled ? ['bad', '已禁用'] : a.cooling ? ['warn', '冷却中'] : ['ok', '可用'];
@@ -140,7 +140,9 @@
         ? '<button class="button small done" data-account-action="checkin" data-uid="' + esc(uid) + '" title="' + esc((a.checkin && a.checkin.message ? a.checkin.message + ' · ' : '') + '今日已签到，每天只领一次') + '">已签</button>'
         : button('checkin', '签到');
       const expiry = a.permanent === true || a.credential_type === 'permanent' ? '永久凭据' : date(a.expires_at);
-      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span><span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + checkinButton + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('delete', '删除', true) + '</div></td></tr>';
+      // 备注是纯本地字段（如注册手机号），显示在账户名下面一行。
+      const noteLine = a.note ? '<span class="account-note" title="' + esc(a.note) + '">' + esc(a.note) + '</span>' : '';
+      return '<tr><td><span class="account-name">' + esc(a.nickname || a.user_name || a.name || '未命名账户') + '</span>' + noteLine + '<span class="account-id mono">' + esc(uid) + '</span>' + (a.last_error ? '<span class="account-error" title="' + esc(a.last_error) + '">' + esc(a.last_error) + '</span>' : '') + '</td><td><span class="pill ' + state[0] + '">' + state[1] + '</span></td><td>' + balanceCell(a.credit_balance, 'total', a.credit_balance_error) + '</td><td><span class="muted">' + esc(expiry) + '</span></td><td class="number">' + esc(number(a.active_concurrent)) + ' / ' + esc(number(a.max_concurrent)) + '</td><td><div class="row-actions">' + button('credits', '查额度') + checkinButton + button('keepalive', '保活') + button(a.disabled ? 'enable' : 'disable', a.disabled ? '启用' : '禁用') + (a.cooling ? button('clear-cooldown', '清冷却') : '') + button('note', '备注') + button('delete', '删除', true) + '</div></td></tr>';
     }).join('') || emptyRow(6, query ? '没有匹配的账户。' : '还没有账户。点击“添加账户”完成首次接入。');
   }
   function actionMessage(data, fallback) {
@@ -149,6 +151,15 @@
     return [data.message || fallback, details].filter(Boolean).join(' · ');
   }
   async function accountAction(action, uid, button) {
+    if (action === 'note') {
+      noteUID = uid;
+      const account = accounts.find(a => String(a.uid || a.name) === uid);
+      $('noteAccountName').textContent = (account?.nickname || account?.user_name || '账户') + ' · ' + uid;
+      $('noteInput').value = account?.note || '';
+      fieldError('noteError', '');
+      $('noteDialog').showModal();
+      return;
+    }
     if (action === 'delete') {
       deleteUID = uid;
       const account = accounts.find(a => String(a.uid || a.name) === uid);
@@ -181,6 +192,19 @@
     finally { $('confirmDelete').disabled = false; }
   };
   $('deleteDialog').addEventListener('close', () => { deleteUID = ''; $('deleteAccountName').textContent = ''; });
+  $('confirmNote').onclick = async () => {
+    if (!noteUID) return;
+    $('confirmNote').disabled = true;
+    try {
+      const data = await post('accounts/note', { uid: noteUID, note: $('noteInput').value.trim() });
+      if (data.ok === false) throw new Error(data.message || '保存失败');
+      $('noteDialog').close();
+      toast('备注已保存');
+      renderOverview(await api('overview'));
+    } catch (error) { fieldError('noteError', error.message); }
+    finally { $('confirmNote').disabled = false; }
+  };
+  $('noteDialog').addEventListener('close', () => { noteUID = ''; $('noteAccountName').textContent = ''; $('noteInput').value = ''; });
 
   function renderModels() {
     const query = $('modelSearch').value.toLowerCase().trim();
