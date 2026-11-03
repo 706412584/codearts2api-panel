@@ -13,7 +13,7 @@
   const readStorage = (storage, name) => { try { return storage.getItem(name) || ''; } catch { return ''; } };
   const writeStorage = (storage, name, value) => { try { value ? storage.setItem(name, value) : storage.removeItem(name); } catch { /* Session can still run in memory. */ } };
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
-  let authenticated = false, authEpoch = 0, refreshID = 0;
+  let authenticated = false, authEpoch = 0, refreshID = 0, overviewInFlight = false;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
   let visionBridgeEnabled = false;
   let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
@@ -720,6 +720,24 @@
   setInterval(() => {
     if (authenticated && currentPage === 'logs' && !document.hidden) loadLogs().catch(() => {});
   }, 5000);
+  // 账号池状态懒刷新：账号页可见时定期只拉 overview（纯内存读，不打上游），
+  // 让并发占用/冷却/余额变化不必手动点刷新。后台标签页不轮询；有对话框开着、
+  // 或用户正在搜索时不强刷（避免打断输入与选中状态）。
+  setInterval(() => {
+    if (!authenticated || document.hidden) return;
+    if (currentPage !== 'accounts') return;
+    if (document.querySelector('dialog[open]')) return; // 添加/删除/导入等对话框优先
+    if ($('accountSearch') && $('accountSearch').value.trim()) return; // 搜索中不动结果集
+    if (overviewInFlight) return; // 上一次还没回来就跳过这一拍，避免请求堆积
+    overviewInFlight = true;
+    api('overview').then(data => {
+      if (currentPage !== 'accounts' || document.hidden) return;
+      renderOverview(data);
+      $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+    })
+      .catch(() => {}) // 懒刷新失败保持旧数据，不弹错误横幅打断用户
+      .finally(() => { overviewInFlight = false; });
+  }, 10000);
   // 运行时长是本地推算的，30 秒跳一次即可，不必为它增加请求。
   setInterval(() => { if (authenticated) renderUptime(); }, 30000);
   navigate();
