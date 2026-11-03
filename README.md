@@ -264,13 +264,20 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 | `credits_auto_claim` | `true` | 后台活动积分领取（按 `checkin_hours` 时点） |
 | `checkin_hours` | `[9, 21]` | 每日签到时点（本地小时 0-23）；空数组/非法值回落默认 |
 | `request_log_retention_days` | `30` | `data/requests/` 归档保留天数，按文件修改时间清理；0/负数回落默认 |
+| `max_body_mb` | `32` | 聊天请求体上限，单位 MB；凭据导入仍独立限制为 8MB |
+| `image_shrink.enabled` | `true` | 按需压缩内联 PNG/JPEG；参数及默认值见 `config.example.json` |
+| `vision_bridge.enabled` | `true` | 纯文本模型的内联图片先交视觉模型转述；默认使用 `Qwen3-VL-235B` |
 | `watch.enabled` | `true` | 后台凭据看护 |
 | `watch.poll_minutes` | `30` | 后台轮询间隔 |
 | `watch.refresh_skew_minutes` | `30` | 临近到期续期窗口 |
 
-环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）、`CA2A_REQUEST_LOG_RETENTION_DAYS` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
+环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）、`CA2A_REQUEST_LOG_RETENTION_DAYS`、`CA2A_MAX_BODY_MB` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
 重试与冷却五项（`cooldown.soft_rate` / `cooldown.err_threshold` / `cooldown.err_cooldown` / `queue_retry_seconds` / `queue_max_attempts`）的非法值——`0`、负数、解析不了的时长——一律按「没配置」处理：启动时按默认值跑，面板保存时直接把默认值写回配置文件，面板显示的也就是运行期真正生效的值。
+
+多模态参数可在 Raw JSON 中编辑，保存后热生效，表单模式会保留这些字段。`max_body_mb`、`image_shrink` 和 `vision_bridge` 中需要归一化的参数也会在保存时回写实际默认值。缩图默认在请求体超过 4MB 或图片超预算时触发，目标为单张 2MB、合计 4MB、最长边 2048 像素、JPEG 质量 85；小图保持原样，WebP/GIF 和远程图片不参与缩图。
+
+视觉转述给纯文本模型的是图片的文字描述，精细颜色和布局仍应直接使用视觉模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间；默认最多处理 8 张图，总预算 90 秒。超出图片数量或任一转述失败时保留全部原图，由上游按模型能力判定请求。可用 `vision_bridge.enabled=false` 单独关闭转述，或用 `image_shrink.enabled=false` 关闭缩图。
 
 面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
 

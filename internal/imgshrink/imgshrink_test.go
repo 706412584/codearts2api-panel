@@ -10,6 +10,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -73,6 +74,26 @@ func TestShrinkOversizeNoiseToJPEG(t *testing.T) {
 	}
 	if _, _, err := image.Decode(bytes.NewReader(got)); err != nil {
 		t.Fatalf("输出不是可解码图片: %v", err)
+	}
+}
+
+func TestShrinkHonoursLowJPEGQuality(t *testing.T) {
+	raw := noisePNG(t, 400, 400, 42)
+	for _, quality := range []int{1, 50, 54} {
+		t.Run(strconv.Itoa(quality), func(t *testing.T) {
+			out, res, err := ShrinkDataURL(dataURL("image/png", raw), Options{
+				TargetBytes: 100 << 10, MaxDimension: 2048, Quality: quality,
+			})
+			if err != nil {
+				t.Fatalf("shrink at quality %d: %v", quality, err)
+			}
+			if !res.Changed || len(decodePayload(t, out)) > 100<<10 {
+				t.Fatalf("low JPEG quality must still shrink to budget: %+v", res)
+			}
+			if _, _, err := image.Decode(bytes.NewReader(decodePayload(t, out))); err != nil {
+				t.Fatalf("decode output: %v", err)
+			}
+		})
 	}
 }
 
@@ -214,6 +235,11 @@ func jpegWithOrientation(t *testing.T, w, h, orientation int) []byte {
 			img.Set(x, y, color.RGBA{uint8(rnd.Intn(256)), uint8(rnd.Intn(256)), uint8(rnd.Intn(256)), 255})
 		}
 	}
+	return jpegImageWithOrientation(t, img, orientation)
+}
+
+func jpegImageWithOrientation(t *testing.T, img image.Image, orientation int) []byte {
+	t.Helper()
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 92}); err != nil {
 		t.Fatalf("encode jpeg: %v", err)
@@ -239,7 +265,7 @@ func jpegWithOrientation(t *testing.T, w, h, orientation int) []byte {
 }
 
 func TestJPEGOrientationParsing(t *testing.T) {
-	for _, want := range []int{1, 3, 6, 8} {
+	for _, want := range []int{1, 2, 3, 4, 5, 6, 7, 8} {
 		raw := jpegWithOrientation(t, 40, 20, want)
 		if got := jpegOrientation(raw); got != want {
 			t.Fatalf("orientation=%d 解析成 %d", want, got)
@@ -252,6 +278,51 @@ func TestJPEGOrientationParsing(t *testing.T) {
 	}
 	if got := jpegOrientation(buf.Bytes()); got != 1 {
 		t.Fatalf("无 EXIF 时应为 1，got=%d", got)
+	}
+}
+
+func TestShrinkHonoursAllJPEGOrientations(t *testing.T) {
+	colors := []color.RGBA{{255, 0, 0, 255}, {0, 255, 0, 255}, {0, 0, 255, 255}, {255, 255, 0, 255}}
+	img := image.NewRGBA(image.Rect(0, 0, 600, 400))
+	for y := 0; y < 400; y++ {
+		for x := 0; x < 600; x++ {
+			img.SetRGBA(x, y, colors[(y/200)*2+x/300])
+		}
+	}
+	// Expected displayed quadrants, in reading order, from the EXIF orientation definitions.
+	for i, corners := range [][4]int{
+		{0, 1, 2, 3}, {1, 0, 3, 2}, {3, 2, 1, 0}, {2, 3, 0, 1},
+		{0, 2, 1, 3}, {2, 0, 3, 1}, {3, 1, 2, 0}, {1, 3, 0, 2},
+	} {
+		orientation := i + 1
+		t.Run(strconv.Itoa(orientation), func(t *testing.T) {
+			raw := jpegImageWithOrientation(t, img, orientation)
+			out, res, err := ShrinkDataURL(dataURL("image/jpeg", raw), Options{
+				TargetBytes: 8 << 20, MaxDimension: 300, Quality: 85,
+			})
+			if err != nil || !res.Changed {
+				t.Fatalf("shrink: changed=%v err=%v", res.Changed, err)
+			}
+			decoded, _, err := image.Decode(bytes.NewReader(decodePayload(t, out)))
+			if err != nil {
+				t.Fatalf("decode output: %v", err)
+			}
+			w, h := 300, 200
+			if orientation >= 5 {
+				w, h = h, w
+			}
+			if decoded.Bounds().Dx() != w || decoded.Bounds().Dy() != h {
+				t.Fatalf("displayed dimensions: got %v want %dx%d", decoded.Bounds(), w, h)
+			}
+			for corner, index := range corners {
+				x, y := (2*(corner%2)+1)*w/4, (2*(corner/2)+1)*h/4
+				r, g, b, _ := decoded.At(x, y).RGBA()
+				want := colors[index]
+				if abs(int(r>>8)-int(want.R)) > 30 || abs(int(g>>8)-int(want.G)) > 30 || abs(int(b>>8)-int(want.B)) > 30 {
+					t.Fatalf("quadrant %d: got RGB(%d,%d,%d) want %v", corner, r>>8, g>>8, b>>8, want)
+				}
+			}
+		})
 	}
 }
 

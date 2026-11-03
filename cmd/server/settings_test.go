@@ -54,6 +54,128 @@ func TestSettingsRewriteInvalidRetryAndCooldownToDefaults(t *testing.T) {
 	}
 }
 
+func TestSettingsNormalizeMultimodalValuesAcrossReadSaveAndLiveConfig(t *testing.T) {
+	t.Setenv("CA2A_API_KEY", "")
+	t.Setenv("CA2A_ADMIN_KEY", "")
+	t.Setenv("CA2A_MAX_BODY_MB", "")
+	for _, operation := range []string{"read", "save"} {
+		t.Run(operation, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := ensureConfig(path); err != nil {
+				t.Fatal(err)
+			}
+			before, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			patch := map[string]any{
+				"api_key": "", "admin_key": "", "max_body_mb": 0,
+				"image_shrink": map[string]any{
+					"enabled": false, "trigger_body_mb": 0, "target_image_mb": -1,
+					"target_total_mb": 0, "max_dimension": -1, "quality": 101,
+					"extension": map[string]any{"preserved": "image"},
+				},
+				"vision_bridge": map[string]any{
+					"enabled": false, "model": " ", "max_images": 33, "max_chars": 100001,
+					"max_tokens": 0, "timeout_seconds": -1, "total_timeout_seconds": 0,
+					"prompt": "custom prompt", "extension": map[string]any{"preserved": "vision"},
+				},
+				"extension": map[string]any{"preserved": true},
+			}
+			want := map[string]any{
+				"api_key": "", "admin_key": "", "max_body_mb": 32,
+				"image_shrink": map[string]any{
+					"enabled": false, "trigger_body_mb": 4, "target_image_mb": 2,
+					"target_total_mb": 4, "max_dimension": 2048, "quality": 85,
+					"extension": map[string]any{"preserved": "image"},
+				},
+				"vision_bridge": map[string]any{
+					"enabled": false, "model": "Qwen3-VL-235B", "max_images": 8, "max_chars": 6000,
+					"max_tokens": 1500, "timeout_seconds": 120, "total_timeout_seconds": 90,
+					"prompt": "custom prompt", "extension": map[string]any{"preserved": "vision"},
+				},
+				"extension": map[string]any{"preserved": true},
+			}
+			assertValues := func(values map[string]any) {
+				t.Helper()
+				for key, expected := range want {
+					gotJSON, err := json.Marshal(values[key])
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantJSON, err := json.Marshal(expected)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(gotJSON) != string(wantJSON) {
+						t.Errorf("%s = %s, want %s", key, gotJSON, wantJSON)
+					}
+				}
+			}
+			var applied *Config
+			store := &fileSettings{path: path, apply: func(c *Config) []string {
+				applied = c
+				return nil
+			}}
+			if operation == "read" {
+				values, err := configMap(before)
+				if err != nil {
+					t.Fatal(err)
+				}
+				delete(patch, "api_key")
+				delete(patch, "admin_key")
+				mergeConfig(values, patch)
+				raw, err := json.Marshal(values)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, raw, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				values, _, err := store.UpdateLive(patch)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertValues(values)
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(raw, &values); err != nil {
+					t.Fatal(err)
+				}
+				if values["api_key"] != before.APIKey || values["admin_key"] != before.AdminKey {
+					t.Fatal("saving normalized values changed existing secrets")
+				}
+				assertValues(redactConfig(values))
+				if applied == nil {
+					t.Fatal("saved configuration was not applied")
+				}
+				snap := liveSnapshot(applied)
+				if snap.MaxBodyBytes != 32<<20 || snap.ImageShrinkEnabled || snap.VisionBridgeEnabled || snap.VisionBridge.Enabled {
+					t.Fatalf("body limit or disabled switches differ in live config: %+v", snap)
+				}
+				if snap.ImageShrink.TriggerBytes != 4<<20 || snap.ImageShrink.TargetImageBytes != 2<<20 ||
+					snap.ImageShrink.TargetTotalBytes != 4<<20 || snap.ImageShrink.MaxDimension != 2048 || snap.ImageShrink.Quality != 85 {
+					t.Fatalf("image policy differs in live config: %+v", snap.ImageShrink)
+				}
+				if snap.VisionBridge.Model != "Qwen3-VL-235B" || snap.VisionBridge.MaxImages != 8 ||
+					snap.VisionBridge.MaxChars != 6000 || snap.VisionBridge.MaxTokens != 1500 ||
+					snap.VisionBridge.Timeout != 120*time.Second || snap.VisionBridge.TotalTimeout != 90*time.Second ||
+					snap.VisionBridge.Prompt != "custom prompt" {
+					t.Fatalf("vision policy differs in live config: %+v", snap.VisionBridge)
+				}
+			}
+			values, err := store.Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertValues(values)
+		})
+	}
+}
+
 func TestEnsureConfigCreatesDistinctSecretsAndDoesNotOverwrite(t *testing.T) {
 	t.Setenv("CA2A_API_KEY", "")
 	t.Setenv("CA2A_ADMIN_KEY", "")

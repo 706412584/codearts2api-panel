@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -320,6 +321,137 @@ func TestVisionBridgeAllOrNothingOnFailure(t *testing.T) {
 	}
 	if strings.Contains(main, "第 1 张图片") {
 		t.Fatal("失败时不该把第一张已经替换成文字")
+	}
+}
+
+func TestVisionBridgeOverImageLimitPassesThroughUntouched(t *testing.T) {
+	backend, vb := fakeVisionBackend(t)
+	defer backend.Close()
+	resetVisionCache()
+	h := visionTestHandler(t, backend.URL, &VisionBridgePolicy{Enabled: true, Model: testVLModel, MaxImages: 1})
+	img1 := base64.StdEncoding.EncodeToString(noisePNGBytes(t, 64, 64))
+	img2 := base64.StdEncoding.EncodeToString(noisePNGBytes(t, 66, 66))
+	payload := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,%s"}},{"type":"image_url","image_url":{"url":"data:image/png;base64,%s"}}]}]}`, testTextModel, img1, img2)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+	if got := vb.vlCalls.Load(); got != 0 {
+		t.Errorf("over-limit request made %d paid vision calls", got)
+	}
+	vb.mu.Lock()
+	main := string(vb.lastMain)
+	vb.mu.Unlock()
+	for _, img := range []string{img1, img2} {
+		if !strings.Contains(main, "data:image/png;base64,"+img) {
+			t.Error("over-limit request changed an original image")
+		}
+	}
+	if strings.Contains(main, "第 1 张图片") {
+		t.Error("over-limit request was partially rewritten")
+	}
+}
+
+func TestVisionBridgeCancelsWhileWaitingForFirstSlot(t *testing.T) {
+	backend, vb := fakeVisionBackend(t)
+	defer backend.Close()
+	resetVisionCache()
+	h := visionTestHandler(t, backend.URL, &VisionBridgePolicy{Enabled: true, Model: testVLModel, Timeout: 2 * time.Second})
+	account := h.cfg.Pool.Accounts()[0].Name
+	if !h.cfg.Pool.AcquireLock(account) {
+		t.Fatal("could not occupy account slot")
+	}
+	defer h.cfg.Pool.ReleaseLock(account)
+	img := base64.StdEncoding.EncodeToString(noisePNGBytes(t, 64, 64))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(visionPayload(testTextModel, img))).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	cancelTimer := time.AfterFunc(50*time.Millisecond, cancel)
+	defer cancelTimer.Stop()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		h.cfg.Pool.ReleaseLock(account)
+		<-done
+		t.Fatal("client cancellation did not interrupt the first slot wait")
+	}
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "client_cancelled") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if got := vb.vlCalls.Load(); got != 0 {
+		t.Fatalf("canceled request made %d vision calls", got)
+	}
+	if active := h.cfg.Pool.List()[0]["active_concurrent"]; active != 1 {
+		t.Fatalf("canceled waiter released another request's slot: active=%v", active)
+	}
+}
+
+func TestVisionBridgeBoundsRetrySlotWait(t *testing.T) {
+	oldDelay := visionQueueRetryDelay
+	visionQueueRetryDelay = 200 * time.Millisecond
+	defer func() { visionQueueRetryDelay = oldDelay }()
+	for _, mode := range []string{"total_budget", "client_cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int32
+			queueSeen := make(chan struct{})
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					close(queueSeen)
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error_code":"TM.00001041","error_msg":"concurrent session limit"}`)
+			}))
+			defer backend.Close()
+			resetVisionCache()
+			policy := VisionBridgePolicy{Enabled: true, Model: testVLModel, Timeout: 2 * time.Second, TotalTimeout: 600 * time.Millisecond}
+			h := visionTestHandler(t, backend.URL, &policy)
+			account := h.cfg.Pool.Accounts()[0].Name
+			img := base64.StdEncoding.EncodeToString(noisePNGBytes(t, 64, 64))
+			req, err := parseChatRequest([]byte(visionPayload(testTextModel, img)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(req.Messages)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := h.bridgeImages(ctx, req, policy)
+				done <- err
+			}()
+			<-queueSeen
+			if !h.cfg.Pool.AcquireLockWait(account, time.Second) {
+				cancel()
+				<-done
+				t.Fatal("could not occupy the released vision slot")
+			}
+			defer h.cfg.Pool.ReleaseLock(account)
+			if mode == "client_cancel" {
+				cancelTimer := time.AfterFunc(visionQueueRetryDelay+50*time.Millisecond, cancel)
+				defer cancelTimer.Stop()
+			}
+			select {
+			case err = <-done:
+			case <-time.After(900 * time.Millisecond):
+				h.cfg.Pool.ReleaseLock(account)
+				<-done
+				t.Fatal("vision retry slot wait ignored the budget or cancellation")
+			}
+			if err == nil || calls.Load() != 1 {
+				t.Fatalf("err=%v calls=%d, want interrupted wait after one vision call", err, calls.Load())
+			}
+			after, _ := json.Marshal(req.Messages)
+			if string(after) != string(before) {
+				t.Error("interrupted vision request changed the original images")
+			}
+			if active := h.cfg.Pool.List()[0]["active_concurrent"]; active != 1 {
+				t.Fatalf("interrupted vision retry released another request's slot: active=%v", active)
+			}
+		})
 	}
 }
 

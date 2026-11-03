@@ -149,7 +149,7 @@ func (h *Handler) bridgeImages(ctx context.Context, req *chatRequest, policy Vis
 	}
 	limit := len(parts)
 	if limit > policy.MaxImages {
-		limit = policy.MaxImages
+		return st, fmt.Errorf("图片数量 %d 超过识图上限 %d（config vision_bridge.max_images）", limit, policy.MaxImages)
 	}
 	// 先把所有图片都转述出来，全部成功再落地替换。
 	// 否则中途失败会留下「前几张变文字、后几张还是图」的畸形请求 ——
@@ -204,9 +204,6 @@ func (h *Handler) bridgeImages(ctx context.Context, req *chatRequest, policy Vis
 		st.Images++
 		st.Chars += len(r.desc)
 	}
-	if rest := len(parts) - limit; rest > 0 {
-		log.Printf("vision bridge 跳过多余的 %d 张图（max_images=%d）", rest, policy.MaxImages)
-	}
 	return st, nil
 }
 
@@ -231,7 +228,7 @@ func (h *Handler) askVision(ctx context.Context, imageURL string, policy VisionB
 	if wait <= 0 {
 		return "", errors.New("识图预算已耗尽")
 	}
-	if !h.cfg.Pool.AcquireLockWait(acct.Name, wait) {
+	if !h.cfg.Pool.AcquireLockWaitContext(ctx, acct.Name, wait) {
 		return "", errors.New("识图等待账号槽位超时")
 	}
 	held = true
@@ -269,7 +266,7 @@ func (h *Handler) askVision(ctx context.Context, imageURL string, policy VisionB
 				held = false
 				select {
 				case <-time.After(visionQueueRetryDelay):
-					if !h.cfg.Pool.AcquireLockWait(acct.Name, policy.Timeout) {
+					if !h.cfg.Pool.AcquireLockWaitContext(ctx, acct.Name, policy.Timeout) {
 						return "", errors.New("识图重新获取账号槽位超时")
 					}
 					held = true

@@ -122,6 +122,10 @@ func TestSetKeepaliveWindowHotUpdate(t *testing.T) {
 		t.Fatal("fresh account must not need keepalive")
 	}
 	p.PingKeepalive("u1")
+	acct := p.Get("u1")
+	acct.mu.Lock()
+	acct.keepaliveLastPing = time.Now().Add(-time.Second)
+	acct.mu.Unlock()
 	p.SetKeepaliveWindow(time.Nanosecond)
 	if !p.NeedKeepalive("u1") {
 		t.Fatal("shrunken window must trigger keepalive")

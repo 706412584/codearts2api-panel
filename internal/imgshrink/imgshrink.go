@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/draw"
 	"image/jpeg"
 	_ "image/png" // 注册 PNG 解码器（Decode/DecodeConfig 依赖注册表）
 	"math"
@@ -170,6 +169,7 @@ func ShrinkDataURL(raw string, opt Options) (string, Result, error) {
 	var best []byte
 	var bestW, bestH int
 	found := false
+	qualityFloor := min(opt.Quality, minQuality)
 	for round := 0; round < 6; round++ {
 		// 第 0 轮必须跑：如果 max_dimension 本身就小于 minDimension（例如设成 300 缩竖图），
 		// 先 break 会导致"一张都编不出来"直接失败。minDimension 只用于限制后续继续缩。
@@ -181,7 +181,7 @@ func ShrinkDataURL(raw string, opt Options) (string, Result, error) {
 		}
 		scaled := scaleRGBA(src, w, h)
 		hit := false
-		for q := opt.Quality; q >= minQuality; q -= 10 {
+		for q := opt.Quality; q >= qualityFloor; q -= 10 {
 			var buf bytes.Buffer
 			if err := jpeg.Encode(&buf, scaled, &jpeg.Options{Quality: q}); err != nil {
 				return raw, res, fmt.Errorf("encode jpeg: %w", err)
@@ -422,47 +422,38 @@ func parseExifOrientation(tiff []byte) int {
 }
 
 // applyOrientation 按 EXIF 方向把图像摆正，返回摆正后的图像与新宽高。
-// 只处理 3(180°) / 6(顺时针 90°) / 8(逆时针 90°)；镜像类(2/4/5/7)不常见，原样返回。
 func applyOrientation(src image.Image, orientation int) (image.Image, int, int) {
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	if w <= 0 || h <= 0 || orientation == 1 {
+	if w <= 0 || h <= 0 || orientation <= 1 || orientation > 8 {
 		return src, w, h
 	}
-	flat := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(flat, flat.Bounds(), src, b.Min, draw.Src)
-
-	switch orientation {
-	case 3: // 180°
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				si := flat.PixOffset(w-1-x, h-1-y)
-				di := dst.PixOffset(x, y)
-				copy(dst.Pix[di:di+4], flat.Pix[si:si+4])
-			}
-		}
-		return dst, w, h
-	case 6: // 顺时针 90°：(x,y) → (h-1-y, x)，新尺寸 h×w
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				si := flat.PixOffset(x, y)
-				di := dst.PixOffset(h-1-y, x)
-				copy(dst.Pix[di:di+4], flat.Pix[si:si+4])
-			}
-		}
-		return dst, h, w
-	case 8: // 逆时针 90°：(x,y) → (y, w-1-x)，新尺寸 h×w
-		dst := image.NewRGBA(image.Rect(0, 0, h, w))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				si := flat.PixOffset(x, y)
-				di := dst.PixOffset(y, w-1-x)
-				copy(dst.Pix[di:di+4], flat.Pix[si:si+4])
-			}
-		}
-		return dst, h, w
+	outW, outH := w, h
+	if orientation >= 5 {
+		outW, outH = h, w
 	}
-	return src, w, h
+	dst := image.NewRGBA(image.Rect(0, 0, outW, outH))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			dx, dy := x, y
+			switch orientation {
+			case 2: // 水平镜像
+				dx = w - 1 - x
+			case 3: // 180°
+				dx, dy = w-1-x, h-1-y
+			case 4: // 垂直镜像
+				dy = h - 1 - y
+			case 5: // 主对角线转置
+				dx, dy = y, x
+			case 6: // 顺时针 90°
+				dx, dy = h-1-y, x
+			case 7: // 副对角线转置
+				dx, dy = h-1-y, w-1-x
+			case 8: // 逆时针 90°
+				dx, dy = y, w-1-x
+			}
+			dst.Set(dx, dy, src.At(b.Min.X+x, b.Min.Y+y))
+		}
+	}
+	return dst, outW, outH
 }

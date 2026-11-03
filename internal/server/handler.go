@@ -825,6 +825,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			!strings.EqualFold(upstream.CanonicalModel(policy.Model), upstream.CanonicalModel(model)) {
 			stats, bridgeErr := h.bridgeImages(r.Context(), req, policy)
 			switch {
+			case bridgeErr != nil && clientGone(r):
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
 			case bridgeErr != nil:
 				// 保持原样：让上游按 406 明确报错，别把图悄悄吞掉。
 				log.Printf("vision bridge failed model=%s: %v（原图保留）", model, bridgeErr)
