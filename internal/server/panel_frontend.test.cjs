@@ -58,7 +58,7 @@ for (const [id, value] of multimodalControls) {
  assert(parent, 'multimodal control must be inside the config form: ' + id);
 }
 const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, attempt_errors: { 'req-retried': 'upstream 429: TPM <limit> & retry later' }, recent: [{ request_id: 'req-retried', time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, attempts: 3, total_tokens: 1200, completion_tokens: 200, duration_ms: 500, prompt_tokens: 1000, cache_hit_tokens: 800, cache_miss_tokens: 200, ttfb_ms: 300, queue_ms: 10100 }, { request_id: 'req-first-try', time: new Date().toISOString(), model: 'failed-model', ok: false, outcome: 'http_error', status: 503, attempts: 1, error: 'upstream <failed> & unavailable', duration_ms: 100, ttfb_ms: 900 }] };
-const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, prompt_tokens: 700000, completion_tokens: 400000, total_tokens: 1100000, cache_hit_tokens: 500000, cache_miss_tokens: 200000, cache_samples: 90, ttft_ms: 1800, ttft_samples: 120, tps: 42.5 }, { model: 'plain-model', requests: 4, succeeded: 4, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 0, cache_miss_tokens: 0, cache_samples: 0, ttft_ms: 0, ttft_samples: 0, tps: 0 }], accounts: [{ account: 'alice(uid00001)', requests: 100, succeeded: 99, prompt_tokens: 600000, completion_tokens: 300000, total_tokens: 900000, cache_hit_tokens: 400000, cache_miss_tokens: 200000, cache_samples: 80 }, { account: 'bob(uid00002)', requests: 32, succeeded: 31, prompt_tokens: 100100, completion_tokens: 100050, total_tokens: 200150, cache_hit_tokens: 100000, cache_miss_tokens: 0, cache_samples: 10 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
+const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, prompt_tokens: 700000, completion_tokens: 400000, total_tokens: 1100000, cache_hit_tokens: 500000, cache_miss_tokens: 200000, cache_samples: 90, ttft_ms: 1800, ttft_samples: 120, tps: 42.5 }, { model: 'plain-model', requests: 4, succeeded: 4, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 0, cache_miss_tokens: 0, cache_samples: 0, ttft_ms: 0, ttft_samples: 0, tps: 0 }], accounts: [{ account: 'alice(uid00001)', requests: 100, succeeded: 99, prompt_tokens: 600000, completion_tokens: 300000, total_tokens: 900000, cache_hit_tokens: 400000, cache_miss_tokens: 200000, cache_samples: 80 }, { account: 'bob(uid00002)', requests: 32, succeeded: 31, prompt_tokens: 100100, completion_tokens: 100050, total_tokens: 200150, cache_hit_tokens: 100000, cache_miss_tokens: 0, cache_samples: 10 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelector: s => s === 'dialog[open]' ? all.find(e => e.tagName === 'dialog' && e.open) || null : new Element(), querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
 const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: configFixture, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
@@ -392,6 +392,35 @@ assert(!/<label for="cfg(DefaultModel|SoftRate|ErrThreshold|ErrCooldown|MaxConcu
  assert(ids.get('modelsBody').innerHTML.includes('模型目录为空'));
  assert(!ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  context.fetch = originalFetch;
+ // 账号池状态懒刷新：账号页可见时只拉 overview；后台标签页/其它页/对话框打开/搜索中都不拉。
+ const overviewPoll = intervals.find(timer => timer.ms === 10000);
+ assert(overviewPoll, 'accounts page must have a ten-second overview refresh timer');
+ context.location.hash = '#accounts'; events.hashchange(); await tick(); await tick();
+ document.hidden = false;
+ let beforeOverview = requests.length;
+ overviewPoll.cb(); await tick(); await tick();
+ assert.equal(requests.length, beforeOverview + 1, 'visible accounts page polls overview once');
+ assert(requests[requests.length - 1].url.endsWith('/overview'), 'the lazy poll must be a plain overview read');
+ document.hidden = true;
+ beforeOverview = requests.length;
+ overviewPoll.cb(); await tick();
+ assert.equal(requests.length, beforeOverview, 'hidden tab must not poll the pool');
+ document.hidden = false;
+ context.location.hash = '#models'; events.hashchange(); await tick(); await tick();
+ beforeOverview = requests.length;
+ overviewPoll.cb(); await tick();
+ assert.equal(requests.length, beforeOverview, 'other pages must not poll the pool');
+ context.location.hash = '#accounts'; events.hashchange(); await tick(); await tick();
+ ids.get('addDialog').open = true;
+ beforeOverview = requests.length;
+ overviewPoll.cb(); await tick();
+ assert.equal(requests.length, beforeOverview, 'open dialogs must pause the lazy refresh');
+ ids.get('addDialog').open = false;
+ ids.get('accountSearch').value = 'busy';
+ beforeOverview = requests.length;
+ overviewPoll.cb(); await tick();
+ assert.equal(requests.length, beforeOverview, 'an active search must not be disturbed');
+ ids.get('accountSearch').value = '';
  ids.get('logoutButton').onclick(); assert(ids.get('loginDialog').open); assert.equal(context.sessionStorage.getItem('codearts2api-panel.admin-key'), undefined);
  console.log('PASS: five views, live log polling, escaped recent failures, OAuth controls, session-key login, secret redaction and deletion gate.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
