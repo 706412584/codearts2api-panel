@@ -210,10 +210,9 @@
     try { await navigator.clipboard.writeText(button.dataset.copyModel); toast('模型 ID 已复制'); } catch { toast('浏览器无法访问剪贴板，请选中模型 ID 复制。', true); }
   };
   function eventOK(event) { return event.ok === true || (event.ok === undefined && event.status >= 200 && event.status < 300 && event.outcome !== 'stream_error'); }
-  // 失败原因分类：先认具体原因，最后才落到「账号池没有可用账号」；全对不上就是「异常」。
-  // 只读归档里的 error 原文，不额外请求后端，历史记录也能跟着分类。
-  // 排队/限流必须排在「重试耗尽」之前：耗尽文案里嵌着最后一次上游错误（常是 TM.00001041），
-  // 先认具体原因，才不会把「上游并发已满」笼统地说成「重试耗尽」。
+  // 只读归档里的 error 原文，历史记录也按同一套规则分类。
+  // 只按底层原因分类：外层「重试耗尽/无可用账号」与内层错误同时出现时，以内层为准。
+  // 重试次数已在「尝试次数」列展示，不再冒充失败原因；无法识别的错误保留「异常」。
   function failureKind(row) {
     if (eventOK(row)) return '';
     const text = String(row.error || '').toLowerCase();
@@ -221,10 +220,14 @@
         /context canceled|context cancelled|client disconnected|client canceled|client cancelled/.test(text)) return 'cancel';
     if (/not multimodal|inferhub\.001001020/.test(text)) return 'capability';
     if (/not registered|not in the model catalog|model .*not available|not available on any configured account/.test(text)) return 'missing';
+    // 4291 是业务码，不是 HTTP 429：福利额度耗尽不能当成可重试的瞬时排队。
+    if (/inferhub\.4291\./.test(text)) return 'quota';
     if (/tm\.00001041|81111\.429|tpm limit|concurren|并发|(?:code|http)=429/.test(text)) return 'queue_limit';
-    // 只有真打过上游（attempts ≥ 1）才算「重试耗尽」；0 次说明候选账号全卡在校验/凭据阶段，
-    // 那是账号不可用，不是重试预算用完。
-    if (/upstream attempts exhausted after [1-9]\d* attempt/.test(text)) return 'retry_exhausted';
+    if (/apig\.0203|backend timeout|deadline exceeded|i\/o timeout|(?:code|http)=(?:408|504)/.test(text)) return 'upstream_timeout';
+    if (/token invalid|token (?:expired|expiring)|(?:token|credential).{0,40}expired|expired.{0,40}(?:token|credential)|re-login required|unauthorized|forbidden|invalid signature|apig\.0301|apig\.0602|(?:code|http)=40[13]/.test(text)) return 'auth';
+    if (/(?:code|http)=5\d\d/.test(text)) return 'upstream_error';
+    // 参数/多模态内容/工具选择错误：换账号或重试也不会改变结果。
+    if (/invalid_request|upstream rejected request params|request param is invalid|inferhub\.001001005|inferhub\.001001046|messages is empty|tool_choice function|invalid content block|unsupported content block|content must be a string|text block requires text|image_url (?:must be|requires)|max_tokens must|temperature must|top_p must|no user or tool message|parse request|request body exceeds/.test(text)) return 'invalid_request';
     if (/all accounts unavailable|no healthy account|no available account|no accounts configured|upstream attempts exhausted after 0 attempt/.test(text)) return 'no_account';
     return 'abnormal';
   }
@@ -234,7 +237,11 @@
     no_account: ['无可用账号', 'warn'],
     capability: ['模型能力不符', 'warn'],
     queue_limit: ['上游排队/限流', 'warn'],
-    retry_exhausted: ['重试耗尽', 'warn'],
+    quota: ['福利额度耗尽', 'warn'],
+    auth: ['账号鉴权失败', 'warn'],
+    invalid_request: ['请求参数错误', 'warn'],
+    upstream_timeout: ['上游超时', 'warn'],
+    upstream_error: ['上游服务异常', 'warn'],
     abnormal: ['异常', 'bad'],
   };
   function failureBadge(row) {
