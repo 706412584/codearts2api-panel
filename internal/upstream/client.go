@@ -120,6 +120,32 @@ type Client struct {
 // srcFailCooldown 上游某一来源连续失败后的退避窗口。
 const srcFailCooldown = 5 * time.Minute
 
+// defaultUserAgent 对齐官方客户端的 User-Agent。
+//
+// 官方 chat 请求头（agentkernelServer 的 getInferhubHcHeaders）不显式设置
+// User-Agent，交由其运行时 Bun 1.3.14 的 fetch 补默认值 "Bun/1.3.14"
+// （实测同版本 bun 的 fetch 默认 UA 即此值）。Go 若不设置则是
+// "Go-http-client/1.1"，是明显的非官方指纹。官方内核版本随发版更新，
+// 此处与之对齐，升级官方后按需同步。
+const defaultUserAgent = "Bun/1.3.14"
+
+// uaTransport 在传输层补 User-Agent。
+//
+// 必须在 RoundTrip（而非 signRequest 之前）注入：官方签名只签请求头里已有的项，
+// UA 由 fetch 在签名后补，因此不进 SignedHeaders；我们保持一致，避免签名头集合
+// 与官方偏离。只填空值，不覆盖调用方显式设置的 UA。
+type uaTransport struct {
+	base http.RoundTripper
+	ua   string
+}
+
+func (t uaTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Header.Get("User-Agent") == "" {
+		r.Header.Set("User-Agent", t.ua)
+	}
+	return t.base.RoundTrip(r)
+}
+
 // New 构造客户端。
 func New(timeout time.Duration) *Client {
 	if timeout <= 0 {
@@ -131,9 +157,12 @@ func New(timeout time.Duration) *Client {
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: 120 * time.Second,
 	}
+	// 两个客户端共用同一 transport，包装一次即覆盖全部上游请求
+	// （chat/models/balance/checkin 等），与官方"全走 Bun fetch"一致。
+	var rt http.RoundTripper = uaTransport{base: tr, ua: defaultUserAgent}
 	c := &Client{
-		http:        &http.Client{Timeout: timeout, Transport: tr},
-		streamHTTP:  &http.Client{Transport: tr},
+		http:        &http.Client{Timeout: timeout, Transport: rt},
+		streamHTTP:  &http.Client{Transport: rt},
 		snapBase:    SnapEngineApiHost,
 		srcFail:     map[string]time.Time{},
 	}
