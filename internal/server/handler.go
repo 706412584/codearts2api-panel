@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
@@ -56,6 +57,11 @@ type Config struct {
 	LoginConfig upstream.LoginConfig
 	// OAuthCallbackHost 可选：覆盖授权链接回调 host（如 https://oneapi.example.com/codearts）。
 	OAuthCallbackHost string
+	// ImageShrink 内联图片按需缩图策略（吸收自上游）。nil 表示不缩图。
+	// 上游媒体转换对单图有硬上限（实测请求体≈4.3MB），超了只能压小再发。
+	ImageShrink *imgshrink.Policy
+	// MaxBodyBytes 聊天请求体上限（字节）。<=0 回落 defaultMaxBodyBytes。
+	MaxBodyBytes int64
 	// ImageHandling 见 cmd/server/config.go 同名配置项。空值等同 passthrough。
 	ImageHandling string
 	// Live 运行期配置快照：面板保存后热生效的字段从这里读。
@@ -123,7 +129,13 @@ const (
 	modelsFetchFailCooldown = 5 * time.Minute
 )
 
-const maxBodyBytes = 8 << 20
+// defaultMaxBodyBytes 聊天请求体默认上限。旧的硬编码 8MB 太小：一张 2560×1440
+// 的截图 base64 后约 2~5MB，多图或长会话很容易越界，客户端只会拿到 413。
+// 实际上限由 config 的 max_body_mb 决定（默认 32MB）。
+const defaultMaxBodyBytes = 32 << 20
+
+// maxAuthBytes 凭据导入（auth JSON）的上限，与聊天请求体无关。
+const maxAuthBytes = 8 << 20
 
 // Handler 主路由。
 type Handler struct {
@@ -864,13 +876,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_accounts", "no accounts configured; add one in the panel")
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	limit := h.cfg.MaxBodyBytes
+	if limit <= 0 {
+		limit = defaultMaxBodyBytes
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}
-	if len(body) > maxBodyBytes {
-		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 8MB limit")
+	if int64(len(body)) > limit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_too_large",
+			"request body exceeds "+humanBytes(limit)+" limit (config max_body_mb)")
 		return
 	}
 	req, err := parseChatRequest(body)
@@ -906,6 +923,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.convMu.Lock()
 		stickyAcct = h.convAcct[req.ConversationID]
 		h.convMu.Unlock()
+	}
+
+	// 缩图（吸收自上游）：上游媒体转换对单张图片有硬上限（实测请求体≈4.3MB /
+	// 图片≈3.2MB），超了回 ModelArts.81029，网关放宽 body 上限也没用——只能压小再发。
+	// 必须在 analyze 改写之前做：改写会把图片换成占位符，之后就找不到原图了。
+	// 只在超预算时动手，正常小图一个字节都不碰；结果按内容+参数缓存，多轮不重压。
+	if h.cfg.ImageShrink != nil && hasImageBlocks(req) {
+		if st := shrinkMessageImages(req, *h.cfg.ImageShrink, int64(len(body))); st.Changed {
+			log.Printf("image shrink images=%d before=%d after=%d", st.Images, st.Before, st.After)
+		}
 	}
 
 	// 带图请求打到「目录明确声明不支持图片」的模型：
@@ -1158,6 +1185,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
 					lockHeld = false
 				}
+				if clientGone(r) {
+					// 调用方自己断开了：上游必然报 context canceled / broken pipe，
+					// 不能记在账号头上（会误冷却整池）。
+					log.Printf("client disconnected before upstream reply account=%s: %v", acct.Name, serr)
+					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+					return
+				}
 				if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
 					// 请求形状/长度问题：换账号结果相同，冷却账号还会拖垮整池。
 					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
@@ -1215,8 +1249,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					event.Outcome = reqlog.OutcomeStreamError
 					event.Error = werr.Error()
 					log.Printf("chat stream account=%s error: %v", acct.Name, werr)
-					// 只有账号侧故障才累计错误；长度/形状/模型级错误换账号也一样。
-					if classifyUpstreamError(werr) == classAccountFault {
+					// 只有账号侧故障才累计错误；长度/形状/模型级错误换账号也一样，
+					// 客户端自己断开更不是账号的错。
+					if !clientGone(r) && classifyUpstreamError(werr) == classAccountFault {
 						h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 					}
 				} else {
@@ -1235,6 +1270,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 共用同一套归类。
 				lastUpstreamErr = aerr
 				lastErr = aerr
+				if clientGone(r) {
+					log.Printf("client disconnected during aggregate account=%s: %v", acct.Name, aerr)
+					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+					return
+				}
 				if cls := classifyUpstreamError(aerr); cls == classBadRequest || cls == classBudget {
 					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 						"upstream rejected request params: "+truncateMsg(aerr.Error(), errorTextLimit))
@@ -1557,6 +1597,13 @@ func writeAggregatedAsStream(w http.ResponseWriter, model string, comp *upstream
 	if fl != nil {
 		fl.Flush()
 	}
+}
+
+// clientGone 报告「调用方自己走了」（断连/取消）。这类错误必须不记在账号头上：
+// 上游收到的是 context canceled / broken pipe，冷却整池 10 分钟纯属误伤
+// （上游维护者 2026-11-03 线上实测：客户端超时/回压交替把两个账号互相打进冷却）。
+func clientGone(r *http.Request) bool {
+	return r != nil && r.Context().Err() != nil
 }
 
 // handleUpstreamError 记录错误并决定是否处罚账号。

@@ -62,6 +62,23 @@ type Config struct {
 	// 不提供「剔除图片只留文本」：静默丢图会让模型答非所问。
 	ImageHandling string `json:"image_handling"`
 
+	// MaxBodyMB 聊天请求体上限（MB，默认 32）。
+	// 多模态请求的图片是 base64 内联的：一张 2560×1440 截图就有 2~5MB，
+	// 旧的硬编码 8MB 会把正常请求拒成 413（客户端只看到"太小"却没法改）。
+	MaxBodyMB int `json:"max_body_mb"`
+
+	// ImageShrink 内联图片「按需缩图 / 转 JPEG」（吸收自上游）。
+	// 上游媒体转换对单张图片有硬上限（实测请求体≈4.3MB / 图片≈3.2MB），
+	// 超了只能压小再发，网关放宽 body 上限也没用。
+	ImageShrink struct {
+		Enabled       bool `json:"enabled"`
+		TriggerBodyMB int  `json:"trigger_body_mb"` // 请求体超过它才考虑压缩
+		TargetImageMB int  `json:"target_image_mb"` // 单张图片压缩后目标
+		TargetTotalMB int  `json:"target_total_mb"` // 本次请求所有图片合计目标
+		MaxDimension  int  `json:"max_dimension"`   // 长边像素上限
+		Quality       int  `json:"quality"`         // 初始 JPEG 质量
+	} `json:"image_shrink"`
+
 	// LoginClientID WebUI 登录使用的 OAuth client_id（留空用默认 codearts-agent）。
 	LoginClientID string `json:"login_client_id"`
 
@@ -107,7 +124,14 @@ func Default() *Config {
 	c.Watch.RefreshSkewM = 30
 	c.Watch.KeepaliveInterval = 15 // 新增：保活间隔 15 分钟
 	c.MaxConcurrent = 2            // 上游单账号最多 3 并发会话且释放慢，留一个槽位余量
-	c.KeepaliveWindow = "10m"      // 新增：保活窗口 10 分钟
+	c.MaxBodyMB = 32               // 图片 base64 内联，旧的 8MB 会把正常截图拒成 413
+	c.ImageShrink.Enabled = true
+	c.ImageShrink.TriggerBodyMB = 4   // 4MB 以内不碰（实测 4.29MB 上游还能过）
+	c.ImageShrink.TargetImageMB = 2   // 单张压到 2MB，留足余量
+	c.ImageShrink.TargetTotalMB = 4   // 多图合计也别超 4MB
+	c.ImageShrink.MaxDimension = 2048 // 长边超 2048 一律缩
+	c.ImageShrink.Quality = 85
+	c.KeepaliveWindow = "10m" // 新增：保活窗口 10 分钟
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
 	c.CheckinHours = []int{9, 21}
@@ -411,6 +435,27 @@ func (c *Config) normalize() []string {
 	default:
 		changes = append(changes, fmt.Sprintf("image_handling=%q → passthrough", c.ImageHandling))
 		c.ImageHandling = "passthrough"
+	}
+	// 请求体上限：0/负数按没配置处理；上限 512MB 只是防手滑填太大。
+	if c.MaxBodyMB <= 0 || c.MaxBodyMB > 512 {
+		changes = append(changes, fmt.Sprintf("max_body_mb=%d → 32", c.MaxBodyMB))
+		c.MaxBodyMB = 32
+	}
+	// 缩图参数：非法值分别回写默认，别让一个错值把整段策略废掉。
+	if c.ImageShrink.TriggerBodyMB <= 0 {
+		c.ImageShrink.TriggerBodyMB = 4
+	}
+	if c.ImageShrink.TargetImageMB <= 0 {
+		c.ImageShrink.TargetImageMB = 2
+	}
+	if c.ImageShrink.TargetTotalMB <= 0 {
+		c.ImageShrink.TargetTotalMB = 4
+	}
+	if c.ImageShrink.MaxDimension <= 0 {
+		c.ImageShrink.MaxDimension = 2048
+	}
+	if c.ImageShrink.Quality <= 0 || c.ImageShrink.Quality > 100 {
+		c.ImageShrink.Quality = 85
 	}
 	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
 	if hours := validHours(c.CheckinHours); len(hours) > 0 {

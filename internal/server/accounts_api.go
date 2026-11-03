@@ -17,8 +17,8 @@ func (h *Handler) adminImport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "auth_dir 未配置"})
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
-	if err != nil || len(raw) > maxBodyBytes {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxAuthBytes+1))
+	if err != nil || len(raw) > maxAuthBytes {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "message": "凭据 JSON 无效或超过 8MB"})
 		return
 	}

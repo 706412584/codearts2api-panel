@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
@@ -95,6 +96,8 @@ func main() {
 		QueueMaxAttempts: cfg.QueueMaxAttempts,
 		ConvStateFile:    cfg.StateFile + ".chats.json",
 		ImageHandling:    cfg.ImageHandling,
+		ImageShrink:      imageShrinkPolicy(cfg),
+		MaxBodyBytes:     int64(cfg.MaxBodyMB) << 20,
 		WatchInfo: map[string]any{
 			"enabled":              cfg.Watch.Enabled,
 			"credits_auto_claim":   cfg.CreditsAutoClaim,
@@ -150,6 +153,22 @@ func resolveDataPaths(cfg *Config, configPath string) {
 	if !filepath.IsAbs(cfg.StateFile) {
 		cfg.StateFile = filepath.Join(base, cfg.StateFile)
 	}
+}
+
+// imageShrinkPolicy 把配置的 image_shrink 段转成缩图策略。
+// 关闭（或整段未配置）时返回 nil —— Handler 用 nil 表示不缩图。
+func imageShrinkPolicy(cfg *Config) *imgshrink.Policy {
+	if cfg == nil || !cfg.ImageShrink.Enabled {
+		return nil
+	}
+	p := imgshrink.Policy{
+		TriggerBytes:     int64(cfg.ImageShrink.TriggerBodyMB) << 20,
+		TargetImageBytes: cfg.ImageShrink.TargetImageMB << 20,
+		TargetTotalBytes: cfg.ImageShrink.TargetTotalMB << 20,
+		MaxDimension:     cfg.ImageShrink.MaxDimension,
+		Quality:          cfg.ImageShrink.Quality,
+	}.Normalized()
+	return &p
 }
 
 // loginConfig 决定 WebUI 登录使用的 OAuth 配置。

@@ -161,8 +161,13 @@ func errClassText(s string) errClass {
 		return classBudget
 	case strings.Contains(low, "not multimodal") ||
 		strings.Contains(low, "001001020") ||
+		strings.Contains(low, "001001046") || // 多模态内容格式不正确
 		strings.Contains(low, "001001005") ||
-		strings.Contains(low, "request param is invalid"):
+		strings.Contains(low, "request param is invalid") ||
+		// 81029「Media conversion failed: ... 413」= 图片超出上游媒体转换上限，
+		// 同属请求内容问题：上游常把它包成 502，落进「账号故障」会误冷却整池。
+		strings.Contains(low, "81029") ||
+		strings.Contains(low, "media conversion failed"):
 		return classBadRequest
 	}
 	return classAccountFault
