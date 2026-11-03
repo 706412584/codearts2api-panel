@@ -235,7 +235,7 @@ curl http://127.0.0.1:7866/v1/messages \
   -d '{"model":"claude-sonnet-4-5","max_tokens":1024,"stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-实现说明：网关上游只有 OpenAI chat completions，请求被就地翻成 chat 请求、走与 OpenAI **同一套**账号轮转 / 并发排队 / 重试 / 图片处理管道，响应再翻回 Anthropic 形状（含 `message_start` … `message_stop` 的完整 SSE 事件链）。协议转换由 `internal/apicompat` 提供（第三方 LGPL-3.0 移植，见 `internal/apicompat/PROVENANCE.md`）。**模型选择**：Anthropic 的 `model` 字段不参与选号，实际使用配置中的默认模型（面板「服务 → 默认模型」）；如需指定，请改该配置项。
+实现说明：网关上游只有 OpenAI chat completions，请求被就地翻成 chat 请求、走与 OpenAI **同一套**账号轮转 / 并发排队 / 重试 / 图片处理管道，响应再翻回 Anthropic 形状（含 `message_start` … `message_stop` 的完整 SSE 事件链）。协议转换由 `internal/apicompat` 提供（第三方 LGPL-3.0 移植，见 `internal/apicompat/PROVENANCE.md`）。**模型选择**：优先用客户端 `model` 字段里的名字——若它命中池里的模型目录（如 `kimi-k3.1-pro`）就照用；否则（Claude Code 默认发的 `claude-*`，上游并无此模型）回落到配置的默认模型（面板「服务 → 默认模型」）。因此想用某个具体模型，直接在客户端把 `model` 填成 `/v1/models` 里的 ID 即可；填 Anthropic 名字则用默认模型。
 
 图片使用支持多模态的模型，消息形状为：
 

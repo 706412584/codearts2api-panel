@@ -159,6 +159,21 @@ func TestAnthropicMessagesUpstreamErrorIsAnthropicShaped(t *testing.T) {
 	}
 }
 
+// 模型选择：claude-* （上游无此名）回落默认模型；其余名字原样透传（含目录未发现的
+// 情形——重启后目录为空时，客户端选的 kimi-k3.1-pro 不能被误换成默认模型）。
+func TestAnthropicModelResolution(t *testing.T) {
+	h := anthropicTestHandler(t, "data: [DONE]\n\n") // 上游不关心内容
+	if got := h.resolveAnthropicModel("claude-sonnet-4-5"); got != "glm-5.2" {
+		t.Errorf("claude-* 应回落默认模型，got=%q", got)
+	}
+	if got := h.resolveAnthropicModel("kimi-k3.1-pro"); got != "kimi-k3.1-pro" {
+		t.Errorf("真实模型应原样透传，got=%q", got)
+	}
+	if got := h.resolveAnthropicModel(""); got != "glm-5.2" {
+		t.Errorf("空 model 应回落默认，got=%q", got)
+	}
+}
+
 // count_tokens 必须成功返回（Claude Code 拿它做上下文预算，失败会触发提前压缩）。
 func TestAnthropicCountTokens(t *testing.T) {
 	p, _ := pool.New(nil, pool.Config{}, "")

@@ -23,6 +23,23 @@ import (
 	"codearts2api-panel/internal/apicompat"
 )
 
+// resolveAnthropicModel 决定本次 Anthropic 请求实际使用的上游模型。
+//
+// 只有一种情况需要改写：Anthropic 客户端（Claude Code / Anthropic SDK）默认发
+// claude-* —— 上游没有这个名字，直发必回 002002009.404 —— 改用配置的默认模型。
+//
+// 其余名字**原样透传**，与 OpenAI 路径一致：命中目录最好；目录尚未发现（内存态、
+// 重启即空）时也交给上游判定，而不是回落默认——否则「重启后第一个请求之前不显式
+// 查过目录」的窗口里，客户端选的 kimi-k3.1-pro 会被误判成未知而悄悄换成 glm-5.2。
+// 目录已经发现时，聊天路径的目录守卫会拦下真正的未知模型并回 404。
+func (h *Handler) resolveAnthropicModel(requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested == "" || strings.HasPrefix(strings.ToLower(requested), "claude") {
+		return h.live().DefaultModel
+	}
+	return requested
+}
+
 // anthropicErrType 把 HTTP 状态映射为 Anthropic 的错误类型。
 // Claude Code 按 Anthropic 协议解析错误体；回 OpenAI 格式它只能显示成未知错误。
 func anthropicErrType(status int) string {
@@ -87,9 +104,10 @@ func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "convert request: "+err.Error())
 		return
 	}
-	// 客户端发来的 model 是 Anthropic 名（claude-*），网关不以它选号——上游没有这个
-	// 模型，直发会 002002009.404。统一用配置的默认模型（运维在面板里选的）。
-	creq.Model = h.live().DefaultModel
+	// 模型选择：Anthropic 客户端通常发 claude-* （上游没有这个名字，直发会
+	// 002002009.404），此时回落到配置的默认模型；但若它发的就是池里真实存在的模型
+	// （如 kimi-k3.1-pro），则尊重客户端选择——否则在 Claude Code 里选模型会失效。
+	creq.Model = h.resolveAnthropicModel(areq.Model)
 	creq.Stream = areq.Stream
 	if areq.Stream {
 		creq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
