@@ -9,8 +9,11 @@
 package livecfg
 
 import (
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"codearts2api-panel/internal/imgshrink"
 )
 
 // Snapshot 一次读取的不可变配置视图。
@@ -34,6 +37,77 @@ type Snapshot struct {
 	KeepaliveIntervalMinutes int
 	MaxConcurrent            int
 	KeepaliveWindow          string
+
+	// MaxBodyBytes 聊天请求体上限（0 表示用默认值）。
+	MaxBodyBytes int64
+
+	// ImageShrink 内联图片按需缩图/转 JPEG。
+	ImageShrinkEnabled bool
+	ImageShrink        imgshrink.Policy
+
+	// VisionBridge 纯文本模型「先用 VL 转述图片」的能力补齐。
+	VisionBridgeEnabled bool
+	VisionBridge        VisionBridge
+}
+
+// VisionBridge 识图桥接策略。
+type VisionBridge struct {
+	Enabled      bool
+	Model        string        // 辅助识图的 VL 模型
+	MaxImages    int           // 单请求最多转述几张
+	MaxChars     int           // 单张转述的最大字符数
+	MaxTokens    int           // VL 调用输出上限
+	Timeout      time.Duration // 单张识图超时
+	TotalTimeout time.Duration // 整个桥接过程的总预算
+	Prompt       string        // 自定义转述提示词
+}
+
+// DefaultVisionBridge 默认策略：Qwen3-VL-235B、最多 8 张、单张 6000 字、总预算 90s。
+func DefaultVisionBridge() VisionBridge {
+	return VisionBridge{
+		Enabled:      true,
+		Model:        "Qwen3-VL-235B",
+		MaxImages:    8,
+		MaxChars:     6000,
+		MaxTokens:    1500,
+		Timeout:      120 * time.Second,
+		TotalTimeout: 90 * time.Second,
+	}
+}
+
+// DefaultVisionPrompt 默认的图片转述提示词：先概括，再逐行转写文字，最后描述布局。
+const DefaultVisionPrompt = `你是「图片转述器」。请把这张图片转成**详尽的中文文字**，供只能读文字的模型使用：
+1. 先用一句话概括这是什么（应用界面截图 / 网页截图 / 照片 / 图表 / 报错弹窗 / 代码等）；
+2. 然后**逐行转写画面里所有可见文字**（按钮、菜单、标题、正文、报错原文、数字都要原样抄，保留层级和顺序；看不清的写「…」）；
+3. 再描述布局结构与关键视觉信息（位置关系、颜色、高亮、图表趋势、异常标记）；
+4. 只描述看得见的内容，不要推测；不确定就明确写「不确定」。
+直接输出纯文本，不要 Markdown 标题、不要客套话。`
+
+// Normalized 补默认值（整型/时长零值视为未设置）。
+func (p VisionBridge) Normalized() VisionBridge {
+	d := DefaultVisionBridge()
+	if strings.TrimSpace(p.Model) == "" {
+		p.Model = d.Model
+	}
+	if p.MaxImages <= 0 {
+		p.MaxImages = d.MaxImages
+	}
+	if p.MaxChars <= 0 {
+		p.MaxChars = d.MaxChars
+	}
+	if p.MaxTokens <= 0 {
+		p.MaxTokens = d.MaxTokens
+	}
+	if p.Timeout <= 0 {
+		p.Timeout = d.Timeout
+	}
+	if p.TotalTimeout <= 0 {
+		p.TotalTimeout = d.TotalTimeout
+	}
+	if strings.TrimSpace(p.Prompt) == "" {
+		p.Prompt = DefaultVisionPrompt
+	}
+	return p
 }
 
 // Holder 原子持有当前快照。
