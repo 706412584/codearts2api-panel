@@ -74,9 +74,9 @@ func TestSendChatV2EmitsIdentityHeaders(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithChatEndpoint(5*time.Second, srv.URL)
-	_, _ = c.SendChatV2(context.Background(), map[string]any{
+	_, _ = c.sendChatV2(context.Background(), map[string]any{
 		"model": "glm-5.2", "stream": true, "messages": []any{},
-	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok")
+	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok", "", "")
 
 	if got.Get("x-ot-trace-id") != "trace-42" || got.Get("x-snap-traceid") != "trace-42" {
 		t.Fatalf("trace id not unified on wire: x-ot-trace-id=%q x-snap-traceid=%q",
