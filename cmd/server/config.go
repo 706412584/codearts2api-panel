@@ -55,6 +55,11 @@ type Config struct {
 	MaxConcurrent   int    `json:"max_concurrent"`   // 单账号最大并发数（新增）
 	KeepaliveWindow string `json:"keepalive_window"` // 保活窗口（新增）
 
+	// ModelRefreshMinutes 模型目录后台续期巡检间隔（分钟，默认 60）。
+	// 账号目录缓存 23h，这里决定「过期前多久巡检一次」；0/负数按默认 60 处理。
+	// 调小则目录更早被续上（巡检更频繁），调大则续期最坏滞后更久。
+	ModelRefreshMinutes int `json:"model_refresh_minutes"`
+
 	// ImageHandling 带图请求打到「上游明确不支持图片」的模型时如何处理：
 	//   ""/"analyze"（本部署默认）—— 复刻官方 AnalyzeImagePlugin：图片换成占位符
 	//     交给主模型，主模型按需调用 analyze_image 工具，网关内部用视觉模型分析后
@@ -132,7 +137,8 @@ func Default() *Config {
 	c.ImageShrink.TargetTotalMB = 4   // 多图合计也别超 4MB
 	c.ImageShrink.MaxDimension = 2048 // 长边超 2048 一律缩
 	c.ImageShrink.Quality = 85
-	c.KeepaliveWindow = "10m" // 新增：保活窗口 10 分钟
+	c.KeepaliveWindow = "10m"     // 新增：保活窗口 10 分钟
+	c.ModelRefreshMinutes = 60    // 模型目录后台续期巡检间隔
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
 	c.CheckinHours = []int{9, 21}
@@ -425,6 +431,9 @@ func (c *Config) normalize() []string {
 	}
 	if c.Watch.KeepaliveInterval <= 0 {
 		c.Watch.KeepaliveInterval = 15 // 默认保活间隔 15 分钟
+	}
+	if c.ModelRefreshMinutes <= 0 {
+		c.ModelRefreshMinutes = 60 // 默认模型目录续期巡检间隔 60 分钟
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 2 // 上游单账号并发会话上限 3 且释放慢，留一个槽位余量

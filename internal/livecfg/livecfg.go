@@ -34,6 +34,9 @@ type Snapshot struct {
 	KeepaliveIntervalMinutes int
 	MaxConcurrent            int
 	KeepaliveWindow          string
+
+	// ModelRefreshMinutes 模型目录后台续期巡检间隔（分钟）。0 表示未配置，用内置默认。
+	ModelRefreshMinutes int
 }
 
 // Holder 原子持有当前快照。

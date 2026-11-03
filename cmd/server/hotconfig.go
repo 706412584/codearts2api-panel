@@ -43,6 +43,7 @@ func liveSnapshot(c *Config) livecfg.Snapshot {
 		KeepaliveIntervalMinutes: c.Watch.KeepaliveInterval,
 		MaxConcurrent:            c.MaxConcurrent,
 		KeepaliveWindow:          c.KeepaliveWindow,
+		ModelRefreshMinutes:      c.ModelRefreshMinutes,
 	}
 }
 
