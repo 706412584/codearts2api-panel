@@ -493,23 +493,36 @@ func uuidHex() string {
 // function=agent-tui）。不发 client-ip、maas_type，也不发签名流头
 // （hash3/kernel-version/timestamp/depart）——那些依赖官方签名 DLL。
 // traceID/sessionID 空时各自生成 UUID（官方同款回退）。
-func ChatIdentityHeaders(traceID, sessionID, model string) map[string]string {
+//
+// chatID 是本次上游 chat 的会话 ID（无则空）。官方把它作为 user-msg-id 的会话段
+// （`${sessionID}-${createdTime}`）；网关无该 id 时取空串，与官方未提供该头时一致。
+// x-ot-parent-session-id 同理：网关单轮无父子会话，固定空串（官方首条消息也是空）。
+func ChatIdentityHeaders(traceID, sessionID, model, chatID string) map[string]string {
 	if traceID == "" {
 		traceID = uuidHex()
 	}
 	if sessionID == "" {
 		sessionID = uuidHex()
 	}
+	// 与官方一致：ISO 8601 UTC 截到秒（官方 new Date().toISOString().split(".")[0]+"Z"）。
+	createdTime := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	userMsgID := ""
+	if chatID != "" {
+		userMsgID = chatID + "-" + createdTime
+	}
 	headers := map[string]string{
-		"x-ot-trace-id":    traceID,
-		"x-ot-span-id":     uuidHex(),
-		"x-snap-traceid":   traceID,
-		"x-ot-session-id":  sessionID,
-		"user-session-id":  sessionID,
-		"x-ot-function":    "agent-tui",
-		"x-ot-client-type": "CLI",
-		"plugin-name":      "CLI",
-		"ide-name":         "CLI",
+		"x-ot-trace-id":          traceID,
+		"x-ot-span-id":           uuidHex(),
+		"x-snap-traceid":         traceID,
+		"x-ot-session-id":        sessionID,
+		"x-ot-parent-session-id": "",
+		"user-session-id":        sessionID,
+		"x-ot-function":          "agent-tui",
+		"x-ot-client-type":       "CLI",
+		"plugin-name":            "CLI",
+		"ide-name":               "CLI",
+		"created-time":           createdTime,
+		"user-msg-id":            userMsgID,
 	}
 	if canonical := CanonicalModel(model); canonical != "" {
 		headers["model-id"] = canonical
@@ -624,7 +637,7 @@ func (c *Client) sendChatV2(ctx context.Context, body map[string]any, traceID st
 		httpReq.Header.Set("Session-Id", sessionID)
 	}
 	modelID, _ := body["model"].(string)
-	for k, v := range ChatIdentityHeaders(traceID, sessionID, modelID) {
+	for k, v := range ChatIdentityHeaders(traceID, sessionID, modelID, chatID) {
 		httpReq.Header.Set(k, v)
 	}
 	resp, err := c.streamHTTP.Do(httpReq)
