@@ -18,6 +18,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -37,6 +38,8 @@ const (
 	analyzeImageTTL = 30 * time.Minute
 	// visionSlotWait 识图子请求等账号并发槽位的上限。
 	visionSlotWait = 30 * time.Second
+	// analyzeVisionAttempts 单张图片识图的总尝试次数（含 81104 间歇失败与并发排队重试）。
+	analyzeVisionAttempts = 4
 )
 
 // analyzeImageStore 保存本次进程内收到的图片，供 analyze_image 工具按 ID 取用。
@@ -235,11 +238,20 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 		return "", fmt.Errorf("no account can serve vision model %s", model)
 	}
 	// 并发槽位：拿不到就让这次识图失败，由调用方（工具回灌或桥接）按"图片原样
-	// 保留"处理。识图是子请求，宁可明确失败也不要长时间死等。
+	// 保留"处理。识图是子请求，宁可明确失败也不要长时间死等 —— 唯一例外是撞上
+	// 上游「并发会话数已达上限」（见下面重试循环），那属于瞬时占用，等一轮再试。
+	// held 必须显式跟踪：排队重试时会先让出槽位再重新获取，失败时若还盲目
+	// Release，会把别人正在用的槽位减掉（计数器是账号级的，不分持有者）。
+	held := false
 	if !h.cfg.Pool.AcquireLockWaitContext(ctx, acct.Name, visionSlotWait) {
 		return "", fmt.Errorf("vision model %s busy: no free slot", model)
 	}
-	defer h.cfg.Pool.ReleaseLock(acct.Name)
+	held = true
+	defer func() {
+		if held {
+			h.cfg.Pool.ReleaseLock(acct.Name)
+		}
+	}()
 
 	token, ak, sk := acct.Auth.Credentials()
 	cred := upstream.SignCredential{AccessKeyID: ak, SecretAccessKey: sk, SecurityToken: token}
@@ -253,14 +265,39 @@ func (h *Handler) describeImage(ctx context.Context, model string, img storedIma
 		},
 	}}
 	maxOut := 2048 // 与官方 createVisionModel 的 output 上限对齐，避免超长转换失败
-	// 81104（Conversion failed）是间歇性的：同一请求重发即成功。重试一次，
-	// 避免把偶发抖动当成图片无法识别回灌给主模型。
+
+	// 会话 id 固定复用：上游按 chat_id 计并发会话，每个账号只允许 3 个。识图子请求
+	// 如果在每次工具调用（甚至每次重试）都新建 id，几次之后槽位就被占满，上游一律回
+	// TM.00001041「并发会话数已达上限」，主模型只会看到"工具一直失败、看不到图"。
+	// 与 vision_bridge 共用同一个派生规则（visionChatID），两条识图路径共享同一份会话预算。
+	chatID := visionChatID(acct.Name)
+
 	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		rc, err := acct.Client.ChatStreamWithOptions(ctx, randHex(32), messages, "", cred, acct.UserName, model,
+	for attempt := 0; attempt < analyzeVisionAttempts; attempt++ {
+		rc, err := acct.Client.ChatStreamWithOptions(ctx, chatID, messages, "", cred, acct.UserName, model,
 			upstream.ChatOptions{MaxTokens: &maxOut})
 		if err != nil {
 			lastErr = err
+			var ae *upstream.ApiError
+			if errors.As(err, &ae) && isQueueLimitError(ae) {
+				// 并发会话槽位被占满：让出账号并发槽等一下再试。这不是"图看不了"，
+				// 直接失败会把并发上限误报成图片识别失败。
+				log.Printf("analyze_image queue limit, yielding slot account=%s: %s", acct.Name, truncateMsg(ae.Message, 80))
+				if held {
+					h.cfg.Pool.ReleaseLock(acct.Name)
+					held = false
+				}
+				select {
+				case <-time.After(visionQueueRetryDelay):
+					if !h.cfg.Pool.AcquireLockWaitContext(ctx, acct.Name, visionSlotWait) {
+						return "", fmt.Errorf("vision model %s busy: no free slot", model)
+					}
+					held = true
+					continue
+				case <-ctx.Done():
+					return "", ctx.Err()
+				}
+			}
 			continue
 		}
 		comp, aerr := upstream.AggregateRaw(rc)
