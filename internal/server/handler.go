@@ -709,6 +709,26 @@ func (h *Handler) discoverMissingCatalogs(tried map[string]bool) {
 	}
 }
 
+// ensureCatalog 在「所有健康账号的目录都还没发现」时补拉一次目录。
+//
+// 只在目录完全未发现时才触发（进程刚启动、或从未查过 /v1/models），且只补一次：
+// 一旦有任一账号目录已发现，后续判断就有依据，不再补。这样：
+//   - 冷启动后第一个带图请求也能正确判定模型图片能力（否则 analyze/bridge 都不
+//     触发，图片原样发上游吃 001001020.406）；
+//   - 目录已就绪时零额外上游调用（这是热路径，不能被每次请求的目录请求拖慢）。
+func (h *Handler) ensureCatalog(tried map[string]bool) {
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
+			continue
+		}
+		if _, ok := upstream.AccountModels(acct.UID); ok {
+			return // 已有账号目录可用：判断有依据，不再补
+		}
+	}
+	// 所有健康账号都还没目录：补一次。
+	h.discoverMissingCatalogs(tried)
+}
+
 // accountServesModel 报告该账号的目录是否登记了这个模型（目录未知时放行）。
 func (h *Handler) accountServesModel(acct *pool.Account, model string) bool {
 	if acct == nil {
@@ -878,6 +898,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 只有它为真时才需要「先聚合再判断回灌」：纯文本请求必须原样直通流式，
 	// 否则客户端要等模型生成完才收到首字。
 	analyzeRouted := false
+
+	// 冷启动兜底：目录是内存态、重启即空，而下面三步都依赖目录里的图片能力声明。
+	// 补齐目录的 discoverMissingCatalogs 此前只在 pickAccount（视觉子请求路径）里
+	// 调过，chat 主路径从不调 —— 于是重启后第一个带图请求会扫到空目录，
+	// catalogDeclaresNoImages/modelSupportsImages 把「不知道能力」当成「能收图」，
+	// analyze 不路由、bridge 不触发，图片原样发上游吃 InferHub.001001020.406。
+	// 这里在判定前补一次目录；已就绪时 ensureCatalog 立即返回，热路径零额外调用。
+	if hasImageBlocks(req) {
+		h.ensureCatalog(nil)
+	}
 
 	// 多模态前置处理，三步都在「模型已确定、还没发给上游」时做：
 	//   ① 缩图：上游媒体转换对单图有硬上限（实测请求体 ≈4.3MB / 图片 ≈3.2MB），
