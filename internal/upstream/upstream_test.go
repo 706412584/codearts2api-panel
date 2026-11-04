@@ -94,6 +94,30 @@ func TestSendChatV2EmitsIdentityHeaders(t *testing.T) {
 	}
 }
 
+// TestSendChatV2SendsBunUserAgent 验证线上请求带官方同款 UA，
+// 且它由传输层补、未进入签名的 SignedHeaders（与官方一致）。
+func TestSendChatV2SendsBunUserAgent(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {}\n\n"))
+	}))
+	defer srv.Close()
+
+	c := NewWithChatEndpoint(5*time.Second, srv.URL)
+	_, _ = c.sendChatV2(context.Background(), map[string]any{
+		"model": "glm-5.2", "stream": true, "messages": []any{},
+	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok", "", "")
+
+	if ua := got.Get("User-Agent"); ua != "Bun/1.3.14" {
+		t.Fatalf("User-Agent not aligned with official client: %q", ua)
+	}
+	if sh := got.Get("Authorization"); strings.Contains(sh, "user-agent") {
+		t.Fatalf("user-agent must not be signed (official signs before UA is added): %s", sh)
+	}
+}
+
 func TestAggregateCodeArtsSSE(t *testing.T) {
 	stream := "data: {\"delta\":{\"content\":\"你\",\"reasoning_content\":\"思考\"}}\n" +
 		"data: {\"delta\":{\"content\":\"好\"}}\n" +
