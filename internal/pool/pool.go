@@ -45,6 +45,7 @@ type Account struct {
 	checkinClaimed      bool   // 该日真的签到成功/已领；只有它为真才显示「已签」
 	newUserSettled      bool   // 新手注册活动已了结，单账号只领一次
 	balanceMu           sync.Mutex
+	balanceRefreshing   bool
 	creditBalance       *upstream.CreditBalance
 	balanceUpdatedAt    time.Time
 	creditBalanceError  string
@@ -502,8 +503,9 @@ func (p *Pool) NoteError(name string, threshold int, cooldown time.Duration) {
 	}
 }
 
-// NoteSuccess 清零错误计数。
+// NoteSuccess 清零错误计数，并在活跃使用期间按需刷新积分缓存。
 func (p *Pool) NoteSuccess(name string) {
+	p.RefreshBalanceAfterSuccess(name)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, a := range p.accounts {
