@@ -39,6 +39,22 @@ func TestNormalizeRewritesInvalidRetryAndCooldownValues(t *testing.T) {
 	}
 }
 
+func TestAccountStrategyConfigAndLiveSnapshot(t *testing.T) {
+	for _, strategy := range []string{"first", "credits", "round_robin"} {
+		c := Default()
+		c.AccountStrategy = strategy
+		if changes := c.normalize(); len(changes) != 0 || liveSnapshot(c).AccountStrategy != strategy {
+			t.Errorf("strategy %q not preserved: %v / %+v", strategy, changes, liveSnapshot(c))
+		}
+	}
+	c := Default()
+	c.AccountStrategy = "random"
+	changes := c.normalize()
+	if c.AccountStrategy != "first" || len(changes) != 1 {
+		t.Fatalf("invalid strategy must normalize to first: %q / %v", c.AccountStrategy, changes)
+	}
+}
+
 func TestCreditsAutoClaimConfigAndEnv(t *testing.T) {
 	t.Setenv("CA2A_API_KEY", "test-key")
 	t.Setenv("CA2A_CREDITS_AUTO_CLAIM", "")

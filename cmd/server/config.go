@@ -27,12 +27,13 @@ const (
 
 // Config 顶层配置。
 type Config struct {
-	Listen       string `json:"listen"`
-	APIKey       string `json:"api_key"` // config.json 的 api_key 或 env CA2A_API_KEY（同时存在时 env 优先）
-	AdminKey     string `json:"admin_key"`
-	AuthDir      string `json:"auth_dir"`
-	StateFile    string `json:"state_file"`
-	DefaultModel string `json:"default_model"`
+	Listen          string `json:"listen"`
+	APIKey          string `json:"api_key"` // config.json 的 api_key 或 env CA2A_API_KEY（同时存在时 env 优先）
+	AdminKey        string `json:"admin_key"`
+	AuthDir         string `json:"auth_dir"`
+	StateFile       string `json:"state_file"`
+	DefaultModel    string `json:"default_model"`
+	AccountStrategy string `json:"account_strategy"` // first / credits / round_robin
 	// OAuthCallbackHost 可选：远程授权时把回调指向公网地址，让浏览器回调经反向
 	// 代理进入本服务，而不是 127.0.0.1。只有**显式写了端口**才会改写授权链接里的
 	// port 参数（如 https://oneapi.example.com:443/codearts）；不写端口则保持本机
@@ -125,10 +126,11 @@ type Config struct {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:       ":7866",
-		AuthDir:      "./auths",
-		StateFile:    "./data/state.json",
-		DefaultModel: "glm-5.2",
+		Listen:          ":7866",
+		AuthDir:         "./auths",
+		StateFile:       "./data/state.json",
+		DefaultModel:    "glm-5.2",
+		AccountStrategy: "first",
 	}
 	c.Cooldown.SoftRate = defaultSoftRate
 	c.Cooldown.ErrThresh = defaultErrThreshold
@@ -439,6 +441,15 @@ func (c *Config) normalize() []string {
 	}
 	if c.DefaultModel == "" {
 		c.DefaultModel = "glm-5.2"
+	}
+	switch c.AccountStrategy {
+	case "", "first", "credits", "round_robin":
+		if c.AccountStrategy == "" {
+			c.AccountStrategy = "first"
+		}
+	default:
+		changes = append(changes, fmt.Sprintf("account_strategy=%q → first", c.AccountStrategy))
+		c.AccountStrategy = "first"
 	}
 	if c.Listen == "" {
 		c.Listen = ":7866"

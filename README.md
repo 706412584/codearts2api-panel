@@ -256,6 +256,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 | `auth_dir` | `./auths` | CodeArts 凭据目录 |
 | `state_file` | `./data/state.json` | 账号池状态 |
 | `default_model` | `glm-5.2` | 请求省略模型时的默认值 |
+| `account_strategy` | `first` | 无会话绑定时选号：`first` 第一个可用账号、`credits` 已缓存积分最多、`round_robin` 账号池轮询；积分未知不视为 0，全部未知时取第一个 |
 | `max_concurrent` | `2` | 单账号并发上限（上游单账号上限 3，留一个槽位余量） |
 | `cooldown.soft_rate` | `60s` | 临时限流冷却 |
 | `cooldown.err_threshold` | `3` | 连续错误阈值 |
@@ -281,7 +282,7 @@ curl http://127.0.0.1:7866/v1/chat/completions \
 
 视觉转述给纯文本模型的是图片的文字描述，精细颜色和布局仍应直接使用视觉模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间；默认最多处理 8 张图，总预算 90 秒。超出图片数量或任一转述失败时保留全部原图，由上游按模型能力判定请求。可用 `vision_bridge.enabled=false` 单独关闭转述，或用 `image_shrink.enabled=false` 关闭缩图。
 
-面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
+面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、选号策略、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
 
 ## 数据与日志
 

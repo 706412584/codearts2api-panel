@@ -622,6 +622,7 @@
     ['cfgStateFile', 'state_file', 'text'],
     ['cfgOAuthCallbackHost', 'oauth_callback_host', 'text'],
     ['cfgLoginClientID', 'login_client_id', 'text'],
+    ['cfgAccountStrategy', 'account_strategy', 'text'],
     ['cfgMaxConcurrent', 'max_concurrent', 'int'],
     ['cfgKeepaliveWindow', 'keepalive_window', 'text'],
     ['cfgQueueRetrySeconds', 'queue_retry_seconds', 'int'],

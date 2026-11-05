@@ -33,6 +33,7 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	c.APIKey = "api-2"
 	c.AdminKey = "admin-2"
 	c.DefaultModel = "model-hot"
+	c.AccountStrategy = "round_robin"
 	c.SoftRateDur = 90 * time.Second
 	c.ErrCooldownDur = 15 * time.Minute
 	c.Cooldown.ErrThresh = 4
@@ -62,6 +63,9 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	snap := live.Load()
 	if snap.APIKey != "api-2" || snap.AdminKey != "admin-2" || snap.DefaultModel != "model-hot" {
 		t.Fatalf("live snapshot not applied: %+v", snap)
+	}
+	if snap.AccountStrategy != "round_robin" {
+		t.Fatalf("account strategy not applied: %+v", snap)
 	}
 	if snap.QueueRetryDelay != 3*time.Second || snap.QueueMaxAttempts != 7 {
 		t.Fatalf("queue settings not applied: %+v", snap)
@@ -127,7 +131,6 @@ func TestLiveSnapshotQueueRetryDefaultsToTenSeconds(t *testing.T) {
 		t.Fatalf("queue retry delay = %s, want 4s", got)
 	}
 }
-
 
 // 多模态三块必须从配置文件如实带进运行期快照。
 // 线上曾经漏了 ImageShrinkEnabled（策略里的 Enabled 没被赋值），

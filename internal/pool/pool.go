@@ -82,6 +82,7 @@ type Pool struct {
 	mu       sync.Mutex
 	stateMu  sync.Mutex
 	accounts []*Account
+	nextRR   int
 }
 
 // New 构建池。
@@ -365,19 +366,52 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	p.accounts = next
 }
 
-// PickExcluding 挑一个健康账号。
-func (p *Pool) PickExcluding(tried map[string]bool) *Account {
+// PickExcluding 按策略挑一个健康账号，不并发查询积分余额。
+func (p *Pool) PickExcluding(tried map[string]bool, strategy string) *Account {
+	return p.PickExcludingMatching(tried, strategy, nil)
+}
+
+// PickExcludingMatching 在 eligible 非 nil 时只在其中的账号里选号。
+func (p *Pool) PickExcludingMatching(tried map[string]bool, strategy string, eligible map[string]bool) *Account {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	for _, a := range p.accounts {
-		if tried != nil && tried[a.Name] {
-			continue
+	available := func(a *Account) bool {
+		if a == nil || eligible != nil && !eligible[a.Name] || tried != nil && tried[a.Name] {
+			return false
 		}
 		a.mu.Lock()
-		healthy := !a.disabled && now.After(a.coolUntil)
-		a.mu.Unlock()
-		if healthy {
+		defer a.mu.Unlock()
+		return !a.disabled && now.After(a.coolUntil)
+	}
+	if strategy == "credits" {
+		var selected *Account
+		highest := 0.0
+		for _, a := range p.accounts {
+			if !available(a) {
+				continue
+			}
+			if a.creditBalance != nil && (selected == nil || a.creditBalance.Total > highest) {
+				selected, highest = a, a.creditBalance.Total
+			}
+		}
+		if selected != nil {
+			return selected
+		}
+	}
+	if strategy == "round_robin" && len(p.accounts) > 0 {
+		start := p.nextRR % len(p.accounts)
+		for offset := 0; offset < len(p.accounts); offset++ {
+			i := (start + offset) % len(p.accounts)
+			if available(p.accounts[i]) {
+				p.nextRR = (i + 1) % len(p.accounts)
+				return p.accounts[i]
+			}
+		}
+		return nil
+	}
+	for _, a := range p.accounts {
+		if available(a) {
 			return a
 		}
 	}

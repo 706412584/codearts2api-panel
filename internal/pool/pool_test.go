@@ -10,6 +10,69 @@ import (
 	"codearts2api-panel/internal/upstream"
 )
 
+func TestPickExcludingStrategies(t *testing.T) {
+	auths := make([]*auth.Auth, 3)
+	for i, uid := range []string{"a", "b", "c"} {
+		auths[i] = auth.New(uid, uid, "domain", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	}
+	p, err := New(auths, Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	picked := func(strategy string, tried map[string]bool) string {
+		t.Helper()
+		a := p.PickExcluding(tried, strategy)
+		if a == nil {
+			return ""
+		}
+		return a.Name
+	}
+	if got := picked("", nil); got != "a" || picked("first", nil) != "a" {
+		t.Fatal("default/first must keep selecting the first healthy account")
+	}
+	p.Accounts()[0].creditBalance = &upstream.CreditBalance{Total: 50}
+	p.Accounts()[1].creditBalance = &upstream.CreditBalance{Total: 200}
+	p.Accounts()[2].creditBalance = &upstream.CreditBalance{Total: 100}
+	for _, test := range []struct {
+		strategy string
+		tried    map[string]bool
+		want     string
+	}{
+		{"credits", nil, "b"},
+		{"credits", map[string]bool{"b": true}, "c"},
+		{"credits", map[string]bool{"b": true, "c": true}, "a"},
+		{"credits", map[string]bool{"a": true, "b": true, "c": true}, ""},
+	} {
+		if got := picked(test.strategy, test.tried); got != test.want {
+			t.Errorf("credits tried=%v: got %q, want %q", test.tried, got, test.want)
+		}
+	}
+	if got := p.PickExcludingMatching(nil, "credits", map[string]bool{"a": true, "c": true}).Name; got != "c" {
+		t.Fatalf("credits must respect model candidates: got %q", got)
+	}
+	p.Accounts()[1].creditBalance = nil
+	if got := picked("credits", map[string]bool{"a": true, "c": true}); got != "b" {
+		t.Fatalf("unknown credit must fall back to the only available account: got %q", got)
+	}
+
+	rr, err := New(auths, Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"a", "b", "c", "a"} {
+		if got := rr.PickExcluding(nil, "round_robin").Name; got != want {
+			t.Fatalf("round_robin got %q, want %q", got, want)
+		}
+	}
+	rr.Disable("b", "test")
+	if got := rr.PickExcluding(nil, "round_robin").Name; got != "c" {
+		t.Fatalf("round_robin must skip disabled accounts: got %q", got)
+	}
+	if got := rr.PickExcluding(map[string]bool{"a": true, "c": true}, "round_robin"); got != nil {
+		t.Fatalf("round_robin returned an excluded/disabled account: %q", got.Name)
+	}
+}
+
 func TestAddAccountInitializesConcurrency(t *testing.T) {
 	p, err := New(nil, Config{MaxConcurrent: 1}, "")
 	if err != nil {

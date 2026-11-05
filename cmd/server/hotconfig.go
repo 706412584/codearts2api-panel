@@ -29,6 +29,7 @@ func liveSnapshot(c *Config) livecfg.Snapshot {
 		APIKey:            c.APIKey,
 		AdminKey:          c.AdminKey,
 		DefaultModel:      c.DefaultModel,
+		AccountStrategy:   c.AccountStrategy,
 		SoftCooldown:      c.SoftRateDur,
 		ErrThreshold:      c.Cooldown.ErrThresh,
 		ErrCooldown:       c.ErrCooldownDur,

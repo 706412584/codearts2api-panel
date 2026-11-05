@@ -211,7 +211,7 @@ func (h *Handler) bridgeImages(ctx context.Context, req *chatRequest, policy Vis
 func (h *Handler) askVision(ctx context.Context, imageURL string, policy VisionBridgePolicy) (string, error) {
 	// 挑一个健康账号做识图（上游单账号并发有限，下面还要拿槽位）。
 	// 目录里两个账号的模型清单一致，用池子的常规轮转就够了。
-	acct := h.cfg.Pool.PickExcluding(map[string]bool{})
+	acct := h.cfg.Pool.PickExcluding(map[string]bool{}, h.live().AccountStrategy)
 	if acct == nil || acct.Auth == nil {
 		return "", errors.New("没有可用账号做识图")
 	}

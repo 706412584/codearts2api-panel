@@ -168,6 +168,7 @@ func normalizeSettings(values map[string]any) ([]string, error) {
 	setConfigValue(values, "cooldown.soft_rate", candidate.Cooldown.SoftRate)
 	setConfigValue(values, "cooldown.err_threshold", candidate.Cooldown.ErrThresh)
 	setConfigValue(values, "cooldown.err_cooldown", candidate.Cooldown.ErrCooldown)
+	setConfigValue(values, "account_strategy", candidate.AccountStrategy)
 	setConfigValue(values, "queue_retry_seconds", candidate.QueueRetrySeconds)
 	setConfigValue(values, "queue_max_attempts", candidate.QueueMaxAttempts)
 	setConfigValue(values, "max_body_mb", candidate.MaxBodyMB)

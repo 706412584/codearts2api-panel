@@ -33,17 +33,18 @@ import (
 
 // Config handler 依赖。
 type Config struct {
-	Pool         *pool.Pool
-	Upstream     *upstream.Client
-	APIKey       string
-	AdminKey     string
-	Settings     SettingsStore
-	RequestLog   *reqlog.Recorder
-	Balance      *balance.Recorder
-	MaxRotate    int
-	SoftCooldown time.Duration
-	ErrThreshold int
-	ErrCooldown  time.Duration
+	Pool            *pool.Pool
+	Upstream        *upstream.Client
+	AccountStrategy string // 未注入 Live 时的默认选号策略
+	APIKey          string
+	AdminKey        string
+	Settings        SettingsStore
+	RequestLog      *reqlog.Recorder
+	Balance         *balance.Recorder
+	MaxRotate       int
+	SoftCooldown    time.Duration
+	ErrThreshold    int
+	ErrCooldown     time.Duration
 	// CodeArts 上游把并发会话/TPM 排队既可能返回 HTTP 400/429，
 	// 也可能嵌在 HTTP 200 SSE 内。默认每 10s 重试一次、最多 30 次（约 5 分钟）。
 	QueueRetryDelay  time.Duration
@@ -82,6 +83,7 @@ func (h *Handler) live() livecfg.Snapshot {
 		APIKey:            h.cfg.APIKey,
 		AdminKey:          h.cfg.AdminKey,
 		DefaultModel:      h.cfg.DefaultModel,
+		AccountStrategy:   h.cfg.AccountStrategy,
 		SoftCooldown:      h.cfg.SoftCooldown,
 		ErrThreshold:      h.cfg.ErrThreshold,
 		ErrCooldown:       h.cfg.ErrCooldown,
@@ -660,8 +662,8 @@ func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	return infos
 }
 
-// pickAccount 为一次调用挑账号：优先选目录里登记过该模型的
-// 健康账号，都挑不到再退回普通轮转。图像分析路径（describeImage）用它，
+// pickAccount 为一次调用挑账号：优先按策略选择目录里登记过该模型的
+// 健康账号，都挑不到再退回普通选号。图像分析路径（describeImage）用它，
 // 以免把视觉请求发给不支持视觉的账号白耗一次。
 func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account {
 	want := strings.ToLower(upstream.CanonicalModel(model))
@@ -677,20 +679,18 @@ func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account
 	if acct := h.pickByCatalog(tried, want); acct != nil {
 		return acct
 	}
-	return h.cfg.Pool.PickExcluding(tried)
+	return h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 }
 
-// pickByCatalog 在目录登记了该模型的健康账号里挑一个。
+// pickByCatalog 在支持该模型的健康账号中应用当前选号策略。
 func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.Account {
+	candidates := map[string]bool{}
 	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || tried[acct.Name] || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
 		if models, known := upstream.AccountModels(acct.UID); known && catalogHas(models, wantLower) {
-			return acct
+			candidates[acct.Name] = true
 		}
 	}
-	return nil
+	return h.cfg.Pool.PickExcludingMatching(tried, h.live().AccountStrategy, candidates)
 }
 
 // discoverMissingCatalogs 补拉缺失的账号模型目录（懒发现）。
@@ -1009,13 +1009,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				acct = h.cfg.Pool.Get(stickyAcct)
 				if acct == nil || !h.cfg.Pool.Healthy(stickyAcct) {
 					stickyAcct = ""
-					acct = h.cfg.Pool.PickExcluding(tried)
+					acct = h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 				} else {
 					tried[acct.Name] = true
 				}
 			}
 			if acct == nil {
-				acct = h.cfg.Pool.PickExcluding(tried)
+				acct = h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 			}
 			if acct == nil {
 				break

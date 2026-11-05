@@ -72,6 +72,14 @@ func TestPanelMarkupMatchesScriptBindings(t *testing.T) {
 			t.Errorf("missing view: %s", name)
 		}
 	}
+	for _, value := range []string{"first", "credits", "round_robin"} {
+		if !strings.Contains(panelHTMLRaw, `<option value="`+value+`">`) {
+			t.Errorf("missing account strategy option %q", value)
+		}
+	}
+	if !strings.Contains(panelJS, `['cfgAccountStrategy', 'account_strategy', 'text']`) {
+		t.Error("account strategy select is not bound to configuration")
+	}
 	if strings.Contains(panelHTMLRaw, "<script>") || regexp.MustCompile(`\bon(click|submit|load)=`).MatchString(panelHTMLRaw) {
 		t.Fatal("inline script bypasses the panel CSP")
 	}
