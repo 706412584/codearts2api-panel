@@ -528,7 +528,16 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 
 // modelList 动态获取模型列表并包装成 OpenAI 格式。
 func (h *Handler) modelList(force bool) []map[string]any {
-	return modelEntries(h.fetchDynamicModels(force))
+	entries := modelEntries(h.fetchDynamicModels(force))
+	// 隐藏「所有健康账号都实测调不通」的模型：客户端点开就是 404，列出来只会误导。
+	// 还没结论的保留：宁可让用户试，也别把可用模型藏起来。
+	kept := entries[:0]
+	for _, e := range entries {
+		if id, _ := e["id"].(string); !h.modelKnownUnusable(id) {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // modelEntries 把账号模型目录包装成 OpenAI /v1/models 条目。
@@ -683,6 +692,9 @@ func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.A
 	candidates := map[string]bool{}
 	for _, acct := range h.cfg.Pool.Accounts() {
 		if models, known := upstream.AccountModels(acct.UID); known && catalogHas(models, wantLower) {
+			if st, _ := modelAvailability(acct.UID, wantLower); st == availUnusable {
+				continue // 该账号实测调不通这个模型，别选它
+			}
 			candidates[acct.Name] = true
 		}
 	}
@@ -1153,6 +1165,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				continue
 			}
+			// 真实调用成功：记下「这个账号能用这个模型」。
+			markUsable(acct.UID, model)
 			w.Header().Set("X-Codearts-Chat-Id", chatID)
 
 			storeChat := func() {
@@ -1553,7 +1567,9 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 		// `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测调用一个未注册模型，
 		// 整个账号被冷却，后续正常请求全部失败。放在 errors.As 之外，
 		// 流式路径的 UpstreamError 与聚合错误也能命中。
-		log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, upstreamUnavailableReason(err))
+		reason := upstreamUnavailableReason(err)
+		markUnusable(acct.UID, model, reason)
+		log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, reason)
 		return true
 	}
 	var ae *upstream.ApiError
