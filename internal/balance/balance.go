@@ -13,13 +13,14 @@ import (
 )
 
 const (
-	sampleInterval = 30 * time.Minute
-	detailedKeep   = 30 * 24 * time.Hour
-	dayKeep        = 365 * 24 * time.Hour
-	flushInterval  = 30 * time.Second
-	maxPoints      = 200_000
-	dayLayout      = "2006-01-02"
-	expectedPerDay = 40
+	sampleInterval  = 5 * time.Minute
+	refreshInterval = 30 * time.Minute
+	detailedKeep    = 30 * 24 * time.Hour
+	dayKeep         = 365 * 24 * time.Hour
+	flushInterval   = 30 * time.Second
+	maxPoints       = 200_000
+	dayLayout       = "2006-01-02"
+	expectedPerDay  = 40
 )
 
 // Point 是一次原始采样；Day 非空时表示按账号和本地日折叠后的日点。
@@ -75,8 +76,8 @@ func New(path string) *Recorder {
 	return r
 }
 
-// Interval 返回采样节流间隔。
-func Interval() time.Duration { return sampleInterval }
+// Interval 返回上游余额刷新间隔，与历史采样去重窗口独立。
+func Interval() time.Duration { return refreshInterval }
 
 // SetName 注入仅用于展示的账号昵称，不持久化。
 func (r *Recorder) SetName(uid, name string) {
@@ -88,7 +89,7 @@ func (r *Recorder) SetName(uid, name string) {
 	r.mu.Unlock()
 }
 
-// Add 记录一次采样；同一账号 30 分钟内的重复采样会被节流。
+// Add 记录一次采样；同一账号 5 分钟内的重复采样会被节流。
 func (r *Recorder) Add(uid string, credits float64) bool {
 	if r == nil || uid == "" {
 		return false

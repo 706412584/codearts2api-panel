@@ -459,7 +459,7 @@
         '<td class="number ' + (value > 0 ? 'positive' : value < 0 ? 'negative' : '') + '">' + esc(signed(value)) + '</td>' +
         balanceChangeCell(balanceDailyFor(row, todayKey)) + balanceChangeCell(balanceDailyFor(row, yesterdayKey)) +
         '<td class="number">' + number(Array.isArray(row.points) ? row.points.length : 0) + '</td></tr>';
-    }).join('') || emptyRow(8, '暂无余额采样。服务启动后会立即查询一次，之后每 30 分钟记录；也可在账号池手动刷新额度。');
+    }).join('') || emptyRow(8, '暂无余额采样。服务启动后立即查询，之后每 30 分钟查询；成功查询按 5 分钟去重记录，也可在账号池手动刷新额度。');
     renderBalanceChart(rows);
     renderBalanceDaily(rows);
   }
@@ -473,7 +473,7 @@
     if (!series.length) {
       host.textContent = '暂无余额采样。历史从第一次成功查询开始，未知余额不会显示为 0。';
       legend.innerHTML = '';
-      $('balanceChartNote').textContent = '服务每 30 分钟刷新启用账号；手动刷新额度也会进入同一条采样路径。';
+      $('balanceChartNote').textContent = '服务每 30 分钟刷新启用账号；手动刷新额度也走采样入口，同一账号 5 分钟内只记录一点。';
       return;
     }
     let t0 = Infinity, t1 = -Infinity, lo = Infinity, hi = -Infinity;

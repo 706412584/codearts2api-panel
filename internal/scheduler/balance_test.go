@@ -18,6 +18,12 @@ func (c *schedulerBalanceClient) FetchAccountInfo(context.Context, upstream.Sign
 	return &upstream.CreditBalance{Total: 12.75, Packages: []upstream.CreditPackage{}}, nil
 }
 
+func TestBalanceUpstreamRefreshIntervalStaysThirtyMinutes(t *testing.T) {
+	if got := balance.Interval(); got != 30*time.Minute {
+		t.Fatalf("upstream refresh interval = %s, want 30m", got)
+	}
+}
+
 func TestRunBalanceRefreshNowSamplesAndSkipsDisabled(t *testing.T) {
 	a := auth.New("balance-u", "user", "", "", "ak", "sk", "", "", "")
 	client := &schedulerBalanceClient{}

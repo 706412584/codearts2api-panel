@@ -51,7 +51,7 @@ func main() {
 	bal := balance.New(balPath)
 	bal.Start()
 	defer bal.Stop()
-	log.Printf("balance history enabled: %s (one sample per account every %s)", balPath, balance.Interval())
+	log.Printf("balance history enabled: %s (upstream refresh every %s, history samples throttled separately)", balPath, balance.Interval())
 	poolCfg := cfg.ToPoolConfig()
 	poolCfg.BalanceObserver = bal
 	p, err := pool.New(auths, poolCfg, cfg.StateFile)

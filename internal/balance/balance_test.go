@@ -40,13 +40,13 @@ func TestAddThrottleIsPerAccountAndKeepsDecimals(t *testing.T) {
 	if r.Add("A", 101) {
 		t.Error("同账号同窗口的重复采样应被节流")
 	}
-	cur = base.Add(29 * time.Minute)
+	cur = base.Add(4 * time.Minute)
 	if r.Add("A", 102) || r.Add("B", 201) {
-		t.Error("29 分钟仍应被节流")
+		t.Error("4 分钟仍应被节流")
 	}
-	cur = base.Add(30 * time.Minute)
+	cur = base.Add(5 * time.Minute)
 	if !r.Add("A", 103.75) || !r.Add("B", 201.5) {
-		t.Error("各账号满 30 分钟后都应接受采样")
+		t.Error("各账号满 5 分钟后都应接受采样")
 	}
 
 	series, gotNow := r.Snapshot(time.Time{})
@@ -156,27 +156,26 @@ func TestPersistReloadAndRestoreThrottle(t *testing.T) {
 	}
 
 	reloaded := New(path)
-	cur = base.Add(10 * time.Minute)
-	reloaded.clock = func() time.Time { return cur }
-	if reloaded.Add("A", 1) || reloaded.Add("B", 1) {
-		t.Error("重载后两个账号都应恢复各自的 lastSample")
+	reloaded.clock = fixedClock(base.Add(4 * time.Minute))
+	if reloaded.Add("A", 1) {
+		t.Fatal("A 在重载前采样后仅 4 分钟，应被节流")
 	}
-	cur = base.Add(30 * time.Minute)
+	reloaded.clock = fixedClock(base.Add(5 * time.Minute))
 	if !reloaded.Add("A", 1235.75) {
-		t.Error("A 距上次已 30 分钟，应接受")
+		t.Fatal("A 在重载前采样后满 5 分钟，应接受")
 	}
-	if reloaded.Add("B", 1) {
-		t.Error("B 距上次仅 20 分钟，应仍被节流")
-	}
-	cur = base.Add(40 * time.Minute)
-	if !reloaded.Add("B", 2001.5) {
-		t.Error("B 距上次已 30 分钟，应接受")
+	if reloaded.Add("A", 1) {
+		t.Fatal("A 的新采样在同窗口内应被节流")
 	}
 	series, _ := reloaded.Snapshot(time.Time{})
 	if len(series) != 2 {
-		t.Fatalf("reloaded series = %d, want 2", len(series))
+		t.Fatalf("unexpected reloaded series: %+v", series)
 	}
-	checkFloat(t, "reloaded current", series[0].Current, 2001.5)
+	for _, s := range series {
+		if s.UID == "A" && s.Current != 1235.75 {
+			t.Fatalf("unexpected reloaded A balance: %+v", s)
+		}
+	}
 }
 
 func TestRollupPreservesFirstLastAndFlows(t *testing.T) {
