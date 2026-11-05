@@ -31,10 +31,41 @@ for (const match of html.matchAll(/<(\/?)([\w-]+)\b([^>]*)>/g)) {
 const selector = s => s === '.view' ? all.filter(e => e.classes.has('view')) : /^\[data-([\w-]+)\]$/.test(s) ? all.filter(e => Object.hasOwn(e.dataset, s.slice(6, -1).replace(/-([a-z])/g, (_, c) => c.toUpperCase()))) : [];
 const storage = () => { const values = new Map(); return { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }; };
 const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', note: '13800001111 <b>&</b>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
-const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
+const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0, credits: 1234.5, sticky: 2 }, accounts: [account] };
+const configFixture = {
+ listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret', max_body_mb: 48,
+ image_shrink: { enabled: true, trigger_body_mb: 6, target_image_mb: 3, target_total_mb: 7, max_dimension: 1600, quality: 78, extension: { preserved: 'image' } },
+ vision_bridge: { enabled: true, model: 'Qwen3-VL-235B', max_images: 6, max_chars: 7000, max_tokens: 1600, timeout_seconds: 110, total_timeout_seconds: 85, prompt: '先概括图片。\n逐行转写文字。', extension: { preserved: 'vision' } },
+ extension: { preserved: true },
+};
+const multimodalControls = [
+ ['cfgMaxBodyMB', 48, 64],
+ ['cfgImageShrinkEnabled', true, false], ['cfgImageShrinkTriggerBodyMB', 6, 5],
+ ['cfgImageShrinkTargetImageMB', 3, 2], ['cfgImageShrinkTargetTotalMB', 7, 4],
+ ['cfgImageShrinkMaxDimension', 1600, 1800], ['cfgImageShrinkQuality', 78, 82],
+ ['cfgVisionBridgeEnabled', true, false], ['cfgVisionBridgeModel', 'Qwen3-VL-235B', 'kimi-k2.6-vl'],
+ ['cfgVisionBridgeMaxImages', 6, 4], ['cfgVisionBridgeMaxChars', 7000, 8000],
+ ['cfgVisionBridgeMaxTokens', 1600, 2000], ['cfgVisionBridgeTimeoutSeconds', 110, 80],
+ ['cfgVisionBridgeTotalTimeoutSeconds', 85, 100], ['cfgVisionBridgePrompt', '先概括图片。\n逐行转写文字。', '请按顺序描述。\n保留表格。'],
+];
+for (const [id, value] of multimodalControls) {
+ assert(ids.has(id), 'multimodal control is missing from panel.html: ' + id);
+ const input = ids.get(id);
+ assert.equal(input.tagName, id === 'cfgVisionBridgePrompt' ? 'textarea' : 'input', 'wrong control element: ' + id);
+ if (typeof value !== 'string') assert(input.attrs.includes('type="' + (typeof value === 'boolean' ? 'checkbox' : 'number') + '"'), 'wrong input type: ' + id);
+ let parent = input.parentElement;
+ while (parent && parent.id !== 'configForm') parent = parent.parentElement;
+ assert(parent, 'multimodal control must be inside the config form: ' + id);
+}
 const usage = { completed: 2, succeeded: 1, failed: 1, avg_duration_ms: 500, attempt_errors: { 'req-retried': 'upstream 429: TPM <limit> & retry later' }, recent: [{ request_id: 'req-retried', time: new Date().toISOString(), model: 'test-model', ok: true, status: 200, attempts: 3, total_tokens: 1200, completion_tokens: 200, duration_ms: 500, prompt_tokens: 1000, cache_hit_tokens: 800, cache_miss_tokens: 200, ttfb_ms: 300, queue_ms: 10100 }, { request_id: 'req-first-try', time: new Date().toISOString(), model: 'failed-model', ok: false, outcome: 'http_error', status: 503, attempts: 1, error: 'upstream <failed> & unavailable', duration_ms: 100, ttfb_ms: 900 }] };
-const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, prompt_tokens: 700000, completion_tokens: 400000, total_tokens: 1100000, cache_hit_tokens: 500000, cache_miss_tokens: 200000, cache_samples: 90, ttft_ms: 1800, ttft_samples: 120, tps: 42.5 }, { model: 'plain-model', requests: 4, succeeded: 4, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 0, cache_miss_tokens: 0, cache_samples: 0, ttft_ms: 0, ttft_samples: 0, tps: 0 }], accounts: [{ account: 'alice(uid00001)', requests: 100, succeeded: 99, prompt_tokens: 600000, completion_tokens: 300000, total_tokens: 900000, cache_hit_tokens: 400000, cache_miss_tokens: 200000, cache_samples: 80 }, { account: 'bob(uid00002)', requests: 32, succeeded: 31, prompt_tokens: 100100, completion_tokens: 100050, total_tokens: 200150, cache_hit_tokens: 100000, cache_miss_tokens: 0, cache_samples: 10 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelector: s => s === 'dialog[open]' ? all.find(e => e.tagName === 'dialog' && e.open) || null : new Element(), querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
-const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: { listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret' }, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
+const usageStats = { from: '2026-10-04T00:00:00Z', to: '2026-11-02T16:00:00Z', archive: true, completed: 128, succeeded: 126, failed: 2, success_rate: 98.4, avg_duration_ms: 4200, ttft_ms: 620, ttft_samples: 120, cache_hit_tokens: 800, cache_miss_tokens: 200, cache_samples: 90, prompt_tokens: 1000, completion_tokens: 200, total_tokens: 1200, token_samples: 100, models: [{ model: 'test-model', requests: 128, succeeded: 126, prompt_tokens: 700000, completion_tokens: 400000, total_tokens: 1100000, cache_hit_tokens: 500000, cache_miss_tokens: 200000, cache_samples: 90, ttft_ms: 1800, ttft_samples: 120, tps: 42.5 }, { model: 'plain-model', requests: 4, succeeded: 4, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150, cache_hit_tokens: 0, cache_miss_tokens: 0, cache_samples: 0, ttft_ms: 0, ttft_samples: 0, tps: 0 }], accounts: [{ account: 'alice(uid00001)', requests: 100, succeeded: 99, prompt_tokens: 600000, completion_tokens: 300000, total_tokens: 900000, cache_hit_tokens: 400000, cache_miss_tokens: 200000, cache_samples: 80 }, { account: 'bob(uid00002)', requests: 32, succeeded: 31, prompt_tokens: 100100, completion_tokens: 100050, total_tokens: 200150, cache_hit_tokens: 100000, cache_miss_tokens: 0, cache_samples: 10 }], hours: [{ t: Date.UTC(2026, 10, 2, 1), count: 3 }, { t: Date.UTC(2026, 10, 2, 2), count: 5 }] };const balanceDay = offset => { const d = new Date(); d.setDate(d.getDate() + offset); const pad = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+const balanceNow = Date.now();
+const balanceHistory = { now: new Date(balanceNow).toISOString(), days: 30, series: [
+ { uid: 'u1', name: '<img src=x onerror=alert(1)>', current: 12.75, min: 10, max: 12.75, change: 2.75, points: [{ t: Math.floor((balanceNow - 36e5) / 1000), c: 10 }, { t: Math.floor(balanceNow / 1000), c: 12.75 }], daily: [{ day: balanceDay(0), first: 10, last: 12.75, change: 2.75, min: 10, max: 12.75, n: 2, full: false, consumed: 0, gained: 2.75 }, { day: balanceDay(-1), first: 8.5, last: 10, change: 1.5, min: 8.5, max: 10, n: 40, full: true, consumed: 0, gained: 1.5 }] },
+ { uid: 'u2', name: '第二个账号', current: 99.5, min: 99.5, max: 100, change: -0.5, points: [{ t: Math.floor((balanceNow - 36e5) / 1000), c: 100 }, { t: Math.floor(balanceNow / 1000), c: 99.5 }], daily: [{ day: balanceDay(0), first: 100, last: 99.5, change: -0.5, min: 99.5, max: 100, n: 2, full: false, consumed: 0.5, gained: 0 }] }
+] };
+const document = { getElementById: id => { assert(ids.has(id), 'missing id ' + id); return ids.get(id); }, querySelector: s => s === 'dialog[open]' ? all.find(e => e.tagName === 'dialog' && e.open) || null : new Element(), querySelectorAll: selector, createElement: () => new Element(), documentElement: { dataset: {} }, hidden: false };
+const context = vm.createContext({ document, console, sessionStorage: storage(), localStorage: storage(), matchMedia: () => ({ matches: false }), addEventListener: (n, cb) => { events[n] = cb; }, location: { hash: '#accounts' }, setTimeout: () => 1, clearTimeout() {}, setInterval: (cb, ms) => { intervals.push({ cb, ms }); return intervals.length; }, clearInterval() {}, Headers, URL, navigator: { clipboard: { writeText: async value => { if (clipboardError) throw new Error("clipboard blocked"); copiedURLs.push(value); } } }, fetch: async (url, opts) => { requests.push({ url, opts }); let data; const path = url.replace('/admin/api/', ''); if (path === 'overview') data = overview; else if (path.startsWith('models')) data = { data: [{ id: '<model>', model_name: 'Kimi <K3>', model_desc: '描述 <D>', notice: '注意 & 提示', model_tag: '闲时 <T>', display_enabled: false, supports_images: true, ratio_display: '0.7x', context_length: 1000 }, { id: 'plain-model' }] }; else if (path === "oauth/start") { oauthStarts++; data = { ok: true, session_id: "session-" + oauthStarts, auth_url: oauthURLOverride || "https://codearts.huaweicloud.com/portal/authorize?ticket_id=test-" + oauthStarts }; } else if (path.startsWith('usage')) data = path.includes('window=1') ? usageStats : usage; else if (path.startsWith('balance_history')) data = { ...balanceHistory, days: Number((/days=(\d+)/.exec(path) || [])[1]) || 30 }; else if (path === 'logs') data = { entries: [{ ts: new Date().toISOString(), ch: 'sys', text: '<script>alert(1)</script>' }] }; else if (path === 'config') data = opts.method === 'PUT' ? { ok: true, config: JSON.parse(opts.body), restart_required: ['listen'] } : { config: configFixture, env_overrides: [] }; else data = { ok: true }; return { ok: true, status: 200, json: async () => data }; } });
 const tick = () => new Promise(resolve => setImmediate(resolve));
 (async () => {
  vm.runInContext(script, context);
@@ -42,6 +73,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  ids.get('loginKey').value = 'test-admin-secret';
  await ids.get('loginForm').onsubmit({ preventDefault() {} }); await tick();
  assert(!ids.get('loginDialog').open); assert.equal(ids.get('loginKey').value, '');
+ assert.equal(ids.get('statCredits').textContent, '1,234.5', '总套餐积分应使用 overview 合计');
+ assert.equal(ids.get('statSticky').textContent, '2', '粘性会话应显示当前绑定数');
  assert(ids.get('accountsBody').innerHTML.includes('&lt;img')); assert(!ids.get('accountsBody').innerHTML.includes('<img')); assert(ids.get('accountsBody').innerHTML.includes('未知'));
  // 备注显示在账户名下，且按 HTML 转义（与昵称同一套 esc）。
  assert(ids.get('accountsBody').innerHTML.includes('account-note'), 'note must render its own line');
@@ -61,13 +94,35 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(signed[0].includes('title="领取成功（100 积分） · 今日已签到，每天只领一次"'), '已签 must explain itself: ' + signed[0]);
  account.checkin_done = false; account.checkin = undefined; ids.get('accountSearch').oninput();
  assert.equal(checkinButton()[1], '签到');
- for (const page of ['models', 'usage', 'logs', 'config']) { context.location.hash = '#' + page; events.hashchange(); await tick(); await tick(); assert.equal(ids.get('pageError').hidden, true, 'page failed: ' + page); }
+ for (const page of ['models', 'balance', 'usage', 'logs', 'config']) { context.location.hash = '#' + page; events.hashchange(); await tick(); await tick(); assert.equal(ids.get('pageError').hidden, true, 'page failed: ' + page); }
+ assert(ids.get('balanceChart').innerHTML.includes('<svg'), '余额趋势应渲染 SVG 折线');
+ assert(ids.get('balanceDaily').innerHTML.includes('<svg'), '每日变化应渲染 SVG 柱状图');
+ assert.equal(ids.get('balanceAccounts').textContent, '2');
+ assert.equal(ids.get('balanceCurrent').textContent, '112.25', '余额合计必须保留小数');
+ assert.equal(ids.get('balanceChange').textContent, '+2.25', '净变化必须保留小数');
+ assert(ids.get('balanceBody').innerHTML.includes('&lt;img'), '账号名必须转义');
+ assert(!ids.get('balanceBody').innerHTML.includes('<img'), '账号名不得注入 HTML');
+ assert(ids.get('balanceBody').innerHTML.includes('+2.75') && ids.get('balanceBody').innerHTML.includes('-0.5'), '账号日变化应保留小数');
+ assert(ids.get('balanceDaily').innerHTML.includes('opacity=".42"'), '不完整日期必须淡化');
+ context.location.hash = '#balance'; events.hashchange(); await tick(); await tick();
+ let beforeBalanceRange = requests.length;
+ ids.get('balanceWindow').value = '1'; ids.get('balanceWindow').onchange(); await tick(); await tick();
+ assert.equal(requests.length, beforeBalanceRange + 1, '余额窗口切换只发一次历史查询');
+ assert(requests.at(-1).url.endsWith('/balance_history?days=1'), '余额窗口要传给服务端');
+ assert(ids.get('balanceChartNote').textContent.includes('近 24 小时'), '图表说明要跟随窗口');
+ ids.get('balanceWindow').value = '30'; ids.get('balanceWindow').onchange(); await tick(); await tick();
  assert(ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  assert(ids.get('modelsBody').innerHTML.includes('Kimi &lt;K3&gt;'));
  assert(!ids.get('modelsBody').innerHTML.includes('<K3>'));
  assert(ids.get('modelsBody').innerHTML.includes('title="描述 &lt;D&gt;&#10;注意 &amp; 提示"'));
  assert(ids.get('modelsBody').innerHTML.includes('<div class="model-badges"><span class="pill tag">闲时 &lt;T&gt;</span><span class="pill warn">辅助模型</span><span class="pill ok">视觉理解</span></div>'));
- assert(ids.get('modelsBody').innerHTML.includes('<td class="mono">plain-model<div class="model-badges"><span class="pill">纯文本</span></div></td>'), '不支持视觉输入的模型要挂灰色「纯文本」徽标');
+ assert(ids.get('modelsBody').innerHTML.includes('<td class="mono">plain-model<div class="model-badges"><span class="pill">纯文本</span><span class="pill warn">外置视觉理解</span></div></td>'), '视觉转述启用时，纯文本后要挂黄色「外置视觉理解」徽标');
+ configFixture.vision_bridge.enabled = false;
+ context.location.hash = '#models'; events.hashchange(); await tick(); await tick();
+ assert(!ids.get('modelsBody').innerHTML.includes('外置视觉理解'), '视觉转述关闭后不得显示外置视觉徽标');
+ configFixture.vision_bridge.enabled = true;
+ ids.get('refreshModelsButton').onclick(); await tick(); await tick();
+ assert(ids.get('modelsBody').innerHTML.includes('外置视觉理解'), '视觉转述重新启用后应恢复外置视觉徽标');
  assert.equal(ids.get('themeIconSun').hidden, false); assert.equal(ids.get('themeIconMoon').hidden, true);
  ids.get('themeButton').onclick();
  assert.equal(ids.get('themeIconSun').hidden, true); assert.equal(ids.get('themeIconMoon').hidden, false);
@@ -149,7 +204,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert(ids.get('requestLogsBody').innerHTML.includes('upstream &lt;failed&gt; &amp; unavailable'));
  assert(!ids.get('requestLogsBody').innerHTML.includes('upstream <failed>'));
  // 尝试次数列：重试过的请求把最后一次上游错误挂进原生 tooltip，一次就成功的没有 tooltip。
- assert(html.includes('<th>时间</th><th>模型</th><th>账户</th><th>结果</th><th>尝试次数</th><th>TTFT</th><th>耗时</th><th>缓存</th><th>总Token</th>'), '最近请求表头及顺序');
+ assert(html.replace(/>\s+</g, '><').includes('<th>时间</th><th>模型</th><th>账户</th><th>结果</th><th>尝试次数</th><th>TTFT</th><th>耗时</th><th>缓存</th><th>总Token</th>'), '最近请求表头及顺序');
   assert(ids.get('requestLogsBody').innerHTML.includes('<td>300 ms<small class="request-queue">含排队 10.1s</small></td><td>500 ms</td><td>800</td><td>1,200</td>'), 'TTFT、耗时、缓存和总Token列的值及顺序');
   assert.equal((ids.get('requestLogsBody').innerHTML.match(/class="request-queue"/g) || []).length, 1, '只有尝试次数大于 1 的请求显示排队时长');
   const attemptsCells = [...ids.get('requestLogsBody').innerHTML.matchAll(/<td class="number"(?: title="([^"]*)")?>(\d+)<\/td>/g)];
@@ -180,7 +235,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  outcome.value = ''; outcome.onchange();
  assert(ids.get('requestLogsBody').innerHTML.includes('test-model') && ids.get('requestLogsBody').innerHTML.includes('live stream failed'), '全部筛选恢复所有记录');
  assert.equal(requests.length, beforeFilter, '筛选不得触发额外请求');
- assert(html.includes('<option value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
+ assert(html.includes('<option id="requestOutcomeAbnormal" value="abnormal">异常</option>'), '结果筛选要有「异常」选项');
  // 失败原因徽标：四个已知分支黄色，「异常」红色；异常筛选只留没归类的失败。
  const at = Date.now();
  usage.recent.push(
@@ -191,7 +246,12 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
    // 11:48:11 那条真实记录：queue_max_attempts=1 时 TM.00001041 一次都没重试就 503，
    // 本质是上游并发已满（排队/限流），不能归进红色「异常」。
    { request_id: 'req-queue-limit', time: new Date(at - 1.8e3).toISOString(), model: 'queue-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=400 http=400 path=/api/v2/chat/completions msg={"error_code":"TM.00001041","error_msg":"并发会话数已达上限(3个)，请关闭部分会话后重试。"}' },
+   { request_id: 'req-upstream-timeout', time: new Date(at - 1.75e3).toISOString(), model: 'timeout-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=504 http=504 path=/api/v2/chat/completions msg={"error_msg":"Backend timeout","error_code":"APIG.0203","request_id":"example"}' },
    { request_id: 'req-retry-exhausted', time: new Date(at - 1.6e3).toISOString(), model: 'exhausted-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 3 attempt(s) on 3 account(s): codearts api code=500 http=500 msg=internal error' },
+   { request_id: 'req-auth', time: new Date(at - 1.55e3).toISOString(), model: 'auth-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 2 attempt(s) on 1 account(s): codearts api code=401 http=401 msg=unauthorized' },
+   { request_id: 'req-param', time: new Date(at - 1.45e3).toISOString(), model: 'param-model', ok: false, outcome: 'http_error', status: 400, error: 'upstream rejected request params: InferHub.001001005.400 Request param is invalid' },
+   { request_id: 'req-quota', time: new Date(at - 1.35e3).toISOString(), model: 'quota-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 1 attempt(s) on 1 account(s): codearts api code=502 http=502 msg=InferHub.4291.200 benefit exhausted' },
+   { request_id: 'req-legacy-upstream', time: new Date(at - 1.25e3).toISOString(), model: 'legacy-model', ok: false, outcome: 'http_error', status: 503, error: 'all accounts unavailable (disabled/cooldown): codearts api code=500 http=500 msg=internal error' },
    { request_id: 'req-no-accounts', time: new Date(at - 1.4e3).toISOString(), model: 'unconfigured-model', ok: false, outcome: 'http_error', status: 503, error: 'no accounts configured' },
    { request_id: 'req-token-invalid', time: new Date(at - 1.2e3).toISOString(), model: 'token-model', ok: false, outcome: 'http_error', status: 503, error: 'upstream attempts exhausted after 0 attempt(s) on 1 account(s): token invalid' },
    { request_id: 'req-abnormal', time: new Date(at - 1e3).toISOString(), model: 'abnormal-model', ok: false, outcome: 'http_error', status: 502, error: 'Post "https://upstream": EOF' }
@@ -199,18 +259,29 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  logPoll.cb(); await tick(); await tick();
  const classified = ids.get('requestLogsBody').innerHTML;
  const rowOf = model => classified.split('<tr>').find(tr => tr.includes(model)) || '';
- for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符', '上游排队/限流', '重试耗尽']) {
+ for (const label of ['客户端取消', '模型不存在', '无可用账号', '模型能力不符', '上游排队/限流', '上游超时', '上游服务异常', '账号鉴权失败', '请求参数错误', '福利额度耗尽']) {
    assert(classified.includes('<span class="pill warn">' + label + '</span>'), '失败原因徽标缺少「' + label + '」：' + classified);
  }
  assert(classified.includes('<span class="pill bad">异常</span>'), '没归类的失败要挂红色「异常」：' + classified);
  assert(rowOf('queue-model').includes('上游排队/限流') && !rowOf('queue-model').includes('异常'), '排队/限流不能归进「异常」：' + rowOf('queue-model'));
- assert(rowOf('exhausted-model').includes('重试耗尽') && !rowOf('exhausted-model').includes('异常'), '真重试到预算用完才算「重试耗尽」：' + rowOf('exhausted-model'));
- assert(rowOf('token-model').includes('无可用账号'), '0 次尝试（账号校验失败）是账号不可用，不是重试耗尽：' + rowOf('token-model'));
+ assert(rowOf('exhausted-model').includes('上游服务异常') && !rowOf('exhausted-model').includes('重试耗尽'), '耗尽只是现象，要显示 500 这个真实原因：' + rowOf('exhausted-model'));
+ assert(rowOf('timeout-model').includes('上游超时') && !rowOf('timeout-model').includes('重试耗尽'), 'APIG.0203 要按上游超时分类，不能叫重试耗尽：' + rowOf('timeout-model'));
+ assert(rowOf('auth-model').includes('账号鉴权失败'), '401 要按鉴权失败分类，不能被耗尽文案覆盖：' + rowOf('auth-model'));
+ assert(rowOf('param-model').includes('请求参数错误'), 'InferHub.001001005 要按参数错误分类：' + rowOf('param-model'));
+ assert(rowOf('quota-model').includes('福利额度耗尽') && !rowOf('quota-model').includes('排队'), 'InferHub.4291.200 不是 HTTP 429，不能误归限流：' + rowOf('quota-model'));
+ assert(rowOf('legacy-model').includes('上游服务异常') && !rowOf('legacy-model').includes('无可用账号'), '旧文案的底层 500 不能被外层无账号覆盖：' + rowOf('legacy-model'));
+ assert(rowOf('token-model').includes('账号鉴权失败'), 'token invalid 是账号鉴权问题，不能只按 0 次尝试归类：' + rowOf('token-model'));
  assert(rowOf('unconfigured-model').includes('无可用账号'), '未配置账号也是无可用账号：' + rowOf('unconfigured-model'));
+ // 下拉选项带条数：描述的是已取回的窗口（进程 100 + 归档 200），不是全量历史。
+ // 17 条 = 既有 3 条（成功 / 失败 / 流式失败）+ 本次 14 条分类样例；成功 1，异常 3（failed-model、live-failure、abnormal-model）。
+ assert.equal(ids.get('requestOutcomeAll').textContent, '全部 (17)', '全部选项要带窗口内的总条数');
+ assert.equal(ids.get('requestOutcomeOk').textContent, '成功 (1)', '成功选项要带成功条数');
+ assert.equal(ids.get('requestOutcomeFail').textContent, '失败 (16)', '失败选项要带失败条数');
+ assert.equal(ids.get('requestOutcomeAbnormal').textContent, '异常 (3)', '异常选项要带未归类失败条数');
  outcome.value = 'abnormal'; outcome.onchange();
  const abnormalOnly = ids.get('requestLogsBody').innerHTML;
  assert(abnormalOnly.includes('abnormal-model'), '异常筛选要保留未归类失败');
- for (const model of ['cancel-model', 'missing-model', 'no-account-model', 'capability-model', 'queue-model', 'exhausted-model', 'unconfigured-model', 'token-model']) {
+ for (const model of ['cancel-model', 'missing-model', 'no-account-model', 'capability-model', 'queue-model', 'timeout-model', 'exhausted-model', 'auth-model', 'param-model', 'quota-model', 'legacy-model', 'unconfigured-model', 'token-model']) {
    assert(!abnormalOnly.includes(model), '异常筛选要隐藏已归类失败：' + model);
  }
  assert(!abnormalOnly.includes('test-model'), '异常筛选不得包含成功记录');
@@ -222,19 +293,33 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(ids.get('configForm').hidden, false, 'config page must default to the form');
  assert.equal(ids.get('configRaw').hidden, true);
  assert.equal(ids.get('cfgListen').value, ':7866');
+ for (const [id, value] of multimodalControls) {
+   assert.equal(typeof value === 'boolean' ? ids.get(id).checked : ids.get(id).value, typeof value === 'boolean' ? value : String(value), 'multimodal config did not load: ' + id);
+ }
  const beforeMode = requests.length;
  ids.get('configModeRaw').onclick(); await tick(); await tick();
  assert(requests.length > beforeMode, 'switching mode must re-read the config file');
  assert.equal(ids.get('configForm').hidden, true); assert.equal(ids.get('configRaw').hidden, false);
  assert(ids.get('configEditor').value.includes('"listen": ":7866"'));
- ids.get('configEditor').value = JSON.stringify({ listen: ':9000', custom_keep: true });
+ const rawConfig = { listen: ':9000', custom_keep: true, max_body_mb: 96, image_shrink: { enabled: false, quality: 62, raw_extra: 'keep' }, vision_bridge: { enabled: true, prompt: 'Raw\nprompt', raw_extra: { keep: true } } };
+ ids.get('configEditor').value = JSON.stringify(rawConfig);
  await ids.get('saveConfigButton').onclick();
  const rawSave = JSON.parse(requests.filter(r => r.opts.method === 'PUT').at(-1).opts.body);
  assert.equal(rawSave.listen, ':9000', 'raw mode must save the editor content');
  assert.equal(rawSave.custom_keep, true, 'raw mode must keep unknown fields');
+ assert.equal(rawSave.max_body_mb, 96);
+ assert.deepEqual(rawSave.image_shrink, rawConfig.image_shrink, 'Raw mode must save image config without form overrides');
+ assert.deepEqual(rawSave.vision_bridge, rawConfig.vision_bridge, 'Raw mode must keep vision config and nested extensions');
  ids.get('configModeForm').onclick(); await tick(); await tick();
  assert.equal(ids.get('configForm').hidden, false);
  assert.equal(ids.get('cfgListen').value, ':7866', 'switching back must re-read the file, not the raw edit');
+ for (const [id, value, edited] of multimodalControls) {
+   const input = ids.get(id);
+   assert.equal(typeof value === 'boolean' ? input.checked : input.value, typeof value === 'boolean' ? value : String(value), 'switching back must reload multimodal config: ' + id);
+   if (typeof edited === 'boolean') { input.checked = edited; input.onchange(); }
+   else { input.value = String(edited); input.oninput(); }
+   assert.equal(ids.get('configEditor').dataset.dirty, 'true', 'editing must mark config dirty: ' + id);
+ }
  ids.get('cfgPollMinutes').value = '15';
  ids.get('cfgCheckinHours').value = '8, 20';
  ids.get('cfgRequestLogRetentionDays').value = '14';
@@ -243,8 +328,24 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  assert.equal(formSave.watch.poll_minutes, 15, 'form mode must save the form values');
  assert.deepEqual(formSave.checkin_hours, [8, 20]);
  assert.equal(formSave.listen, ':7866', 'untouched form fields keep the loaded value');
+ assert.equal(formSave.max_body_mb, 64);
+ const savedImageShrink = { enabled: false, trigger_body_mb: 5, target_image_mb: 2, target_total_mb: 4, max_dimension: 1800, quality: 82, extension: { preserved: 'image' } };
+ const savedVisionBridge = { enabled: false, model: 'kimi-k2.6-vl', max_images: 4, max_chars: 8000, max_tokens: 2000, timeout_seconds: 80, total_timeout_seconds: 100, prompt: '请按顺序描述。\n保留表格。', extension: { preserved: 'vision' } };
+ assert.deepEqual(formSave.image_shrink, savedImageShrink, 'form must save every image field and keep nested extensions');
+ assert.deepEqual(formSave.vision_bridge, savedVisionBridge, 'form must save every vision field, multiline prompt and nested extensions');
+ assert.deepEqual(formSave.extension, { preserved: true }, 'form must keep top-level extensions');
+ assert.equal(ids.get('cfgImageShrinkEnabled').checked, false, 'saved image switch must remain off');
+ assert.equal(ids.get('cfgVisionBridgeEnabled').checked, false, 'saved vision switch must remain off');
  assert.equal(ids.get('configEditor').dataset.dirty, 'false', 'saving must clear the dirty flag');
  assert(!ids.get('configEditor').value.includes('server-secret')); assert(!ids.get('configEditor').value.includes('api-secret'));
+ ids.get('cfgImageShrinkEnabled').checked = true; ids.get('cfgImageShrinkEnabled').onchange();
+ ids.get('cfgVisionBridgeEnabled').checked = true; ids.get('cfgVisionBridgeEnabled').onchange();
+ await ids.get('saveConfigButton').onclick();
+ const reenabledSave = JSON.parse(requests.filter(r => r.opts.method === 'PUT').at(-1).opts.body);
+ assert.deepEqual(reenabledSave.image_shrink, { ...savedImageShrink, enabled: true }, 're-enabling image shrink must keep the edited policy');
+ assert.deepEqual(reenabledSave.vision_bridge, { ...savedVisionBridge, enabled: true }, 're-enabling vision bridge must keep the edited policy');
+ assert.equal(ids.get('cfgImageShrinkEnabled').checked, true);
+ assert.equal(ids.get('cfgVisionBridgeEnabled').checked, true);
  ids.get('newAdminKey').value = 'rotated-secret'; ids.get('newAPIKey').value = 'new-api-secret';
  await ids.get('saveConfigButton').onclick();
  assert.equal(ids.get('newAdminKey').value, ''); assert.equal(ids.get('newAPIKey').value, ''); assert(!ids.get('configEditor').value.includes('rotated-secret')); assert(ids.get('configNotice').textContent.includes('需重启'), '保存后横幅要说明有字段需重启: ' + ids.get('configNotice').textContent);
@@ -260,8 +361,10 @@ assert(!/<label for="cfg(DefaultModel|SoftRate|ErrThreshold|ErrCooldown|MaxConcu
  context.location.hash = '#models'; events.hashchange(); await tick(); await tick();
  const beforeModelRefresh = requests.length;
  await ids.get('refreshModelsButton').onclick();
- assert.equal(requests.length, beforeModelRefresh + 1); assert(requests.at(-1).url.endsWith('/models?refresh=1'));
- assert.equal(requests.at(-1).opts.headers.get('Authorization'), 'Bearer rotated-secret', '热改管理密钥后必须立即改用新密钥');
+ assert.equal(requests.length, beforeModelRefresh + 2);
+ const modelRefreshRequest = requests.slice(beforeModelRefresh).find(r => r.url.endsWith('/models?refresh=1'));
+ assert(modelRefreshRequest);
+ assert.equal(modelRefreshRequest.opts.headers.get('Authorization'), 'Bearer rotated-secret', '热改管理密钥后必须立即改用新密钥');
  assert.equal(ids.get('refreshModelsButton').disabled, false); assert.equal(ids.get('refreshModelsButton').textContent, '重新获取');
  assert(ids.get('modelsBody').innerHTML.includes('&lt;model&gt;'));
  ids.get('addAccountButton').onclick();
@@ -356,6 +459,6 @@ assert(!/<label for="cfg(DefaultModel|SoftRate|ErrThreshold|ErrCooldown|MaxConcu
  assert.equal(requests.length, beforeOverview, 'an active search must not be disturbed');
  ids.get('accountSearch').value = '';
  ids.get('logoutButton').onclick(); assert(ids.get('loginDialog').open); assert.equal(context.sessionStorage.getItem('codearts2api-panel.admin-key'), undefined);
- console.log('PASS: five views, live log polling, escaped recent failures, OAuth controls, session-key login, secret redaction and deletion gate.');
+ console.log('PASS: six views, balance history charts, live log polling, escaped recent failures, OAuth controls, session-key login, secret redaction and deletion gate.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 

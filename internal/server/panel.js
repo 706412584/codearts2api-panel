@@ -5,6 +5,7 @@
   const THEME_STORAGE = 'codearts2api-panel.theme';
   const pages = {
     accounts: ['账号池', '管理凭据、查看账户状态与额度。'],
+    balance: ['余额趋势', '按账号查看 CREDIT 积分水位与变化。'],
     models: ['模型目录', '查看模型通道与能力，复制 ID 接入客户端。'],
     usage: ['请求用量', '当前进程的请求指标与近期用量。'],
     config: ['服务配置', '管理网关配置，保存即热生效；装配期字段需重启。'],
@@ -15,6 +16,7 @@
   let adminKey = readStorage(sessionStorage, KEY_STORAGE);
   let authenticated = false, authEpoch = 0, refreshID = 0, overviewInFlight = false;
   let currentPage = 'accounts', accounts = [], models = [], runtimeLogs = [], requestRows = [], requestRowsFromArchive = false;
+  let visionBridgeEnabled = false;
   let requestAttemptErrors = {}; // request_id → 最后一次上游错误（内存态，仅用于 tooltip）
   let oauthSession = '', oauthTimer = null, oauthBusy = false, deleteUID = '', noteUID = '', logsLoading = false;
   let serverStartedAt = 0; // 由 overview 的 uptime_sec 换算，本地时钟每 30 秒刷新顶栏
@@ -118,7 +120,7 @@
     }
     accounts = data.accounts || [];
     const stats = data.stats || {};
-    [['statTotal', 'total'], ['statHealthy', 'healthy'], ['statCooling', 'cooling'], ['statDisabled', 'disabled']].forEach(([id, name]) => { $(id).textContent = number(stats[name]); });
+    [['statTotal', 'total'], ['statHealthy', 'healthy'], ['statCooling', 'cooling'], ['statDisabled', 'disabled'], ['statCredits', 'credits'], ['statSticky', 'sticky']].forEach(([id, name]) => { $(id).textContent = number(stats[name]); });
     $('accountCount').textContent = number(accounts.length);
     $('connection').textContent = stats.healthy > 0 ? '服务正常' : accounts.length ? '暂无可用账户' : '等待添加账户';
     $('connection').classList.add('online');
@@ -217,11 +219,12 @@
       const title = tip ? ' title="' + esc(tip).replace(/\n/g, '&#10;') + '"' : '';
       // 徽标行：上游标签（紫）、被隐藏的模型（橘）、输入模态（绿＝视觉理解 / 灰＝纯文本）。
       // 上游只在支持图片时才回 supports_images，因此「不是 true」就是纯文本；
-      // 这样每个模型都能一眼看出能不能贴图，不必点开。
+      // 纯文本模型在视觉转述启用时再挂黄色「外置视觉理解」，与原生视觉能力区分。
       const badges = [
         m.model_tag ? '<span class="pill tag">' + esc(m.model_tag) + '</span>' : '',
         m.display_enabled === false ? '<span class="pill warn">辅助模型</span>' : '',
-        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>'
+        m.supports_images === true ? '<span class="pill ok">视觉理解</span>' : '<span class="pill">纯文本</span>',
+        m.supports_images !== true && visionBridgeEnabled ? '<span class="pill warn">外置视觉理解</span>' : ''
       ].filter(Boolean).join('');
       const badgeRow = badges ? '<div class="model-badges">' + badges + '</div>' : '';
       return '<tr><td class="mono"' + title + '>' + esc(m.id) + name + badgeRow + '</td><td>' + (m.ratio_display ? esc(m.ratio_display) : '<span class="muted">未知</span>') + '</td><td><span class="pill">常规模型</span></td><td class="number">' + esc(number(m.context_length ?? m.context_window)) + '</td><td class="number">' + esc(number(m.max_output_tokens ?? m.max_tokens)) + '</td><td><button class="button small" data-copy-model="' + esc(m.id) + '">复制 ID</button></td></tr>';
@@ -234,10 +237,9 @@
     try { await navigator.clipboard.writeText(button.dataset.copyModel); toast('模型 ID 已复制'); } catch { toast('浏览器无法访问剪贴板，请选中模型 ID 复制。', true); }
   };
   function eventOK(event) { return event.ok === true || (event.ok === undefined && event.status >= 200 && event.status < 300 && event.outcome !== 'stream_error'); }
-  // 失败原因分类：先认具体原因，最后才落到「账号池没有可用账号」；全对不上就是「异常」。
-  // 只读归档里的 error 原文，不额外请求后端，历史记录也能跟着分类。
-  // 排队/限流必须排在「重试耗尽」之前：耗尽文案里嵌着最后一次上游错误（常是 TM.00001041），
-  // 先认具体原因，才不会把「上游并发已满」笼统地说成「重试耗尽」。
+  // 只读归档里的 error 原文，历史记录也按同一套规则分类。
+  // 只按底层原因分类：外层「重试耗尽/无可用账号」与内层错误同时出现时，以内层为准。
+  // 重试次数已在「尝试次数」列展示，不再冒充失败原因；无法识别的错误保留「异常」。
   function failureKind(row) {
     if (eventOK(row)) return '';
     const text = String(row.error || '').toLowerCase();
@@ -245,10 +247,14 @@
         /context canceled|context cancelled|client disconnected|client canceled|client cancelled/.test(text)) return 'cancel';
     if (/not multimodal|inferhub\.001001020/.test(text)) return 'capability';
     if (/not registered|not in the model catalog|model .*not available|not available on any configured account/.test(text)) return 'missing';
+    // 4291 是业务码，不是 HTTP 429：福利额度耗尽不能当成可重试的瞬时排队。
+    if (/inferhub\.4291\./.test(text)) return 'quota';
     if (/tm\.00001041|81111\.429|tpm limit|concurren|并发|(?:code|http)=429/.test(text)) return 'queue_limit';
-    // 只有真打过上游（attempts ≥ 1）才算「重试耗尽」；0 次说明候选账号全卡在校验/凭据阶段，
-    // 那是账号不可用，不是重试预算用完。
-    if (/upstream attempts exhausted after [1-9]\d* attempt/.test(text)) return 'retry_exhausted';
+    if (/apig\.0203|backend timeout|deadline exceeded|i\/o timeout|(?:code|http)=(?:408|504)/.test(text)) return 'upstream_timeout';
+    if (/token invalid|token (?:expired|expiring)|(?:token|credential).{0,40}expired|expired.{0,40}(?:token|credential)|re-login required|unauthorized|forbidden|invalid signature|apig\.0301|apig\.0602|(?:code|http)=40[13]/.test(text)) return 'auth';
+    if (/(?:code|http)=5\d\d/.test(text)) return 'upstream_error';
+    // 参数/多模态内容/工具选择错误：换账号或重试也不会改变结果。
+    if (/invalid_request|upstream rejected request params|request param is invalid|inferhub\.001001005|inferhub\.001001046|messages is empty|tool_choice function|invalid content block|unsupported content block|content must be a string|text block requires text|image_url (?:must be|requires)|max_tokens must|temperature must|top_p must|no user or tool message|parse request|request body exceeds/.test(text)) return 'invalid_request';
     if (/all accounts unavailable|no healthy account|no available account|no accounts configured|upstream attempts exhausted after 0 attempt/.test(text)) return 'no_account';
     return 'abnormal';
   }
@@ -258,7 +264,11 @@
     no_account: ['无可用账号', 'warn'],
     capability: ['模型能力不符', 'warn'],
     queue_limit: ['上游排队/限流', 'warn'],
-    retry_exhausted: ['重试耗尽', 'warn'],
+    quota: ['福利额度耗尽', 'warn'],
+    auth: ['账号鉴权失败', 'warn'],
+    invalid_request: ['请求参数错误', 'warn'],
+    upstream_timeout: ['上游超时', 'warn'],
+    upstream_error: ['上游服务异常', 'warn'],
     abnormal: ['异常', 'bad'],
   };
   function failureBadge(row) {
@@ -410,6 +420,139 @@
     usageCustom = { from: $('usageFrom').value, to: $('usageTo').value };
     refresh();
   };
+
+  // —— 余额趋势：服务端记录真实余额水位，前端只读历史，不因看图额外请求上游。 ——
+  const BALANCE_COLORS = ['var(--accent)', 'var(--purple)', 'var(--green)', 'var(--amber)', '#62b6cb', '#e58aae', '#9aae62', '#c98c5b'];
+  let balanceDays = 30;
+  const balanceName = row => row.name || row.uid || '未知账号';
+  const signed = value => (value > 0 ? '+' : '') + number(value);
+  function balanceDayKey(at) {
+    const pad = value => String(value).padStart(2, '0');
+    return at.getFullYear() + '-' + pad(at.getMonth() + 1) + '-' + pad(at.getDate());
+  }
+  function balanceDailyFor(row, day) {
+    return (Array.isArray(row.daily) ? row.daily : []).find(item => item.day === day) || null;
+  }
+  function balanceChangeCell(daily) {
+    if (!daily || !Number.isFinite(Number(daily.change))) return '<td>—</td>';
+    const value = Number(daily.change), tone = value > 0 ? 'positive' : value < 0 ? 'negative' : '';
+    return '<td class="number ' + tone + '"' + (daily.full ? '' : ' title="该日采样不完整，不宜与完整日直接比较"') + '>' + esc(signed(value)) + '</td>';
+  }
+  function renderBalance(data) {
+    const rows = data && Array.isArray(data.series) ? data.series : [];
+    const current = rows.reduce((sum, row) => sum + (Number(row.current) || 0), 0);
+    const change = rows.reduce((sum, row) => sum + (Number(row.change) || 0), 0);
+    const samples = rows.reduce((sum, row) => sum + (Array.isArray(row.points) ? row.points.length : 0), 0);
+    $('balanceAccounts').textContent = number(rows.length);
+    $('balanceCurrent').textContent = rows.length ? number(current) : '—';
+    $('balanceChange').textContent = rows.length ? signed(change) : '—';
+    $('balanceChange').className = change > 0 ? 'positive' : change < 0 ? 'negative' : '';
+    $('balanceSamples').textContent = number(samples);
+    $('balanceWindow').value = String(balanceDays);
+    const now = new Date(data && data.now || Date.now()), validNow = Number.isNaN(now.getTime()) ? new Date() : now;
+    const yesterday = new Date(validNow); yesterday.setDate(yesterday.getDate() - 1);
+    const todayKey = balanceDayKey(validNow), yesterdayKey = balanceDayKey(yesterday);
+    $('balanceBody').innerHTML = rows.map((row, index) => {
+      const value = Number(row.change) || 0;
+      return '<tr><td title="' + esc(row.uid || '') + '"><span class="balance-color-' + (index % BALANCE_COLORS.length) + '">●</span> ' + esc(balanceName(row)) + '</td>' +
+        '<td class="number">' + esc(number(row.current)) + '</td><td class="number">' + esc(number(row.min)) + '</td><td class="number">' + esc(number(row.max)) + '</td>' +
+        '<td class="number ' + (value > 0 ? 'positive' : value < 0 ? 'negative' : '') + '">' + esc(signed(value)) + '</td>' +
+        balanceChangeCell(balanceDailyFor(row, todayKey)) + balanceChangeCell(balanceDailyFor(row, yesterdayKey)) +
+        '<td class="number">' + number(Array.isArray(row.points) ? row.points.length : 0) + '</td></tr>';
+    }).join('') || emptyRow(8, '暂无余额采样。服务启动后立即查询，之后每 30 分钟查询；成功查询按 5 分钟去重记录，也可在账号池手动刷新额度。');
+    renderBalanceChart(rows);
+    renderBalanceDaily(rows);
+  }
+  function renderBalanceChart(rows) {
+    const host = $('balanceChart'), legend = $('balanceLegend');
+    const series = rows.map(row => ({
+      row,
+      points: (Array.isArray(row.points) ? row.points : []).map(point => ({ ...point, t: Number(point.t) * 1000, c: Number(point.c) }))
+        .filter(point => Number.isFinite(point.t) && point.t > 0 && Number.isFinite(point.c)).sort((a, b) => a.t - b.t)
+    })).filter(item => item.points.length);
+    if (!series.length) {
+      host.textContent = '暂无余额采样。历史从第一次成功查询开始，未知余额不会显示为 0。';
+      legend.innerHTML = '';
+      $('balanceChartNote').textContent = '服务每 30 分钟刷新启用账号；手动刷新额度也走采样入口，同一账号 5 分钟内只记录一点。';
+      return;
+    }
+    let t0 = Infinity, t1 = -Infinity, lo = Infinity, hi = -Infinity;
+    series.forEach(item => item.points.forEach(point => {
+      t0 = Math.min(t0, point.t); t1 = Math.max(t1, point.t); lo = Math.min(lo, point.c); hi = Math.max(hi, point.c);
+      if (point.d && Number.isFinite(Number(point.f))) { lo = Math.min(lo, Number(point.f)); hi = Math.max(hi, Number(point.f)); }
+    }));
+    if (t0 === t1) { t0 -= 30 * 60e3; t1 += 30 * 60e3; }
+    const spread = hi - lo || Math.max(1, Math.abs(hi) * .05), paddedHi = hi + spread * .12;
+    lo = Math.max(0, lo - spread * .12); hi = Math.max(paddedHi, lo + 1);
+    const W = 1000, H = 240, left = 68, right = 18, top = 15, bottom = 38, iw = W - left - right, ih = H - top - bottom;
+    const X = at => left + iw * (at - t0) / (t1 - t0), Y = value => top + ih - ih * (value - lo) / (hi - lo);
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="各账号 CREDIT 积分水位"><title>各账号 CREDIT 积分水位，直线连接真实采样点</title>';
+    for (let i = 0; i <= 4; i++) {
+      const value = lo + (hi - lo) * i / 4, y = Y(value);
+      svg += '<line class="chart-grid" x1="' + left + '" y1="' + y + '" x2="' + (W - right) + '" y2="' + y + '"/><text x="' + (left - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + esc(number(value)) + '</text>';
+    }
+    svg += '<line class="balance-axis" x1="' + left + '" y1="' + (top + ih) + '" x2="' + (W - right) + '" y2="' + (top + ih) + '"/>';
+    const span = t1 - t0;
+    for (let i = 0; i < 5; i++) {
+      const at = t0 + span * i / 4, label = new Date(at).toLocaleString('zh-CN', span <= 2 * 864e5 ? { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false } : { month: '2-digit', day: '2-digit' });
+      svg += '<text x="' + X(at) + '" y="' + (H - 10) + '" text-anchor="' + (i === 0 ? 'start' : i === 4 ? 'end' : 'middle') + '">' + esc(label) + '</text>';
+    }
+    series.forEach((item, index) => {
+      const color = BALANCE_COLORS[index % BALANCE_COLORS.length], points = item.points.map(point => ({ ...point, x: X(point.t), y: Y(point.c) }));
+      const path = points.map((point, i) => (i ? 'L' : 'M') + point.x.toFixed(1) + ' ' + point.y.toFixed(1)).join('');
+      svg += '<path class="balance-line" stroke="' + color + '" d="' + path + '"/>';
+      // 点少时保留每个点的悬停热区；点多了只画折线与末点，避免上千个 DOM 节点。
+      if (points.length <= 64) points.forEach(point => {
+        const title = balanceName(item.row) + ' · ' + new Date(point.t).toLocaleString('zh-CN', { hour12: false }) + '\n余额 ' + number(point.c) + (point.d ? '（日粒度）' : '');
+        svg += '<circle cx="' + point.x + '" cy="' + point.y + '" r="5" fill="transparent"><title>' + esc(title) + '</title></circle>';
+      });
+      const last = points[points.length - 1];
+      svg += '<circle cx="' + last.x + '" cy="' + last.y + '" r="3.2" fill="' + color + '"><title>' + esc(balanceName(item.row) + ' · 当前 ' + number(last.c)) + '</title></circle>';
+    });
+    host.innerHTML = svg + '</svg>';
+    legend.innerHTML = series.map((item, index) => '<span class="balance-legend-item" title="' + esc(balanceName(item.row)) + '"><i class="balance-color-' + (index % BALANCE_COLORS.length) + '"></i><span>' + esc(balanceName(item.row)) + '</span></span>').join('');
+    $('balanceChartNote').textContent = (balanceDays === 1 ? '近 24 小时' : '近 ' + balanceDays + ' 天') + ' · 真实时间轴；直线连接采样点' + (lo > 0 ? '；纵轴不从 0 起' : '') + '。';
+  }
+  function renderBalanceDaily(rows) {
+    const host = $('balanceDaily'), daySet = new Set();
+    rows.forEach(row => (Array.isArray(row.daily) ? row.daily : []).forEach(day => {
+      if (day && day.day && Number.isFinite(Number(day.change))) daySet.add(day.day);
+    }));
+    const days = [...daySet].sort();
+    if (!days.length) { host.textContent = '暂无按日数据。第一次有效采样后即会出现当日记录。'; return; }
+    let hi = 0, lo = 0;
+    rows.forEach(row => (Array.isArray(row.daily) ? row.daily : []).forEach(day => {
+      if (daySet.has(day.day)) { hi = Math.max(hi, Number(day.change) || 0); lo = Math.min(lo, Number(day.change) || 0); }
+    }));
+    if (hi > 0) hi *= 1.12;
+    if (lo < 0) lo *= 1.12;
+    if (hi === 0 && lo === 0) { hi = 1; lo = -1; }
+    else if (hi === 0) hi = Math.max(1, -lo * .15);
+    else if (lo === 0) lo = -Math.max(1, hi * .15);
+    const W = 1000, H = 220, left = 68, right = 18, top = 14, bottom = 38, iw = W - left - right, ih = H - top - bottom;
+    const Y = value => top + ih - ih * (value - lo) / (hi - lo), zeroY = Y(0), groupW = iw / days.length, gap = rows.length > 1 ? 1 : 0;
+    const bw = Math.max(1.5, Math.min(16, (groupW - 8 - gap * (rows.length - 1)) / Math.max(1, rows.length)));
+    let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="每日余额净变化"><title>每日余额净变化；不完整日期淡化</title>';
+    for (let i = 0; i <= 4; i++) {
+      const value = lo + (hi - lo) * i / 4, y = Y(value), zero = Math.abs(value) < Math.max(hi, -lo) / 8;
+      svg += '<line class="' + (zero ? 'balance-zero' : 'chart-grid') + '" x1="' + left + '" y1="' + y + '" x2="' + (W - right) + '" y2="' + y + '"/><text x="' + (left - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + esc(signed(value)) + '</text>';
+    }
+    days.forEach((day, dayIndex) => {
+      const gx = left + dayIndex * groupW;
+      rows.forEach((row, rowIndex) => {
+        const daily = balanceDailyFor(row, day);
+        if (!daily) return;
+        const value = Number(daily.change) || 0, width = bw * rows.length + gap * (rows.length - 1);
+        const x = gx + (groupW - width) / 2 + rowIndex * (bw + gap), y = value === 0 ? zeroY - 1 : Math.min(zeroY, Y(value)), height = value === 0 ? 2 : Math.max(1, Math.abs(Y(value) - zeroY));
+        const title = balanceName(row) + ' · ' + day + '\n净变化 ' + signed(value) + '\n估算消耗 ' + number(daily.consumed) + ' · 到账 ' + number(daily.gained) + '（下界）' + (daily.full ? '' : '\n该日采样不完整');
+        svg += '<rect x="' + x + '" y="' + y + '" width="' + bw + '" height="' + height + '" rx="1.5" fill="' + (value > 0 ? 'var(--green)' : value < 0 ? 'var(--red)' : 'var(--line)') + '"' + (daily.full ? '' : ' opacity=".42"') + '><title>' + esc(title) + '</title></rect>';
+      });
+      if (dayIndex % Math.max(1, Math.ceil(days.length / 8)) === 0) svg += '<text x="' + (gx + groupW / 2) + '" y="' + (H - 10) + '" text-anchor="middle">' + esc(day.slice(5)) + '</text>';
+    });
+    host.innerHTML = svg + '</svg>';
+  }
+  $('balanceWindow').onchange = () => { balanceDays = Number($('balanceWindow').value) || 30; refresh(); };
+
   function renderRequestLogs(data) {
     const view = usageView(data);
     requestRows = [...view.recent].sort((a, b) => new Date(b.time) - new Date(a.time));
@@ -425,8 +568,22 @@
     const failure = attempts > 1 ? requestAttemptErrors[row.request_id] : '';
     return '<td class="number"' + (failure ? ' title="' + esc(failure) + '"' : '') + '>' + esc(shown) + '</td>';
   }
+  // 下拉选项带条数：数字只描述已取回的这一批窗口（进程 100 条 + 归档 200 条），不是全量历史。
+  // 「异常」与筛选判定同源（failureKind），不会出现「显示 3 条、点进去 2 条」的对不上。
+  function paintOutcomeCounts() {
+    let ok = 0, abnormal = 0;
+    for (const row of requestRows) {
+      if (eventOK(row)) ok++;
+      else if (failureKind(row) === 'abnormal') abnormal++;
+    }
+    $('requestOutcomeAll').textContent = '全部 (' + number(requestRows.length) + ')';
+    $('requestOutcomeOk').textContent = '成功 (' + number(ok) + ')';
+    $('requestOutcomeFail').textContent = '失败 (' + number(requestRows.length - ok) + ')';
+    $('requestOutcomeAbnormal').textContent = '异常 (' + number(abnormal) + ')';
+  }
   // 筛选只作用于已取回的这一批记录（进程 100 条 + 归档 200 条），不额外请求后端。
   function paintRequestLogs() {
+    paintOutcomeCounts();
     const filter = $('requestOutcome').value;
     const rows = filter ? requestRows.filter(row => matchesOutcomeFilter(row, filter)) : requestRows;
     $('requestLogsBody').innerHTML = rows.map(row => '<tr><td class="muted">' + esc(date(row.time)) + '</td><td class="mono">' + esc(row.model || '—') + '</td><td>' + esc(row.account || '—') + '</td><td><span class="request-result"><span class="pill ' + (eventOK(row) ? 'ok' : 'bad') + '">' + esc(eventOK(row) ? '成功' : row.outcome || '失败') + ' ' + esc(row.status ?? '') + '</span>' + failureBadge(row) + '</span>' + (!eventOK(row) && row.error ? '<small class="request-error" title="' + esc(row.error) + '">' + esc(row.error) + '</small>' : '') + '</td>' + attemptsCell(row) + '<td>' + esc(Number(row.ttfb_ms) > 0 ? duration(row.ttfb_ms) : '—') + (Number(row.attempts) > 1 && Number(row.queue_ms) > 0 ? '<small class="request-queue">含排队 ' + esc(duration(row.queue_ms).replace(' ', '')) + '</small>' : '') + '</td><td>' + esc(duration(row.duration_ms)) + '</td><td>' + esc(number(row.cache_hit_tokens || 0)) + '</td><td>' + esc(number(tokenTotal(row))) + '</td></tr>').join('') || emptyRow(9, filter ? '没有符合条件的请求。' : requestRowsFromArchive ? '本地归档中暂无请求记录。' : '当前进程尚无请求记录。');
@@ -465,6 +622,7 @@
     ['cfgStateFile', 'state_file', 'text'],
     ['cfgOAuthCallbackHost', 'oauth_callback_host', 'text'],
     ['cfgLoginClientID', 'login_client_id', 'text'],
+    ['cfgAccountStrategy', 'account_strategy', 'text'],
     ['cfgMaxConcurrent', 'max_concurrent', 'int'],
     ['cfgKeepaliveWindow', 'keepalive_window', 'text'],
     ['cfgQueueRetrySeconds', 'queue_retry_seconds', 'int'],
@@ -473,6 +631,21 @@
     ['cfgErrThreshold', 'cooldown.err_threshold', 'int'],
     ['cfgErrCooldown', 'cooldown.err_cooldown', 'text'],
     ['cfgTimeoutSeconds', 'upstream.timeout_seconds', 'int'],
+    ['cfgMaxBodyMB', 'max_body_mb', 'int'],
+    ['cfgImageShrinkEnabled', 'image_shrink.enabled', 'bool'],
+    ['cfgImageShrinkTriggerBodyMB', 'image_shrink.trigger_body_mb', 'int'],
+    ['cfgImageShrinkTargetImageMB', 'image_shrink.target_image_mb', 'int'],
+    ['cfgImageShrinkTargetTotalMB', 'image_shrink.target_total_mb', 'int'],
+    ['cfgImageShrinkMaxDimension', 'image_shrink.max_dimension', 'int'],
+    ['cfgImageShrinkQuality', 'image_shrink.quality', 'int'],
+    ['cfgVisionBridgeEnabled', 'vision_bridge.enabled', 'bool'],
+    ['cfgVisionBridgeModel', 'vision_bridge.model', 'text'],
+    ['cfgVisionBridgeMaxImages', 'vision_bridge.max_images', 'int'],
+    ['cfgVisionBridgeMaxChars', 'vision_bridge.max_chars', 'int'],
+    ['cfgVisionBridgeMaxTokens', 'vision_bridge.max_tokens', 'int'],
+    ['cfgVisionBridgeTimeoutSeconds', 'vision_bridge.timeout_seconds', 'int'],
+    ['cfgVisionBridgeTotalTimeoutSeconds', 'vision_bridge.total_timeout_seconds', 'int'],
+    ['cfgVisionBridgePrompt', 'vision_bridge.prompt', 'text'],
     ['cfgWatchEnabled', 'watch.enabled', 'bool'],
     ['cfgCreditsAutoClaim', 'credits_auto_claim', 'bool'],
     ['cfgPollMinutes', 'watch.poll_minutes', 'int'],
@@ -598,8 +771,15 @@
     if (page === 'models' && forceModels) { $('refreshModelsButton').disabled = true; $('refreshModelsButton').textContent = '正在获取…'; }
     try {
       if (page === 'accounts') renderOverview(await api('overview'));
-      else if (page === 'models') { const data = await api('models' + (forceModels ? '?refresh=1' : '')); models = data.data || []; renderModels(); if (forceModels) toast('模型目录已重新获取'); }
+      else if (page === 'models') {
+        const [data, config] = await Promise.all([api('models' + (forceModels ? '?refresh=1' : '')), api('config')]);
+        models = data.data || [];
+        visionBridgeEnabled = config.config?.vision_bridge?.enabled === true;
+        renderModels();
+        if (forceModels) toast('模型目录已重新获取');
+      }
       else if (page === 'usage') renderUsage(await api('usage?' + usageQuery()));
+      else if (page === 'balance') renderBalance(await api('balance_history?days=' + balanceDays));
       else if (page === 'config') { if ($('configEditor').dataset.dirty !== 'true') await loadConfig(); }
       else if (page === 'logs') await loadLogs();
       if (id === refreshID) $('updatedAt').textContent = '刷新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -621,8 +801,8 @@
     authEpoch++; refreshID++; adminKey = ''; authenticated = false; writeStorage(sessionStorage, KEY_STORAGE, ''); stopOAuth();
     accounts = []; models = []; runtimeLogs = []; serverStartedAt = 0; $('uptime').textContent = '—';
     $('configEditor').value = ''; $('configEditor').dataset.dirty = 'false'; $('newAPIKey').value = ''; $('newAdminKey').value = '';
-    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
-    renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({});
+    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'statCredits', 'statSticky', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens', 'balanceAccounts', 'balanceCurrent', 'balanceChange', 'balanceSamples'].forEach(id => { $(id).textContent = '—'; });
+    renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({}); renderBalance({});
     $('pageLoading').hidden = true; $('pageError').hidden = true; $('refreshButton').disabled = false; showLogin();
   };
   document.querySelectorAll('[data-close]').forEach(button => { button.onclick = () => $(button.dataset.close).close(); });

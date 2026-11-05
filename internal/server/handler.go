@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/balance"
 	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
@@ -32,16 +33,18 @@ import (
 
 // Config handler 依赖。
 type Config struct {
-	Pool         *pool.Pool
-	Upstream     *upstream.Client
-	APIKey       string
-	AdminKey     string
-	Settings     SettingsStore
-	RequestLog   *reqlog.Recorder
-	MaxRotate    int
-	SoftCooldown time.Duration
-	ErrThreshold int
-	ErrCooldown  time.Duration
+	Pool            *pool.Pool
+	Upstream        *upstream.Client
+	AccountStrategy string // 未注入 Live 时的默认选号策略
+	APIKey          string
+	AdminKey        string
+	Settings        SettingsStore
+	RequestLog      *reqlog.Recorder
+	Balance         *balance.Recorder
+	MaxRotate       int
+	SoftCooldown    time.Duration
+	ErrThreshold    int
+	ErrCooldown     time.Duration
 	// CodeArts 上游把并发会话/TPM 排队既可能返回 HTTP 400/429，
 	// 也可能嵌在 HTTP 200 SSE 内。默认每 10s 重试一次、最多 30 次（约 5 分钟）。
 	QueueRetryDelay  time.Duration
@@ -57,16 +60,18 @@ type Config struct {
 	LoginConfig upstream.LoginConfig
 	// OAuthCallbackHost 可选：覆盖授权链接回调 host（如 https://oneapi.example.com/codearts）。
 	OAuthCallbackHost string
-	// ImageShrink 内联图片按需缩图策略（吸收自上游）。nil 表示不缩图。
-	// 上游媒体转换对单图有硬上限（实测请求体≈4.3MB），超了只能压小再发。
-	ImageShrink *imgshrink.Policy
-	// MaxBodyBytes 聊天请求体上限（字节）。<=0 回落 defaultMaxBodyBytes。
-	MaxBodyBytes int64
-	// ImageHandling 见 cmd/server/config.go 同名配置项。空值等同 analyze（本部署默认）。
-	ImageHandling string
 	// Live 运行期配置快照：面板保存后热生效的字段从这里读。
 	// 为 nil 时（测试/裸用）回落到上面各字段的启动值。
 	Live *livecfg.Holder
+
+	// 以下是多模态相关策略的启动值；请求期一律读 live 快照
+	// （live 里没有时回落这里），这样面板改完立即生效。
+	MaxBodyBytes int64
+	ImageShrink  *imgshrink.Policy
+	VisionBridge *VisionBridgePolicy
+	// ImageHandling 见 cmd/server/config.go 同名配置项（bridge/analyze/passthrough）。
+	// 空值等同 analyze（本 fork 默认；上游默认 bridge）。
+	ImageHandling string
 }
 
 // live 返回请求期配置快照。未注入 holder 时用启动字段拼一个等价快照，
@@ -79,6 +84,7 @@ func (h *Handler) live() livecfg.Snapshot {
 		APIKey:            h.cfg.APIKey,
 		AdminKey:          h.cfg.AdminKey,
 		DefaultModel:      h.cfg.DefaultModel,
+		AccountStrategy:   h.cfg.AccountStrategy,
 		SoftCooldown:      h.cfg.SoftCooldown,
 		ErrThreshold:      h.cfg.ErrThreshold,
 		ErrCooldown:       h.cfg.ErrCooldown,
@@ -87,6 +93,33 @@ func (h *Handler) live() livecfg.Snapshot {
 		OAuthCallbackHost: h.cfg.OAuthCallbackHost,
 		LoginClientID:     h.cfg.LoginConfig.ClientID,
 	}
+}
+
+// 测试/裸用时的回落：把启动值里的多模态策略补进快照。
+func (h *Handler) liveMultimodal(s livecfg.Snapshot) livecfg.Snapshot {
+	if h.cfg.Live != nil {
+		return s // 生产：一律以热配置快照为准，不能拿启动值把用户关掉的开关又打开
+	}
+	if s.MaxBodyBytes <= 0 {
+		s.MaxBodyBytes = h.cfg.MaxBodyBytes
+	}
+	if h.cfg.ImageShrink != nil && !s.ImageShrinkEnabled {
+		s.ImageShrinkEnabled = true
+		s.ImageShrink = *h.cfg.ImageShrink
+	}
+	// 注意：这里要判 Enabled，而不是只看指针非空 —— 测试/裸用里传 &Policy{Enabled:false}
+	// 表示"明确关闭"，不能被启动值重新打开。
+	if h.cfg.VisionBridge != nil && h.cfg.VisionBridge.Enabled && !s.VisionBridgeEnabled {
+		s.VisionBridgeEnabled = true
+		s.VisionBridge = *h.cfg.VisionBridge
+	}
+	if s.ImageHandling == "" {
+		s.ImageHandling = h.cfg.ImageHandling
+	}
+	if s.ImageHandling == "" {
+		s.ImageHandling = "analyze"
+	}
+	return s
 }
 
 // noteError 用当前（可热改）阈值记一次失败。
@@ -230,6 +263,7 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /admin/api/overview", h.withAdminAuth(h.adminOverview))
 	h.mux.HandleFunc("GET /admin/api/models", h.withAdminAuth(h.models))
 	h.mux.HandleFunc("GET /admin/api/usage", h.withAdminAuth(h.adminUsage))
+	h.mux.HandleFunc("GET /admin/api/balance_history", h.withAdminAuth(h.adminBalanceHistory))
 	h.mux.HandleFunc("GET /admin/api/logs", h.withAdminAuth(h.adminLogs))
 	h.mux.HandleFunc("GET /admin/api/config", h.withAdminAuth(h.adminConfigGet))
 	h.mux.HandleFunc("PUT /admin/api/config", h.withAdminAuth(h.adminConfigPut))
@@ -497,7 +531,7 @@ func firstNonEmpty(vals ...string) string {
 // models
 // ---------------------------------------------------------------------------
 
-// models 返回模型列表：优先动态（缓存 1h），失败回退静态表（仅精确模型名）。
+// models 返回账号实际上游目录中的模型列表。
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -676,8 +710,8 @@ func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	return infos
 }
 
-// pickAccount 为一次调用挑账号：优先选目录里登记过该模型、且未实测不可用的
-// 健康账号，都挑不到再退回普通轮转。图像分析路径（describeImage）用它，
+// pickAccount 为一次调用挑账号：优先按策略选目录里登记过该模型、且未实测不可用的
+// 健康账号，都挑不到再退回普通选号。图像分析路径（describeImage）用它，
 // 以免把视觉请求发给不支持视觉的账号白耗一次。
 func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account {
 	want := strings.ToLower(upstream.CanonicalModel(model))
@@ -693,7 +727,7 @@ func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account
 	if acct := h.pickByCatalog(tried, want); acct != nil {
 		return acct
 	}
-	return h.cfg.Pool.PickExcluding(tried)
+	return h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 }
 
 // accountServesModel 报告该账号的目录是否登记了这个模型（目录未知时放行）。
@@ -708,20 +742,18 @@ func (h *Handler) accountServesModel(acct *pool.Account, model string) bool {
 	return catalogHas(models, strings.ToLower(upstream.CanonicalModel(model)))
 }
 
-// pickByCatalog 在目录登记了该模型的健康账号里挑一个。
+// pickByCatalog 在目录登记了该模型、且未实测不可用的健康账号中应用当前选号策略。
 func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.Account {
+	candidates := map[string]bool{}
 	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || tried[acct.Name] || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
 		if models, known := upstream.AccountModels(acct.UID); known && catalogHas(models, wantLower) {
 			if st, _ := modelAvailability(acct.UID, wantLower); st == availUnusable {
 				continue // 该账号实测调不通这个模型，别选它
 			}
-			return acct
+			candidates[acct.Name] = true
 		}
 	}
-	return nil
+	return h.cfg.Pool.PickExcludingMatching(tried, h.live().AccountStrategy, candidates)
 }
 
 // discoverMissingCatalogs 补拉缺失的账号模型目录（懒发现）。
@@ -882,7 +914,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_accounts", "no accounts configured; add one in the panel")
 		return
 	}
-	limit := h.cfg.MaxBodyBytes
+	limit := h.liveMultimodal(h.live()).MaxBodyBytes
 	if limit <= 0 {
 		limit = defaultMaxBodyBytes
 	}
@@ -931,45 +963,53 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		h.convMu.Unlock()
 	}
 
-	// 缩图（吸收自上游）：上游媒体转换对单张图片有硬上限（实测请求体≈4.3MB /
-	// 图片≈3.2MB），超了回 ModelArts.81029，网关放宽 body 上限也没用——只能压小再发。
-	// 必须在 analyze 改写之前做：改写会把图片换成占位符，之后就找不到原图了。
-	// 只在超预算时动手，正常小图一个字节都不碰；结果按内容+参数缓存，多轮不重压。
-	if h.cfg.ImageShrink != nil && hasImageBlocks(req) {
-		if st := shrinkMessageImages(req, *h.cfg.ImageShrink, int64(len(body))); st.Changed {
+	event.Model = safeLogLabel(model)
+
+	// analyzeRouted 表示本次请求改写了图片、注入了 analyze_image 工具。
+	// 只有它为真时才需要「先聚合再判断回灌」：纯文本请求必须原样直通流式，
+	// 否则客户端要等模型生成完才收到首字。
+	analyzeRouted := false
+
+	// 冷启动兜底：目录是内存态、重启即空，而下面三步都依赖目录里的图片能力声明。
+	// 补齐目录的 discoverMissingCatalogs 此前只在 pickAccount（视觉子请求路径）里
+	// 调过，chat 主路径从不调 —— 于是重启后第一个带图请求会扫到空目录，
+	// catalogDeclaresNoImages/modelSupportsImages 把「不知道能力」当成「能收图」，
+	// analyze 不路由、bridge 不触发，图片原样发上游吃 InferHub.001001020.406。
+	// 这里在判定前补一次目录；已就绪时 ensureCatalog 立即返回，热路径零额外调用。
+	if hasImageBlocks(req) {
+		h.ensureCatalog(nil)
+	}
+
+	// 多模态前置处理，三步都在「模型已确定、还没发给上游」时做：
+	//   ① 缩图：上游媒体转换对单图有硬上限（实测请求体 ≈4.3MB / 图片 ≈3.2MB），
+	//      超了只能压小再发，否则拿到的是一句 ModelArts.81029；
+	//   ② analyze 模式（image_handling=analyze）：图片换成占位符 + 注入工具，
+	//      主模型按需调用，视觉模型只承担单图分析（复刻官方 AnalyzeImagePlugin）；
+	//   ③ 识图桥接（image_handling=bridge；本 fork 默认 analyze）：目标模型在本上游是纯文本时，先用 VL 模型把图转述成
+	//      文字，否则上游直接回 InferHub.001001020.406（非多模态）。
+	multi := h.liveMultimodal(h.live())
+	if multi.ImageShrinkEnabled && hasImageBlocks(req) {
+		if st := shrinkMessageImages(req, multi.ImageShrink, int64(len(body))); st.Changed {
 			log.Printf("image shrink images=%d before=%d after=%d", st.Images, st.Before, st.After)
 		}
 	}
-
-	// 带图请求打到「目录明确声明不支持图片」的模型：
-	//   - analyze 模式：把图片换成占位符、注入 analyze_image 工具，交给主模型按需
-	//     调用（复刻官方 AnalyzeImagePlugin）。主模型上下文与推理完全不受影响，
-	//     视觉模型只承担单图分析。
-	//   - 默认 passthrough：直接回 400 并列出可用视觉模型，由调用方自己改。
-	//     刻意**不做自动改派**——视觉模型上下文普遍更小（实测 deepseek 1M vs
-	//     qwen3-vl 131k），拿大请求去撞只会得到 ModelArts.81001；而且视觉模型
-	//     没有推理输出，静默换掉会同时毁掉能力与语义。
-	// 只拦「上游明确声明 false」的模型；未声明时无依据，照原样放行交给上游回答。
-	// analyzeRouted 表示本次请求真的改写了图片、注入了 analyze_image 工具。
-	// 只有它为真时才需要「先聚合再判断回灌」；纯文本请求必须保持原样直通
-	// 流式，否则客户端要等模型生成完才收到首字（实测 91s 的 TTFB）。
-	analyzeRouted := false
-	if hasImageBlocks(req) {
-		// 冷启动兜底：目录是内存态、重启即空。若目录还没发现，catalogDeclaresNoImages
-		// 会把「不知道能力」当成「能收图」放行，图原样发上游吃 406。带图请求先补一次
-		// 目录再判定；目录已就绪时 ensureCatalog 立即返回，零额外上游调用。
-		h.ensureCatalog(nil)
-	}
-	if hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
-		if h.cfg.ImageHandling == "passthrough" {
-			vision := strings.Join(h.visionModelIDs(), ", ")
-			if vision == "" {
-				vision = "(当前账号目录里没有声明支持图片的模型)"
-			}
-			writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
-				"model "+model+" does not accept image input; retry with a vision model such as: "+vision)
-			return
+	// passthrough：不替调用方做任何决策，明确回 400 并列出可用的视觉模型。
+	// 刻意不做自动改派——视觉模型上下文普遍更小（实测 deepseek 1M vs qwen3-vl 131k），
+	// 拿大请求去撞只会得到 ModelArts.81001；而且视觉模型没有推理输出，
+	// 静默换掉会同时毁掉能力与语义。
+	if multi.ImageHandling == "passthrough" && hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
+		vision := strings.Join(h.visionModelIDs(), ", ")
+		if vision == "" {
+			vision = "(当前账号目录里没有声明支持图片的模型)"
 		}
+		writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
+			"model "+model+" does not accept image input; retry with a vision model such as: "+vision)
+		return
+	}
+	// analyze 模式：图片换成占位符 + 注入 analyze_image 工具，主模型按需调用。
+	// 与 bridge 互斥——analyze 后请求里已无图片，bridge 分支自然不触发。
+	// 仅对「目录明确声明不支持图片」的模型生效；未声明时无依据，照原样放行。
+	if multi.ImageHandling == "analyze" && hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
 		if h.visionModelForAnalyze() == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
 				"model "+model+" does not accept image input, and no vision model is available for analyze mode")
@@ -978,16 +1018,37 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if injected := rewriteImagesForAnalyze(req); len(injected) > 0 {
 			req.Tools = append(req.Tools, injected...)
 			analyzeRouted = true
-		}
-		toolsOn = toolsActive(req)
-		// 工具列表在图片改写之前就已构建，注入 analyze_image 后必须重建，
-		// 否则主模型根本看不到这个工具。
-		if tools, err = nativeTools(req.Tools, req.ToolChoice); err != nil {
-			writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
+			toolsOn = toolsActive(req)
+			// 工具列表在图片改写之前就已构建，注入 analyze_image 后必须重建，
+			// 否则主模型根本看不到这个工具。
+			if tools, err = nativeTools(req.Tools, req.ToolChoice); err != nil {
+				writeOpenAIError(w, http.StatusBadRequest, "invalid_request", err.Error())
+				return
+			}
+			log.Printf("analyze mode model=%s: images rewritten, analyze_image tool injected", model)
 		}
 	}
-	event.Model = safeLogLabel(model)
+	// bridge 只在默认模式生效；analyze 已自行处理图片，passthrough 表示
+	// 调用方要原样发上游（由上游回 001001020），都不该被 bridge 改写。
+	// 归一化保证 ImageHandling 非空（见 liveMultimodal 的回落）。
+	if multi.ImageHandling == "bridge" && multi.VisionBridgeEnabled && len(imagePartsOf(req)) > 0 {
+		policy := multi.VisionBridge.Normalized()
+		if supports, known := h.modelSupportsImages(model); known && !supports &&
+			!strings.EqualFold(upstream.CanonicalModel(policy.Model), upstream.CanonicalModel(model)) {
+			stats, bridgeErr := h.bridgeImages(r.Context(), req, policy)
+			switch {
+			case bridgeErr != nil && clientGone(r):
+				writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
+				return
+			case bridgeErr != nil:
+				// 保持原样：让上游按 406 明确报错，别把图悄悄吞掉。
+				log.Printf("vision bridge failed model=%s: %v（原图保留）", model, bridgeErr)
+			case stats.Images > 0:
+				log.Printf("vision bridge model=%s vl=%s images=%d chars=%d cache_hits=%d",
+					model, stats.VLModel, stats.Images, stats.Chars, stats.CacheHits)
+			}
+		}
+	}
 
 	// 目录之外的模型 ID 不再往上游打：上游只会回 InferHub.002002009.404，
 	// 还白占一次并发会话与轮转名额。目录还没发现过时没有依据，放行交给上游。
@@ -999,14 +1060,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	msgs := buildUpstreamMessages(req, toolsOn)
-
-	// 已经确认「所有健康账号都用不了这个模型」时直接快速失败：不必再打上游、
-	// 也不必把账号轮转一遍（轮转只会拿到同样的 not registered）。
-	if h.modelKnownUnusable(model) {
-		writeOpenAIError(w, http.StatusNotFound, "model_not_available",
-			"model "+model+" is not available on any configured account")
-		return
-	}
 
 	tried := map[string]bool{}
 	var lastErr error
@@ -1023,13 +1076,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				acct = h.cfg.Pool.Get(stickyAcct)
 				if acct == nil || !h.cfg.Pool.Healthy(stickyAcct) {
 					stickyAcct = ""
-					acct = h.cfg.Pool.PickExcluding(tried)
+					acct = h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 				} else {
 					tried[acct.Name] = true
 				}
 			}
 			if acct == nil {
-				acct = h.cfg.Pool.PickExcluding(tried)
+				acct = h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 			}
 			if acct == nil {
 				break

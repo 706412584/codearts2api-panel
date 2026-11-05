@@ -47,6 +47,14 @@ func TestPanelEntrypointsAndAssets(t *testing.T) {
 }
 
 func TestPanelMarkupMatchesScriptBindings(t *testing.T) {
+	cards := regexp.MustCompile(`<div class="stat">`).FindAllString(regexp.MustCompile(`(?s)<div class="stats-grid accounts-stats">(.*?)</section>`).FindStringSubmatch(panelHTMLRaw)[1], -1)
+	if len(cards) != 6 {
+		t.Fatalf("account stat cards = %d, want 6", len(cards))
+	}
+	if !strings.Contains(panelCSS, ".accounts-stats{grid-template-columns:repeat(6,minmax(0,1fr))}") ||
+		!strings.Contains(panelCSS, ".stats-grid.usage,.accounts-stats{grid-template-columns:repeat(2,minmax(0,1fr))}") {
+		t.Fatal("account stats must use six columns and fall back to two columns")
+	}
 	ids := make(map[string]bool)
 	for _, m := range regexp.MustCompile(`\bid="([^"]+)"`).FindAllStringSubmatch(panelHTMLRaw, -1) {
 		if ids[m[1]] {
@@ -59,10 +67,18 @@ func TestPanelMarkupMatchesScriptBindings(t *testing.T) {
 			t.Errorf("script binding has no element: %s", m[1])
 		}
 	}
-	for _, name := range []string{"accounts", "models", "usage", "config", "logs"} {
+	for _, name := range []string{"accounts", "balance", "models", "usage", "config", "logs"} {
 		if !ids["view-"+name] {
 			t.Errorf("missing view: %s", name)
 		}
+	}
+	for _, value := range []string{"first", "credits", "round_robin"} {
+		if !strings.Contains(panelHTMLRaw, `<option value="`+value+`">`) {
+			t.Errorf("missing account strategy option %q", value)
+		}
+	}
+	if !strings.Contains(panelJS, `['cfgAccountStrategy', 'account_strategy', 'text']`) {
+		t.Error("account strategy select is not bound to configuration")
 	}
 	if strings.Contains(panelHTMLRaw, "<script>") || regexp.MustCompile(`\bon(click|submit|load)=`).MatchString(panelHTMLRaw) {
 		t.Fatal("inline script bypasses the panel CSP")

@@ -10,6 +10,69 @@ import (
 	"codearts2api-panel/internal/upstream"
 )
 
+func TestPickExcludingStrategies(t *testing.T) {
+	auths := make([]*auth.Auth, 3)
+	for i, uid := range []string{"a", "b", "c"} {
+		auths[i] = auth.New(uid, uid, "domain", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	}
+	p, err := New(auths, Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	picked := func(strategy string, tried map[string]bool) string {
+		t.Helper()
+		a := p.PickExcluding(tried, strategy)
+		if a == nil {
+			return ""
+		}
+		return a.Name
+	}
+	if got := picked("", nil); got != "a" || picked("first", nil) != "a" {
+		t.Fatal("default/first must keep selecting the first healthy account")
+	}
+	p.Accounts()[0].creditBalance = &upstream.CreditBalance{Total: 50}
+	p.Accounts()[1].creditBalance = &upstream.CreditBalance{Total: 200}
+	p.Accounts()[2].creditBalance = &upstream.CreditBalance{Total: 100}
+	for _, test := range []struct {
+		strategy string
+		tried    map[string]bool
+		want     string
+	}{
+		{"credits", nil, "b"},
+		{"credits", map[string]bool{"b": true}, "c"},
+		{"credits", map[string]bool{"b": true, "c": true}, "a"},
+		{"credits", map[string]bool{"a": true, "b": true, "c": true}, ""},
+	} {
+		if got := picked(test.strategy, test.tried); got != test.want {
+			t.Errorf("credits tried=%v: got %q, want %q", test.tried, got, test.want)
+		}
+	}
+	if got := p.PickExcludingMatching(nil, "credits", map[string]bool{"a": true, "c": true}).Name; got != "c" {
+		t.Fatalf("credits must respect model candidates: got %q", got)
+	}
+	p.Accounts()[1].creditBalance = nil
+	if got := picked("credits", map[string]bool{"a": true, "c": true}); got != "b" {
+		t.Fatalf("unknown credit must fall back to the only available account: got %q", got)
+	}
+
+	rr, err := New(auths, Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"a", "b", "c", "a"} {
+		if got := rr.PickExcluding(nil, "round_robin").Name; got != want {
+			t.Fatalf("round_robin got %q, want %q", got, want)
+		}
+	}
+	rr.Disable("b", "test")
+	if got := rr.PickExcluding(nil, "round_robin").Name; got != "c" {
+		t.Fatalf("round_robin must skip disabled accounts: got %q", got)
+	}
+	if got := rr.PickExcluding(map[string]bool{"a": true, "c": true}, "round_robin"); got != nil {
+		t.Fatalf("round_robin returned an excluded/disabled account: %q", got.Name)
+	}
+}
+
 func TestAddAccountInitializesConcurrency(t *testing.T) {
 	p, err := New(nil, Config{MaxConcurrent: 1}, "")
 	if err != nil {
@@ -47,22 +110,25 @@ func TestPickExcludingPrefersIdleAccount(t *testing.T) {
 	for _, id := range []string{"u1", "u2"} {
 		p.AddAccount(auth.New(id, id, "d", "tok", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", ""))
 	}
-	// u1 占满槽位；PickExcluding 不应再选它。
+	// u1 占满槽位；无论哪种策略，PickExcluding 都不应再选它（空闲优先与策略无关）。
 	if !p.AcquireLock("u1") {
 		t.Fatal("could not occupy u1")
 	}
-	if got := p.PickExcluding(nil); got == nil || got.Name != "u2" {
-		gotName := "<nil>"
-		if got != nil {
-			gotName = got.Name
+	p.Get("u1").creditBalance = &upstream.CreditBalance{Total: 9000} // 积分再高也不能压过空闲
+	for _, strategy := range []string{"first", "credits", "round_robin"} {
+		if got := p.PickExcluding(nil, strategy); got == nil || got.Name != "u2" {
+			gotName := "<nil>"
+			if got != nil {
+				gotName = got.Name
+			}
+			t.Fatalf("strategy=%s picked %s, want u2 (u1 is saturated)", strategy, gotName)
 		}
-		t.Fatalf("picked %s, want u2 (u1 is saturated)", gotName)
 	}
 	// 都满载时回落到仍返回一个账号（调用方靠短超时排队换号）。
 	if !p.AcquireLock("u2") {
 		t.Fatal("could not occupy u2")
 	}
-	if got := p.PickExcluding(nil); got == nil {
+	if got := p.PickExcluding(nil, "first"); got == nil {
 		t.Fatal("with every account saturated PickExcluding must still return a candidate for the caller to queue on")
 	}
 }
@@ -85,7 +151,7 @@ func TestPickExcludingPrefersHigherCredits(t *testing.T) {
 	setCredits("low", 100)
 	setCredits("high", 9000)
 	// unknown 保持 nil：余额未知的账号排在有余额的之后。
-	if got := p.PickExcluding(nil); got == nil || got.Name != "high" {
+	if got := p.PickExcluding(nil, "credits"); got == nil || got.Name != "high" {
 		gotName := "<nil>"
 		if got != nil {
 			gotName = got.Name
@@ -93,7 +159,7 @@ func TestPickExcludingPrefersHigherCredits(t *testing.T) {
 		t.Fatalf("picked %s, want high", gotName)
 	}
 	deleteMap := map[string]bool{"high": true}
-	if got := p.PickExcluding(deleteMap); got == nil || got.Name != "low" {
+	if got := p.PickExcluding(deleteMap, "credits"); got == nil || got.Name != "low" {
 		gotName := "<nil>"
 		if got != nil {
 			gotName = got.Name
@@ -256,6 +322,10 @@ func TestSetKeepaliveWindowHotUpdate(t *testing.T) {
 		t.Fatal("fresh account must not need keepalive")
 	}
 	p.PingKeepalive("u1")
+	acct := p.Get("u1")
+	acct.mu.Lock()
+	acct.keepaliveLastPing = time.Now().Add(-time.Second)
+	acct.mu.Unlock()
 	p.SetKeepaliveWindow(time.Nanosecond)
 	// Windows 单调时钟粒度粗：紧接着调用 time.Since 会拿到 0，0 > 1ns 为假。
 	// 睡一小会让「Ping 之后已过窗口」这个前提成立，测试才确定性地测到热更新。

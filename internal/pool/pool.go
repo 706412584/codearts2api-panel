@@ -45,6 +45,7 @@ type Account struct {
 	checkinClaimed     bool   // 该日真的签到成功/已领；只有它为真才显示「已签」
 	newUserSettled     bool   // 新手注册活动已了结，单账号只领一次
 	balanceMu          sync.Mutex
+	balanceRefreshing  bool
 	creditBalance      *upstream.CreditBalance
 	balanceUpdatedAt   time.Time
 	creditBalanceError string
@@ -72,6 +73,7 @@ type Config struct {
 	LoginConfig     upstream.LoginConfig // OAuth/refresh 端点；零值使用生产默认
 	CheckinClient   CheckinClient        // 可选活动客户端；nil 使用账号 Client
 	BalanceClient   BalanceClient
+	BalanceObserver BalanceObserver // 可选余额趋势采样；仅接收成功且非 nil 的结果
 }
 
 // Pool 账号池。
@@ -81,6 +83,7 @@ type Pool struct {
 	mu       sync.Mutex
 	stateMu  sync.Mutex
 	accounts []*Account
+	nextRR   int
 }
 
 // New 构建池。
@@ -307,7 +310,7 @@ func (p *Pool) ClearCooldown(name string) bool {
 }
 
 // SetNote 设置账号备注（写盘）。备注是纯本地字段，不参与任何上游请求。
-// 空字符串表示清除备注。返回 false 表示账号不存在。
+// 空字符串表示清除备注。返回 false 表示账号不存在或写盘失败。
 func (p *Pool) SetNote(name, note string) bool {
 	p.mu.Lock()
 	var target *Account
@@ -364,29 +367,45 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	p.accounts = next
 }
 
-// PickExcluding 挑一个健康账号。调度优先级：
+// PickExcluding 按策略挑一个健康账号，不并发查询积分余额。
+func (p *Pool) PickExcluding(tried map[string]bool, strategy string) *Account {
+	return p.PickExcludingMatching(tried, strategy, nil)
+}
+
+// PickExcludingMatching 挑一个健康账号；eligible 非 nil 时只在其中的账号里选。
 //
-//  1. 有空闲并发槽位（activeConcurrent < maxConcurrent）的账号优先于满载账号——
+// 调度优先级：
+//
+//  1. 有空闲并发槽位（activeConcurrent < maxConcurrent）的账号恒优先于满载账号——
 //     多账号池里「第一个账号满载就死等它」会让其他账号空转，实测会造成
-//     3 分钟级排队。
-//  2. 同档位内按积分余额从高到低排——余额高的多承担流量，避免单账号被抽干
-//     （余额未知的账号排在已知余额之后，但不被排除）。
-//  3. 仍相同则保持账号原有顺序（稳定，便于复现）。
+//     3 分钟级排队。这一条与 strategy 无关。
+//  2. 同档位内按 strategy 排序：
+//     credits —— 已缓存积分高的优先，积分未知的排在已知之后（不视为 0、不排除）；
+//     round_robin —— 从上次选中账号的下一个开始轮询；
+//     first（及其他值）—— 账号池原有顺序。
 //
-// 满载账号仍然会被返回（当没有空闲账号时），调用方配合 AcquireLockWait 短超时
-// 使用：等不到槽位就换下一个账号重试。
-func (p *Pool) PickExcluding(tried map[string]bool) *Account {
+// 满载账号仍然会被返回（当没有空闲账号时），调用方配合全池排队使用。
+func (p *Pool) PickExcludingMatching(tried map[string]bool, strategy string, eligible map[string]bool) *Account {
 	now := time.Now()
 	type cand struct {
 		acct    *Account
+		index   int
 		idle    bool
 		credits float64
 		known   bool
 	}
 	p.mu.Lock()
-	cands := make([]cand, 0, len(p.accounts))
-	for _, a := range p.accounts {
-		if tried != nil && tried[a.Name] {
+	defer p.mu.Unlock()
+	n := len(p.accounts)
+	start := 0
+	if strategy == "round_robin" && n > 0 {
+		start = p.nextRR % n
+	}
+	cands := make([]cand, 0, n)
+	for offset := 0; offset < n; offset++ {
+		i := (start + offset) % n
+		a := p.accounts[i]
+		if a == nil || eligible != nil && !eligible[a.Name] || tried != nil && tried[a.Name] {
 			continue
 		}
 		a.mu.Lock()
@@ -399,24 +418,30 @@ func (p *Pool) PickExcluding(tried map[string]bool) *Account {
 		}
 		a.mu.Unlock()
 		if healthy {
-			cands = append(cands, cand{acct: a, idle: idle, credits: credits, known: known})
+			cands = append(cands, cand{acct: a, index: i, idle: idle, credits: credits, known: known})
 		}
 	}
-	p.mu.Unlock()
 	if len(cands) == 0 {
 		return nil
 	}
-	// 稳定排序：空闲优先 → 余额高优先 → 已知余额优先 → 原顺序。
+	// 稳定排序：空闲优先；credits 策略再按「已知余额优先 → 余额高优先」；其余保持遍历顺序。
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].idle != cands[j].idle {
 			return cands[i].idle
+		}
+		if strategy != "credits" {
+			return false
 		}
 		if cands[i].known != cands[j].known {
 			return cands[i].known
 		}
 		return cands[i].credits > cands[j].credits
 	})
-	return cands[0].acct
+	picked := cands[0]
+	if strategy == "round_robin" {
+		p.nextRR = (picked.index + 1) % n
+	}
+	return picked.acct
 }
 
 // Validate 校验并（必要时）自动刷新 token。带 5 分钟缓存。
@@ -503,8 +528,9 @@ func (p *Pool) NoteError(name string, threshold int, cooldown time.Duration) {
 	}
 }
 
-// NoteSuccess 清零错误计数。
+// NoteSuccess 清零错误计数，并在活跃使用期间按需刷新积分缓存。
 func (p *Pool) NoteSuccess(name string) {
+	p.RefreshBalanceAfterSuccess(name)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, a := range p.accounts {
@@ -622,8 +648,20 @@ func (p *Pool) ReleaseLock(name string) {
 // 高并发请求在此排队等待槽位释放，而非立即失败跳号。
 // timeout=0 时等价于非阻塞 AcquireLock。
 func (p *Pool) AcquireLockWait(name string, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
+	return p.AcquireLockWaitContext(context.Background(), name, timeout)
+}
+
+// AcquireLockWaitContext 等待并发槽位，取消或超时后不再获取槽位。
+func (p *Pool) AcquireLockWaitContext(ctx context.Context, name string, timeout time.Duration) bool {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
 		p.mu.Lock()
 		acquired := false
 		for _, a := range p.accounts {
@@ -642,11 +680,14 @@ func (p *Pool) AcquireLockWait(name string, timeout time.Duration) bool {
 		if acquired {
 			return true
 		}
-		if timeout <= 0 || time.Now().After(deadline) {
+		if timeout <= 0 {
 			return false
 		}
-		// 避免忙轮询：每次 100ms 重试。
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 

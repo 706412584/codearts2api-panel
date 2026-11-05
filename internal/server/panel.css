@@ -32,8 +32,19 @@ input[type=checkbox]{display:inline-block;width:auto;margin:0}
 /* 顶栏运行时长：与 WorkBuddy 面板同款，放在页面标题右侧的斜杠后。 */
 .top-meta{color:var(--muted);font:11px/1.6 "Cascadia Code",Consolas,monospace;white-space:nowrap}
 .top-sep{color:var(--muted);opacity:.55}
+.accounts-stats{grid-template-columns:repeat(6,minmax(0,1fr))}
 /* 用量页 8 张卡、数字又长（7 位 token），窄一点的窗口塞 4 列会把数字挤出卡片。 */
-@media(max-width:1150px){.stats-grid.usage{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:1150px){.stats-grid.usage,.accounts-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* 用量页时间范围：控件靠右，窄屏换行时仍贴右边。datetime-local 跟着 select 用紧凑内边距。 */
 .usage-filter{display:flex;justify-content:flex-end;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:16px}
 .usage-filter input[type=datetime-local]{padding:5px 9px;font-size:12px}
+.balance-legend{max-width:55%;flex-wrap:wrap;justify-content:flex-end;gap:6px 14px}
+.balance-legend-item{display:inline-flex;align-items:center;gap:5px;max-width:180px}
+.balance-legend-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.balance-color-0{color:var(--accent);--balance-color:var(--accent)}.balance-color-1{color:var(--purple);--balance-color:var(--purple)}.balance-color-2{color:var(--green);--balance-color:var(--green)}.balance-color-3{color:var(--amber);--balance-color:var(--amber)}.balance-color-4{color:#62b6cb;--balance-color:#62b6cb}.balance-color-5{color:#e58aae;--balance-color:#e58aae}.balance-color-6{color:#9aae62;--balance-color:#9aae62}.balance-color-7{color:#c98c5b;--balance-color:#c98c5b}
+.balance-legend-item i{background:var(--balance-color)}
+.chart .balance-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.chart .balance-axis{stroke:var(--muted);stroke-width:1}
+.chart .balance-zero{stroke:var(--muted);stroke-width:1.4}
+.balance-daily{height:240px}
+@media(max-width:760px){.balance-legend{max-width:48%;gap:4px 8px}.balance-legend-item{max-width:120px}.balance-daily{height:220px}}

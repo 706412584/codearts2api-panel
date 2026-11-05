@@ -53,9 +53,9 @@ func TestSendChatV2SurfacesEmbeddedQueueError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithChatEndpoint(5*time.Second, srv.URL)
-	_, err := c.SendChatV2(context.Background(), map[string]any{
+	_, err := c.sendChatV2(context.Background(), map[string]any{
 		"model": "GLM-5.2", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "hi"}},
-	}, "trace", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "token"}, "token")
+	}, "trace", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk", SecurityToken: "token"}, "token", "", "")
 	var apiErr *ApiError
 	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusTooManyRequests || !strings.Contains(apiErr.Message, "81111.429") {
 		t.Fatalf("embedded queue error was not surfaced as retryable: %T %v", err, err)
@@ -74,9 +74,9 @@ func TestSendChatV2EmitsIdentityHeaders(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithChatEndpoint(5*time.Second, srv.URL)
-	_, _ = c.SendChatV2(context.Background(), map[string]any{
+	_, _ = c.sendChatV2(context.Background(), map[string]any{
 		"model": "glm-5.2", "stream": true, "messages": []any{},
-	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok")
+	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok", "", "")
 
 	if got.Get("x-ot-trace-id") != "trace-42" || got.Get("x-snap-traceid") != "trace-42" {
 		t.Fatalf("trace id not unified on wire: x-ot-trace-id=%q x-snap-traceid=%q",
@@ -106,9 +106,9 @@ func TestSendChatV2SendsBunUserAgent(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithChatEndpoint(5*time.Second, srv.URL)
-	_, _ = c.SendChatV2(context.Background(), map[string]any{
+	_, _ = c.sendChatV2(context.Background(), map[string]any{
 		"model": "glm-5.2", "stream": true, "messages": []any{},
-	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok")
+	}, "trace-42", SignCredential{AccessKeyID: "ak", SecretAccessKey: "sk"}, "tok", "", "")
 
 	if ua := got.Get("User-Agent"); ua != "Bun/1.3.14" {
 		t.Fatalf("User-Agent not aligned with official client: %q", ua)
@@ -232,7 +232,8 @@ func TestChatHeaders(t *testing.T) {
 }
 
 func TestChatIdentityHeaders(t *testing.T) {
-	h := ChatIdentityHeaders("trace-1", "sess-1", "glm-5.2")
+	const chatID = "0123456789abcdef0123456789abcdef"
+	h := ChatIdentityHeaders("trace-1", "sess-1", "glm-5.2", chatID)
 	if h["x-ot-trace-id"] != "trace-1" || h["x-snap-traceid"] != "trace-1" {
 		t.Fatalf("trace id not unified: %v", h)
 	}
@@ -246,16 +247,35 @@ func TestChatIdentityHeaders(t *testing.T) {
 	if h["x-ot-client-type"] != "CLI" || h["x-ot-function"] != "agent-tui" || h["ide-name"] != "CLI" {
 		t.Fatalf("cli identity: %v", h)
 	}
+	// 官方同款 created-time：ISO 8601 UTC 截到秒
+	ct := h["created-time"]
+	if len(ct) != 20 || !strings.HasSuffix(ct, "Z") || !strings.Contains(ct, "T") {
+		t.Fatalf("created-time not ISO-8601-UTC-to-seconds: %q", ct)
+	}
+	// user-msg-id = chatID-createdTime（官方 `${sessionID}-${createdTime}`）
+	if h["user-msg-id"] != chatID+"-"+ct {
+		t.Fatalf("user-msg-id = %q, want %q", h["user-msg-id"], chatID+"-"+ct)
+	}
+	// 无父子会话：与官方首条消息一致为空串
+	if v, has := h["x-ot-parent-session-id"]; !has || v != "" {
+		t.Fatalf("x-ot-parent-session-id must be present and empty, got %q (has=%v)", v, has)
+	}
 	// 不发明官方签名流/伪造信号头
 	for _, k := range []string{"client-ip", "maas_type", "hash3", "kernel-version", "timestamp", "depart"} {
 		if _, has := h[k]; has {
 			t.Fatalf("identity headers must not contain %q: %v", k, h)
 		}
 	}
-	// 空入参时自动生成 32 位 hex
-	g := ChatIdentityHeaders("", "", "")
+	// 空入参时自动生成 32 位 hex；无 chatID 时 user-msg-id 为空（同官方未提供）
+	g := ChatIdentityHeaders("", "", "", "")
 	if len(g["x-ot-trace-id"]) != 32 || len(g["x-ot-span-id"]) != 32 {
 		t.Fatalf("generated ids: %v", g)
+	}
+	if g["user-msg-id"] != "" {
+		t.Fatalf("user-msg-id without chatID must be empty, got %q", g["user-msg-id"])
+	}
+	if len(g["created-time"]) != 20 {
+		t.Fatalf("created-time missing on empty input: %q", g["created-time"])
 	}
 }
 

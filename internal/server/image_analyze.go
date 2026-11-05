@@ -16,7 +16,6 @@ package server
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -41,19 +40,6 @@ const (
 	// analyzeVisionAttempts 单张图片识图的总尝试次数（含 81104 间歇失败与并发排队重试）。
 	analyzeVisionAttempts = 4
 )
-
-// visionQueueRetryDelay 识图子请求撞上「并发会话数已达上限」后的等待间隔（测试可覆盖）。
-var visionQueueRetryDelay = 5 * time.Second
-
-// visionChatID 给某账号派生一个固定的识图会话 id（32 位十六进制，符合上游要求）。
-//
-// 上游按 chat_id 计并发会话，每账号上限 3 个。识图子请求必须固定复用同一个 id：
-// 若每次工具调用（甚至每次重试）都新建 id，几次之后槽位被占满，上游一律回
-// TM.00001041「并发会话数已达上限」，主模型只会看到"工具一直失败、看不到图"。
-func visionChatID(accountName string) string {
-	sum := sha256.Sum256([]byte("codearts-vision-bridge:" + accountName))
-	return hex.EncodeToString(sum[:16])
-}
 
 // analyzeImageStore 保存本次进程内收到的图片，供 analyze_image 工具按 ID 取用。
 // 官方把图片存在会话数据库里；网关没有持久化需求，用带 TTL 的内存表即可。

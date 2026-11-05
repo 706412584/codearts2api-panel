@@ -3,6 +3,7 @@ package pool
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"codearts2api-panel/internal/upstream"
@@ -12,12 +13,46 @@ type BalanceClient interface {
 	FetchAccountInfo(context.Context, upstream.SignCredential) (*upstream.CreditBalance, error)
 }
 
+// BalanceObserver 接收每次真实查询成功的新鲜余额；手动与后台刷新共用此入口。
+type BalanceObserver interface {
+	Add(uid string, credits float64) bool
+}
+
 type BalanceResult struct {
-	UID            string                   `json:"uid"`
-	OK             bool                     `json:"ok"`
-	CreditBalance  *upstream.CreditBalance  `json:"credit_balance"`
-	UpdatedAt      string                   `json:"balance_updated_at"`
-	CreditError    string                   `json:"credit_balance_error"`
+	UID           string                  `json:"uid"`
+	OK            bool                    `json:"ok"`
+	CreditBalance *upstream.CreditBalance `json:"credit_balance"`
+	UpdatedAt     string                  `json:"balance_updated_at"`
+	CreditError   string                  `json:"credit_balance_error"`
+}
+
+const activeBalanceRefreshAge = 5 * time.Minute
+
+// RefreshBalanceAfterSuccess 在成功请求后异步刷新超过 5 分钟未查询的积分。
+func (p *Pool) RefreshBalanceAfterSuccess(uid string) {
+	a := p.Get(uid)
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.disabled || a.removed || a.balanceRefreshing || time.Since(a.balanceUpdatedAt) <= activeBalanceRefreshAge {
+		a.mu.Unlock()
+		return
+	}
+	a.balanceRefreshing = true
+	a.mu.Unlock()
+	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.balanceRefreshing = false
+			a.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if _, err := p.RefreshBalance(ctx, uid); err != nil {
+			log.Printf("balance refresh after successful request failed account=%s err=%v", uid, err)
+		}
+	}()
 }
 
 func optionalTime(t time.Time) string {
@@ -72,6 +107,10 @@ func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, e
 	out := BalanceResult{UID: uid, OK: creditErr == nil, CreditBalance: a.creditBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: a.creditBalanceError}
 	a.mu.Unlock()
 	p.saveState()
+	// nil 余额表示上游没有 CREDIT 指标，是未知而不是 0；失败时 out 里的缓存也不能采样。
+	if creditErr == nil && credit != nil && p.cfg.BalanceObserver != nil {
+		p.cfg.BalanceObserver.Add(uid, credit.Total)
+	}
 	return out, creditErr
 }
 

@@ -1,7 +1,8 @@
-// Package scheduler 提供 token 自动续期和活动积分定时领取。
+// Package scheduler 提供 token 自动续期、余额采样和活动积分定时领取。
 //
-// 两条循环彼此独立：
+// 三条循环彼此独立：
 //   - token 看护：按 PollInterval 轮询，校验登录态、临近过期主动续期、保活；
+//   - 余额采样：启动即刷新，之后每 30 分钟查询一次启用账号；
 //   - 积分签到：只在 CheckinHours 指定的本地整点执行（默认 09:00 / 21:00），
 //     与轮询间隔无关 —— 轮询是「多久看一次 token」，签到是「每天几点领」。
 package scheduler
@@ -89,8 +90,8 @@ func (s *Scheduler) sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // Run 启动定时循环，阻塞直到 ctx 取消。
 //
-// 两个循环常驻，每轮重新读配置：watch.enabled / credits_auto_claim 关掉后
-// 循环只是空转等待，重新打开即恢复，不需要重启进程。
+// 三个循环常驻；token/签到每轮重新读配置：watch.enabled / credits_auto_claim 关掉后
+// 对应循环只是空转等待，重新打开即恢复。余额采样独立运行，不受这两个开关控制。
 func (s *Scheduler) Run(ctx context.Context) {
 	if cfg := s.config(); cfg.Enabled {
 		log.Printf("token watchdog enabled: poll=%s refresh_skew=%s keepalive=%s",
@@ -99,6 +100,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 		log.Printf("token watchdog disabled")
 	}
 	go s.runTokenLoop(ctx)
+	go s.runBalanceLoop(ctx)
 	// 启动补领：今天已经过了最近一个时点却还没签时补一次，避免一整天没领到。
 	if cfg := s.config(); cfg.Enabled && cfg.CreditsAutoClaim {
 		s.catchUpCheckin(ctx, time.Now())

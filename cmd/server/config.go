@@ -27,12 +27,13 @@ const (
 
 // Config 顶层配置。
 type Config struct {
-	Listen       string `json:"listen"`
-	APIKey       string `json:"api_key"` // config.json 的 api_key 或 env CA2A_API_KEY（同时存在时 env 优先）
-	AdminKey     string `json:"admin_key"`
-	AuthDir      string `json:"auth_dir"`
-	StateFile    string `json:"state_file"`
-	DefaultModel string `json:"default_model"`
+	Listen          string `json:"listen"`
+	APIKey          string `json:"api_key"` // config.json 的 api_key 或 env CA2A_API_KEY（同时存在时 env 优先）
+	AdminKey        string `json:"admin_key"`
+	AuthDir         string `json:"auth_dir"`
+	StateFile       string `json:"state_file"`
+	DefaultModel    string `json:"default_model"`
+	AccountStrategy string `json:"account_strategy"` // first / credits（本 fork 默认）/ round_robin；只管同档排序，空闲优先恒成立
 	// OAuthCallbackHost 可选：远程授权时把回调指向公网地址，让浏览器回调经反向
 	// 代理进入本服务，而不是 127.0.0.1。只有**显式写了端口**才会改写授权链接里的
 	// port 参数（如 https://oneapi.example.com:443/codearts）；不写端口则保持本机
@@ -60,31 +61,6 @@ type Config struct {
 	// 调小则目录更早被续上（巡检更频繁），调大则续期最坏滞后更久。
 	ModelRefreshMinutes int `json:"model_refresh_minutes"`
 
-	// ImageHandling 带图请求打到「上游明确不支持图片」的模型时如何处理：
-	//   ""/"analyze"（本部署默认）—— 复刻官方 AnalyzeImagePlugin：图片换成占位符
-	//     交给主模型，主模型按需调用 analyze_image 工具，网关内部用视觉模型分析后
-	//     回灌结果。主模型上下文与推理不受图片描述挤占，且可多轮追问同一张图。
-	//   "passthrough" —— 直接回 400 并列出可用视觉模型，由调用方自行改用。
-	// 不提供「剔除图片只留文本」：静默丢图会让模型答非所问。
-	ImageHandling string `json:"image_handling"`
-
-	// MaxBodyMB 聊天请求体上限（MB，默认 32）。
-	// 多模态请求的图片是 base64 内联的：一张 2560×1440 截图就有 2~5MB，
-	// 旧的硬编码 8MB 会把正常请求拒成 413（客户端只看到"太小"却没法改）。
-	MaxBodyMB int `json:"max_body_mb"`
-
-	// ImageShrink 内联图片「按需缩图 / 转 JPEG」（吸收自上游）。
-	// 上游媒体转换对单张图片有硬上限（实测请求体≈4.3MB / 图片≈3.2MB），
-	// 超了只能压小再发，网关放宽 body 上限也没用。
-	ImageShrink struct {
-		Enabled       bool `json:"enabled"`
-		TriggerBodyMB int  `json:"trigger_body_mb"` // 请求体超过它才考虑压缩
-		TargetImageMB int  `json:"target_image_mb"` // 单张图片压缩后目标
-		TargetTotalMB int  `json:"target_total_mb"` // 本次请求所有图片合计目标
-		MaxDimension  int  `json:"max_dimension"`   // 长边像素上限
-		Quality       int  `json:"quality"`         // 初始 JPEG 质量
-	} `json:"image_shrink"`
-
 	// LoginClientID WebUI 登录使用的 OAuth client_id（留空用默认 codearts-agent）。
 	LoginClientID string `json:"login_client_id"`
 
@@ -103,6 +79,42 @@ type Config struct {
 	// 超过天数的文件由归档后台清理删除；<=0 视为未配置，回落默认值。
 	RequestLogRetentionDays int `json:"request_log_retention_days"`
 
+	// MaxBodyMB 聊天请求体上限（MB，默认 32）。
+	// 多模态请求的图片是 base64 内联的：一张 2560×1440 截图就有 2~5MB，
+	// 旧的硬编码 8MB 会把正常请求拒成 413（客户端只看到"太小"却没法改）。
+	MaxBodyMB int `json:"max_body_mb"`
+
+	// ImageShrink 内联图片「按需缩图 / 转 JPEG」。
+	// 上游媒体转换对单张图片有硬上限（实测请求体 ≈4.3MB / 图片 ≈3.2MB），超了只能压小再发。
+	ImageShrink struct {
+		Enabled       bool `json:"enabled"`
+		TriggerBodyMB int  `json:"trigger_body_mb"` // 请求体超过它才考虑压缩
+		TargetImageMB int  `json:"target_image_mb"` // 单张图片压缩后目标
+		TargetTotalMB int  `json:"target_total_mb"` // 本次请求所有图片合计目标
+		MaxDimension  int  `json:"max_dimension"`   // 长边像素上限
+		Quality       int  `json:"quality"`         // 初始 JPEG 质量
+	} `json:"image_shrink"`
+
+	// ImageHandling 带图请求打到纯文本模型时的处理模式：
+	//   "bridge" —— 识图桥接：请求进来先把图转述成文字（见 VisionBridge）；
+	//   ""/"analyze"（本 fork 默认）—— 按需识图：图片换成占位符 + 注入 analyze_image 工具，
+	//                  主模型自己决定何时看、看哪张、问什么（复刻官方 AnalyzeImagePlugin）；
+	//   "passthrough" —— 都不做，原样发上游（上游会回 001001020 非多模态）。
+	ImageHandling string `json:"image_handling"`
+
+	// VisionBridge 让纯文本模型也能吃图：先用 VL 模型把图片转述成文字，再交给原模型。
+	// 上游只有 VL 模型支持图片输入，其余模型带图会直接 406。
+	VisionBridge struct {
+		Enabled        bool   `json:"enabled"`
+		Model          string `json:"model"`                 // 辅助识图用的 VL 模型
+		MaxImages      int    `json:"max_images"`            // 单请求最多转述几张
+		MaxChars       int    `json:"max_chars"`             // 单张转述的最大字符数
+		MaxTokens      int    `json:"max_tokens"`            // VL 调用输出上限
+		TimeoutSeconds int    `json:"timeout_seconds"`       // 单张识图超时
+		TotalSeconds   int    `json:"total_timeout_seconds"` // 整个桥接的总预算
+		Prompt         string `json:"prompt,omitempty"`      // 自定义转述提示词
+	} `json:"vision_bridge"`
+
 	Upstream struct {
 		TimeoutSeconds int `json:"timeout_seconds"`
 	} `json:"upstream"`
@@ -114,10 +126,11 @@ type Config struct {
 // Default 默认配置。
 func Default() *Config {
 	c := &Config{
-		Listen:       ":7866",
-		AuthDir:      "./auths",
-		StateFile:    "./data/state.json",
-		DefaultModel: "glm-5.2",
+		Listen:          ":7866",
+		AuthDir:         "./auths",
+		StateFile:       "./data/state.json",
+		DefaultModel:    "glm-5.2",
+		AccountStrategy: "credits",
 	}
 	c.Cooldown.SoftRate = defaultSoftRate
 	c.Cooldown.ErrThresh = defaultErrThreshold
@@ -129,16 +142,23 @@ func Default() *Config {
 	c.Watch.PollMinutes = 30
 	c.Watch.RefreshSkewM = 30
 	c.Watch.KeepaliveInterval = 15 // 新增：保活间隔 15 分钟
-	c.MaxConcurrent = 2            // 上游单账号最多 3 并发会话且释放慢，留一个槽位余量
-	c.MaxBodyMB = 32               // 图片 base64 内联，旧的 8MB 会把正常截图拒成 413
+	c.MaxBodyMB = 32               // 图片 base64 内联，8MB 会把正常截图拒成 413
 	c.ImageShrink.Enabled = true
 	c.ImageShrink.TriggerBodyMB = 4   // 4MB 以内不碰（实测 4.29MB 上游还能过）
 	c.ImageShrink.TargetImageMB = 2   // 单张压到 2MB，留足余量
 	c.ImageShrink.TargetTotalMB = 4   // 多图合计也别超 4MB
 	c.ImageShrink.MaxDimension = 2048 // 长边超 2048 一律缩
 	c.ImageShrink.Quality = 85
-	c.KeepaliveWindow = "10m"     // 新增：保活窗口 10 分钟
-	c.ModelRefreshMinutes = 60    // 模型目录后台续期巡检间隔
+	c.VisionBridge.Enabled = true
+	c.VisionBridge.Model = "Qwen3-VL-235B" // 本上游可用的多模态模型之一
+	c.VisionBridge.MaxImages = 8
+	c.VisionBridge.MaxChars = 6000
+	c.VisionBridge.MaxTokens = 1500
+	c.VisionBridge.TimeoutSeconds = 120
+	c.VisionBridge.TotalSeconds = 90
+	c.MaxConcurrent = 2        // 上游单账号最多 3 并发会话且释放慢，留一个槽位余量
+	c.KeepaliveWindow = "10m"  // 新增：保活窗口 10 分钟
+	c.ModelRefreshMinutes = 60 // 模型目录后台续期巡检间隔
 	c.Upstream.TimeoutSeconds = 120
 	c.CreditsAutoClaim = true
 	c.CheckinHours = []int{9, 21}
@@ -284,6 +304,11 @@ func applyEnv(c *Config) {
 			c.MaxConcurrent = n
 		}
 	}
+	if v := os.Getenv("CA2A_MAX_BODY_MB"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			c.MaxBodyMB = n
+		}
+	}
 	if v := os.Getenv("CA2A_KEEPALIVE_WINDOW"); v != "" {
 		c.KeepaliveWindow = v
 	}
@@ -417,6 +442,17 @@ func (c *Config) normalize() []string {
 	if c.DefaultModel == "" {
 		c.DefaultModel = "glm-5.2"
 	}
+	// 选号策略只决定「同为空闲/同为满载」账号之间的先后（空闲优先恒成立）。
+	// 本 fork 默认 credits：积分高的多承担流量，与合并前的行为一致。
+	switch c.AccountStrategy {
+	case "", "first", "credits", "round_robin":
+		if c.AccountStrategy == "" {
+			c.AccountStrategy = "credits"
+		}
+	default:
+		changes = append(changes, fmt.Sprintf("account_strategy=%q → credits", c.AccountStrategy))
+		c.AccountStrategy = "credits"
+	}
 	if c.Listen == "" {
 		c.Listen = ":7866"
 	}
@@ -438,15 +474,16 @@ func (c *Config) normalize() []string {
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 2 // 上游单账号并发会话上限 3 且释放慢，留一个槽位余量
 	}
-	switch c.ImageHandling {
-	case "", "analyze":
-		// 本部署默认 analyze：图片交给主模型按需调用 analyze_image 工具，
-		// 主模型上下文与推理不受图片描述挤占，且可多轮追问同一张图。
-		c.ImageHandling = "analyze"
-	case "passthrough":
-	default:
-		changes = append(changes, fmt.Sprintf("image_handling=%q → analyze", c.ImageHandling))
-		c.ImageHandling = "analyze"
+	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
+	if hours := validHours(c.CheckinHours); len(hours) > 0 {
+		c.CheckinHours = hours
+	} else {
+		c.CheckinHours = []int{9, 21}
+	}
+	// 归档保留天数：0/负数等同于没配置，回落 30 天。不设上限——归档清理按文件
+	// mtime 逐轮执行，填很大的值只是不删文件，容量仍由 MaxBytes 兜底。
+	if c.RequestLogRetentionDays <= 0 {
+		c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
 	}
 	// 请求体上限：0/负数按没配置处理；上限 512MB 只是防手滑填太大。
 	if c.MaxBodyMB <= 0 || c.MaxBodyMB > 512 {
@@ -469,16 +506,35 @@ func (c *Config) normalize() []string {
 	if c.ImageShrink.Quality <= 0 || c.ImageShrink.Quality > 100 {
 		c.ImageShrink.Quality = 85
 	}
-	// 签到时点：非法值全部滤掉；一个都不剩就回落默认 [9, 21]（与「不配置」同义）。
-	if hours := validHours(c.CheckinHours); len(hours) > 0 {
-		c.CheckinHours = hours
-	} else {
-		c.CheckinHours = []int{9, 21}
+	// 图像处理模式：非法值回写默认。本 fork 默认 analyze（主模型按需调用
+	// analyze_image，上下文不被图片描述挤占、可多轮追问），bridge 需显式配置。
+	switch c.ImageHandling {
+	case "", "bridge", "analyze", "passthrough":
+		if c.ImageHandling == "" {
+			c.ImageHandling = "analyze"
+		}
+	default:
+		changes = append(changes, fmt.Sprintf("image_handling=%q → analyze", c.ImageHandling))
+		c.ImageHandling = "analyze"
 	}
-	// 归档保留天数：0/负数等同于没配置，回落 30 天。不设上限——归档清理按文件
-	// mtime 逐轮执行，填很大的值只是不删文件，容量仍由 MaxBytes 兜底。
-	if c.RequestLogRetentionDays <= 0 {
-		c.RequestLogRetentionDays = reqlog.DefaultRetentionDays
+	// 识图桥接：空模型名等于没配，回落默认 VL 模型。
+	if strings.TrimSpace(c.VisionBridge.Model) == "" {
+		c.VisionBridge.Model = "Qwen3-VL-235B"
+	}
+	if c.VisionBridge.MaxImages <= 0 || c.VisionBridge.MaxImages > 32 {
+		c.VisionBridge.MaxImages = 8
+	}
+	if c.VisionBridge.MaxChars <= 0 || c.VisionBridge.MaxChars > 100000 {
+		c.VisionBridge.MaxChars = 6000
+	}
+	if c.VisionBridge.MaxTokens <= 0 {
+		c.VisionBridge.MaxTokens = 1500
+	}
+	if c.VisionBridge.TimeoutSeconds <= 0 {
+		c.VisionBridge.TimeoutSeconds = 120
+	}
+	if c.VisionBridge.TotalSeconds <= 0 {
+		c.VisionBridge.TotalSeconds = 90
 	}
 	return changes
 }

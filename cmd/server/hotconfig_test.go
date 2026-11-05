@@ -33,6 +33,7 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	c.APIKey = "api-2"
 	c.AdminKey = "admin-2"
 	c.DefaultModel = "model-hot"
+	c.AccountStrategy = "round_robin"
 	c.SoftRateDur = 90 * time.Second
 	c.ErrCooldownDur = 15 * time.Minute
 	c.Cooldown.ErrThresh = 4
@@ -62,6 +63,9 @@ func TestApplyHotConfigUpdatesLiveAndPool(t *testing.T) {
 	snap := live.Load()
 	if snap.APIKey != "api-2" || snap.AdminKey != "admin-2" || snap.DefaultModel != "model-hot" {
 		t.Fatalf("live snapshot not applied: %+v", snap)
+	}
+	if snap.AccountStrategy != "round_robin" {
+		t.Fatalf("account strategy not applied: %+v", snap)
 	}
 	if snap.QueueRetryDelay != 3*time.Second || snap.QueueMaxAttempts != 7 {
 		t.Fatalf("queue settings not applied: %+v", snap)
@@ -128,3 +132,36 @@ func TestLiveSnapshotQueueRetryDefaultsToTenSeconds(t *testing.T) {
 	}
 }
 
+// 多模态三块必须从配置文件如实带进运行期快照。
+// 线上曾经漏了 ImageShrinkEnabled（策略里的 Enabled 没被赋值），
+// 结果缩图静默不生效、只有大图才会被发现 —— 这条断言就是钉住那条接线的。
+func TestLiveSnapshotCarriesMultimodalPolicy(t *testing.T) {
+	c := Default()
+	c.ImageShrink.Enabled = true
+	c.ImageShrink.TriggerBodyMB = 5
+	c.ImageShrink.TargetImageMB = 3
+	c.ImageShrink.TargetTotalMB = 6
+	c.ImageShrink.MaxDimension = 1600
+	c.ImageShrink.Quality = 80
+	c.VisionBridge.Enabled = false
+	c.MaxBodyMB = 16
+
+	snap := liveSnapshot(c)
+	if !snap.ImageShrinkEnabled {
+		t.Fatal("image_shrink.enabled 没进快照 → 缩图会静默失效")
+	}
+	if snap.ImageShrink.TriggerBytes != 5<<20 || snap.ImageShrink.TargetImageBytes != 3<<20 ||
+		snap.ImageShrink.TargetTotalBytes != 6<<20 || snap.ImageShrink.MaxDimension != 1600 ||
+		snap.ImageShrink.Quality != 80 {
+		t.Fatalf("缩图参数没如实进快照：%+v", snap.ImageShrink)
+	}
+	if snap.VisionBridgeEnabled {
+		t.Fatal("vision_bridge.enabled=false 必须如实反映")
+	}
+	if snap.VisionBridge.Model != c.VisionBridge.Model || snap.VisionBridge.MaxImages != c.VisionBridge.MaxImages {
+		t.Fatalf("识图策略没进快照：%+v", snap.VisionBridge)
+	}
+	if snap.MaxBodyBytes != 16<<20 {
+		t.Fatalf("max_body_mb 没进快照：%d", snap.MaxBodyBytes)
+	}
+}

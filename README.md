@@ -14,10 +14,11 @@
 | 多账号 | 并发限制、会话关联、错误冷却、失败换号与排队重试 |
 | 模型目录 | AgentCenter、内置模型发现；显示上下文、积分倍率及已知模型标签和图片能力 |
 | 额度 | 查询 CodeArts 套餐 CREDIT 积分，未知值不显示为 0 |
+| 余额趋势 | 每 30 分钟查询上游，成功采样按 5 分钟去重；多账号折线、每日变化与账号明细，历史落盘并在重启后保留 |
 | 活动 | 手动签到 / 新用户活动领取：每日一次、新用户一次，已签按钮显示「已签」且不再请求上游；可配置后台周期执行 |
 | 配置 | 表单 / Raw JSON 双模式（切换即重新读取配置文件），保存以当前界面模式为准并热生效；密钥脱敏，仅装配期四项需重启 |
 | 可观测 | 进程累计指标、近期请求及 Token 用量（重启后回看 `data/requests` 归档）、最近失败摘要、实时运行日志、脱敏请求 JSONL 归档 |
-| 面板 | 账号、模型、用量、配置、日志五页；明暗主题及移动布局 |
+| 面板 | 账号、余额趋势、模型、用量、配置、日志六页；明暗主题及移动布局 |
 
 腾讯专属成长任务、旅行、抽奖和跨域账号体系没有移植。当前项目已移除历史福利模型目录、Token 福利余额及领取通道。模型目录完全来自账号的上游目录，不再有硬编码兜底项：没有账号时 `/v1/models` 返回空列表，实际可用性以账号套餐及上游响应为准。
 
@@ -258,8 +259,9 @@ curl http://127.0.0.1:7866/v1/messages \
 ## 积分、签到与定时行为
 
 - **套餐积分**来自 SNAP 的账户统计接口，保留小数；总额和基础/赠送等分类不会重复相加。
-- 「刷新额度」查询真实积分余额；查询失败会保留已有缓存并显示错误，未查询时显示未知。
+- 「刷新额度」查询真实积分余额；查询失败会保留已有缓存并显示错误，未查询时显示未知。成功完成下游对话请求后，如果所用账号的积分缓存已超过 5 分钟未查询，会异步刷新一次；同一账号的刷新任务不会重复并发，不增加下游响应等待时间。
 - 页面普通刷新读取余额缓存，不会每次轮询都领取积分。模型页「重新获取」可主动刷新模型目录。
+- **余额趋势**在启动后立即刷新启用账号，之后每 30 分钟刷新一次；手动「刷新额度」也走同一采样入口。只有真实查询成功且上游返回 CREDIT 指标时才记录，同一账号 5 分钟内的重复采样会被去重，失败缓存与未知余额不会写成 0。历史保存到 `state_file` 同目录的 `balance_history.json`，近 30 天保留原始点，更早折叠为日点并最多保留 365 天。每日消耗/到账是相邻采样差分的下界估算，不是精确账单；趋势页读取历史不会额外请求上游。
 - 「签到」处理 CodeArts 的活动领取与确认：按活动 `type` 选每日签到（`USER_LOGIN`）和新手（`NEW_USER_REGISTER`），不按 `campaignId` —— 活动 ID 会随投放批次变化；活动资格和金额来自当前账号的活动列表。
 - **领取次数由本地记账兜住**：每日签到按自然日只领一次（跨零点自动失效），新手活动每个账号只领一次。已经了结的账号不再向上游发请求——`data/state.json` 里的 `last_checkin_day` / `checkin_claimed` / `new_user_settled` 就是这份账本，重启后仍然生效。只有上游真的给了答复（领到、已领取、没有该活动）才算「了结」；网络失败、待确认（`CLAIMED` 未 `CONFIRMED`）会留到下一轮继续。
 - **签到按本地时点执行**：`credits_auto_claim:true` 时，进程在 `checkin_hours`（默认 `[9, 21]`，本地时间整点）各领一次每日签到和新手活动，与 `watch.poll_minutes` 的 token 轮询互不相干。启动时若今天已经过了最近一个时点却还没签，会立刻补一次（已签的账号由账本短路，零上游请求）。
@@ -278,6 +280,7 @@ curl http://127.0.0.1:7866/v1/messages \
 | `auth_dir` | `./auths` | CodeArts 凭据目录 |
 | `state_file` | `./data/state.json` | 账号池状态 |
 | `default_model` | `glm-5.2` | 请求省略模型时的默认值 |
+| `account_strategy` | `credits` | 无会话绑定时选号：有空闲并发槽位的账号恒优先，策略只决定同档顺序——`first` 账号池顺序、`credits` 已缓存积分最多、`round_robin` 账号池轮询；积分未知不视为 0，排在已知之后 |
 | `max_concurrent` | `2` | 单账号并发上限（上游单账号上限 3，留一个槽位余量） |
 | `cooldown.soft_rate` | `60s` | 临时限流冷却 |
 | `cooldown.err_threshold` | `3` | 连续错误阈值 |
@@ -288,15 +291,22 @@ curl http://127.0.0.1:7866/v1/messages \
 | `credits_auto_claim` | `true` | 后台活动积分领取（按 `checkin_hours` 时点） |
 | `checkin_hours` | `[9, 21]` | 每日签到时点（本地小时 0-23）；空数组/非法值回落默认 |
 | `request_log_retention_days` | `30` | `data/requests/` 归档保留天数，按文件修改时间清理；0/负数回落默认 |
+| `max_body_mb` | `32` | 聊天请求体上限，单位 MB；凭据导入仍独立限制为 8MB |
+| `image_shrink.enabled` | `true` | 按需压缩内联 PNG/JPEG；参数及默认值见 `config.example.json` |
+| `vision_bridge.enabled` | `true` | 纯文本模型的内联图片先交视觉模型转述；默认使用 `Qwen3-VL-235B` |
 | `watch.enabled` | `true` | 后台凭据看护 |
 | `watch.poll_minutes` | `30` | 后台轮询间隔 |
 | `watch.refresh_skew_minutes` | `30` | 临近到期续期窗口 |
 
-环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）、`CA2A_REQUEST_LOG_RETENTION_DAYS` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
+环境变量优先于配置文件。支持 `CA2A_API_KEY`、`CA2A_ADMIN_KEY`、`CA2A_LISTEN`、`CA2A_AUTH_DIR`、`CA2A_STATE_FILE`、`CA2A_DEFAULT_MODEL`、`CA2A_WATCH_ENABLED`、`CA2A_CREDITS_AUTO_CLAIM`、`CA2A_CHECKIN_HOURS`（如 `9,21`）、`CA2A_REQUEST_LOG_RETENTION_DAYS`、`CA2A_MAX_BODY_MB` 等；完整映射见 `cmd/server/config.go` 的 `applyEnv`。
 
 重试与冷却五项（`cooldown.soft_rate` / `cooldown.err_threshold` / `cooldown.err_cooldown` / `queue_retry_seconds` / `queue_max_attempts`）的非法值——`0`、负数、解析不了的时长——一律按「没配置」处理：启动时按默认值跑，面板保存时直接把默认值写回配置文件，面板显示的也就是运行期真正生效的值。
 
-面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
+多模态参数可在表单的「多模态请求」「图片压缩」「视觉转述」分组或 Raw JSON 中编辑，保存后热生效。`max_body_mb`、`image_shrink` 和 `vision_bridge` 中需要归一化的参数也会在保存时回写实际默认值。缩图默认在请求体超过 4MB 或图片超预算时触发，目标为单张 2MB、合计 4MB、最长边 2048 像素、JPEG 质量 85；小图保持原样，WebP/GIF 和远程图片不参与缩图。
+
+视觉转述给纯文本模型的是图片的文字描述，精细颜色和布局仍应直接使用视觉模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间；默认最多处理 8 张图，总预算 90 秒。超出图片数量或任一转述失败时保留全部原图，由上游按模型能力判定请求。可用 `vision_bridge.enabled=false` 单独关闭转述，或用 `image_shrink.enabled=false` 关闭缩图。
+
+面板「服务配置」提供表单与 Raw JSON 两种编辑模式：顶部 Segmented Control 切换，切换时重新读取配置文件（未保存的修改会丢弃），点「保存配置」以当前界面模式为准——表单模式以最近读到的配置为底只覆盖表单字段，Raw 模式提交编辑框里的完整 JSON。表单不覆盖的字段（含未知扩展字段）在表单模式下原样保留。面板不会回显密钥，空密钥输入表示保留原值；保存前会校验配置，并保留未知字段。普通配置文件采用原子替换，Docker 单文件挂载使用原地写入。**保存后立即热生效**：请求期读取的字段走运行期快照（密钥、默认模型、选号策略、冷却、排队重试、OAuth 回调与 client_id），`max_concurrent` / `keepalive_window` 直接下发给账号池，`watch.*` / `checkin_hours` / `credits_auto_claim` 直接重配调度器，`request_log_retention_days` 直接换掉归档清理口径（后台清理每秒一轮）。只有四项装配期依赖必须重启：`listen`、`auth_dir`、`state_file`、`upstream.timeout_seconds`，表单里这四项的标签后会标注「需重启」，其余字段保存即生效。环境变量覆盖的配置仍需修改部署环境后重启。
 
 ## 数据与日志
 

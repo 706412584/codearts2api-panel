@@ -154,7 +154,7 @@ func (s *fileSettings) update(patch map[string]any) (map[string]any, []string, e
 }
 
 // normalizeSettings 按 Config.normalize 的口径修正待读写/待落盘的配置 map，返回被
-// 改写的字段说明。只回写重试与冷却这五处，其余键（含面板不认识的扩展字段）原样保留。
+// 改写的字段说明。只回写重试、冷却与多模态策略的归一化字段，扩展键原样保留。
 func normalizeSettings(values map[string]any) ([]string, error) {
 	candidate := Default()
 	raw, err := json.Marshal(values)
@@ -168,8 +168,21 @@ func normalizeSettings(values map[string]any) ([]string, error) {
 	setConfigValue(values, "cooldown.soft_rate", candidate.Cooldown.SoftRate)
 	setConfigValue(values, "cooldown.err_threshold", candidate.Cooldown.ErrThresh)
 	setConfigValue(values, "cooldown.err_cooldown", candidate.Cooldown.ErrCooldown)
+	setConfigValue(values, "account_strategy", candidate.AccountStrategy)
 	setConfigValue(values, "queue_retry_seconds", candidate.QueueRetrySeconds)
 	setConfigValue(values, "queue_max_attempts", candidate.QueueMaxAttempts)
+	setConfigValue(values, "max_body_mb", candidate.MaxBodyMB)
+	setConfigValue(values, "image_shrink.trigger_body_mb", candidate.ImageShrink.TriggerBodyMB)
+	setConfigValue(values, "image_shrink.target_image_mb", candidate.ImageShrink.TargetImageMB)
+	setConfigValue(values, "image_shrink.target_total_mb", candidate.ImageShrink.TargetTotalMB)
+	setConfigValue(values, "image_shrink.max_dimension", candidate.ImageShrink.MaxDimension)
+	setConfigValue(values, "image_shrink.quality", candidate.ImageShrink.Quality)
+	setConfigValue(values, "vision_bridge.model", candidate.VisionBridge.Model)
+	setConfigValue(values, "vision_bridge.max_images", candidate.VisionBridge.MaxImages)
+	setConfigValue(values, "vision_bridge.max_chars", candidate.VisionBridge.MaxChars)
+	setConfigValue(values, "vision_bridge.max_tokens", candidate.VisionBridge.MaxTokens)
+	setConfigValue(values, "vision_bridge.timeout_seconds", candidate.VisionBridge.TimeoutSeconds)
+	setConfigValue(values, "vision_bridge.total_timeout_seconds", candidate.VisionBridge.TotalSeconds)
 	return changes, nil
 }
 

@@ -1,82 +1,549 @@
 <!doctype html>
 <html lang="zh-CN" data-theme="dark">
+
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark light">
-<title>CodeArts2API · 控制台</title><link rel="stylesheet" href="/panel/assets/app.css"><script src="/panel/assets/app.js" defer></script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>CodeArts2API · 控制台</title>
+  <link rel="stylesheet" href="/panel/assets/app.css">
+  <script src="/panel/assets/app.js" defer></script>
 </head>
+
 <body>
-<a class="skip-link" href="#main">跳至内容</a>
-<aside class="sidebar" id="sidebar" aria-label="主导航">
-  <a class="brand" href="#accounts"><span class="brand-mark">CA</span><span>CodeArts2API<small>华为云模型网关</small></span></a>
-  <div class="nav-caption">工作空间</div>
-  <nav><a href="#accounts" data-page="accounts"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="5.5" r="2.6"/><path d="M2.8 13.5c.6-2.6 2.7-4 5.2-4s4.6 1.4 5.2 4"/></svg>账号池</a><a href="#models" data-page="models"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M8 1.8 14 5v6L8 14.2 2 11V5z"/><path d="M2 5l6 3.2L14 5M8 8.2v6"/></svg>模型目录</a><a href="#usage" data-page="usage"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 13.5h12"/><path d="M4.5 13.5V8.2M8 13.5V3.5M11.5 13.5v-3"/></svg>请求用量</a><a href="#config" data-page="config"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3"/></svg>服务配置</a><a href="#logs" data-page="logs"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7"/></svg>运行日志</a></nav>
-  <div class="sidebar-bottom"><span class="connection" id="connection">等待连接</span><small>CodeArts · {{VERSION}}</small><span class="mono">OpenAI compatible</span></div>
-</aside>
-<button class="nav-backdrop" id="navBackdrop" aria-label="关闭导航" hidden></button>
-<div class="workspace">
-  <header class="topbar"><div class="top-title"><button class="icon-button mobile-only" id="menuButton" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar">☰</button><span id="breadcrumb">工作空间 / 账号池</span><span class="top-sep" aria-hidden="true">/</span><span class="top-meta" id="uptime" title="服务运行时长">—</span></div><div class="toolbar"><span class="updated" id="updatedAt">尚未刷新</span><button class="icon-button" id="themeButton" aria-label="切换主题" title="切换主题"><svg id="themeIconSun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.4v1.8M8 12.8v1.8M1.4 8h1.8M12.8 8h1.8M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3"/></svg><svg id="themeIconMoon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true" hidden><path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z"/></svg></button><button class="button quiet icon-text" id="refreshButton"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6c1.68 0 3.29.67 4.5 1.83L14 5.33"/><path d="M14 2v3.33h-3.33"/></svg>刷新</button><button class="button quiet icon-text" id="logoutButton"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M6.5 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3"/><path d="M10.5 11l3-3-3-3"/><path d="M13.5 8h-7"/></svg>退出</button></div></header>
-  <main id="main" tabindex="-1">
-    <div class="page-heading"><div><div class="eyebrow">CODEARTS CONTROL PANEL</div><h1 id="pageTitle">账号池</h1><p id="pageDescription">管理凭据、查看账户状态与额度。</p></div><span class="service-badge"><span class="dot"></span>自托管网关</span></div>
-    <div id="pageError" class="notice error" role="alert" hidden></div><div id="pageLoading" class="loading-line" role="status" hidden>正在读取服务数据…</div>
-    <section class="view" id="view-accounts" aria-labelledby="accountsTitle">
-      <h2 class="sr-only" id="accountsTitle">账号池</h2>
-      <div class="stats-grid"><div class="stat"><span>账户总数</span><strong id="statTotal">—</strong><small>已保存的 CodeArts 账户</small></div><div class="stat"><span>可用账户</span><strong class="positive" id="statHealthy">—</strong><small>可参与请求分配</small></div><div class="stat"><span>冷却中</span><strong id="statCooling">—</strong><small>暂时等待恢复</small></div><div class="stat"><span>已禁用</span><strong id="statDisabled">—</strong><small>暂停参与请求分配</small></div></div>
-      <div class="card"><div class="card-header"><div><h2>账户列表 <span class="count" id="accountCount">0</span></h2><p>显示账户套餐积分；未查询时显示未知。</p></div><button class="button primary" id="addAccountButton">＋ 添加账户</button></div>
-        <div class="card-toolbar"><input class="search" id="accountSearch" type="search" placeholder="搜索名称或 UID" aria-label="搜索账户"><div class="button-group"><button class="button small" data-bulk="credits">刷新额度</button><button class="button small" data-bulk="checkin">全员签到</button><button class="button small" data-bulk="keepalive">全员保活</button><button class="button small" data-bulk="reload">重载凭据</button></div></div>
-        <div class="table-wrap"><table><thead><tr><th>账户</th><th>状态</th><th>套餐积分</th><th>凭据有效期</th><th>并发</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="6" class="empty">连接后显示账户。</td></tr></tbody></table></div><div class="card-footer" id="accountNote">仅显示账户元信息，不展示 AK/SK 或 Token。</div>
+  <a class="skip-link" href="#main">跳至内容</a>
+  <aside class="sidebar" id="sidebar" aria-label="主导航">
+    <a class="brand" href="#accounts"><span
+        class="brand-mark">CA</span><span>CodeArts2API<small>华为云模型网关</small></span></a>
+    <div class="nav-caption">工作空间</div>
+    <nav><a href="#accounts" data-page="accounts"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <circle cx="8" cy="5.5" r="2.6" />
+          <path d="M2.8 13.5c.6-2.6 2.7-4 5.2-4s4.6 1.4 5.2 4" />
+        </svg>账号池</a><a href="#balance" data-page="balance"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <path d="M2 12.5 5.5 8l3 2L14 3.5" />
+          <path d="M2 14.5h12" />
+        </svg>余额趋势</a><a href="#models" data-page="models"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <path d="M8 1.8 14 5v6L8 14.2 2 11V5z" />
+          <path d="M2 5l6 3.2L14 5M8 8.2v6" />
+        </svg>模型目录</a><a href="#usage" data-page="usage"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <path d="M2 13.5h12" />
+          <path d="M4.5 13.5V8.2M8 13.5V3.5M11.5 13.5v-3" />
+        </svg>请求用量</a><a href="#config" data-page="config"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <circle cx="8" cy="8" r="2.2" />
+          <path
+            d="M8 1.6v1.9M8 12.5v1.9M1.6 8h1.9M12.5 8h1.9M3.5 3.5l1.3 1.3M11.2 11.2l1.3 1.3M12.5 3.5l-1.3 1.3M4.8 11.2l-1.3 1.3" />
+        </svg>服务配置</a><a href="#logs" data-page="logs"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+          stroke-width="1.4" aria-hidden="true">
+          <path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h7" />
+        </svg>运行日志</a></nav>
+    <div class="sidebar-bottom"><span class="connection" id="connection">等待连接</span><small>CodeArts · {{VERSION}}</small><span
+        class="mono">OpenAI compatible</span></div>
+  </aside>
+  <button class="nav-backdrop" id="navBackdrop" aria-label="关闭导航" hidden></button>
+  <div class="workspace">
+    <header class="topbar">
+      <div class="top-title"><button class="icon-button mobile-only" id="menuButton" aria-label="打开导航"
+          aria-expanded="false" aria-controls="sidebar">☰</button><span id="breadcrumb">工作空间 / 账号池</span><span
+          class="top-sep" aria-hidden="true">/</span><span class="top-meta" id="uptime" title="服务运行时长">—</span></div>
+      <div class="toolbar"><span class="updated" id="updatedAt">尚未刷新</span><button class="icon-button" id="themeButton"
+          aria-label="切换主题" title="切换主题"><svg id="themeIconSun" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+            stroke-width="1.4" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.8" />
+            <path
+              d="M8 1.4v1.8M8 12.8v1.8M1.4 8h1.8M12.8 8h1.8M3.3 3.3l1.3 1.3M11.4 11.4l1.3 1.3M12.7 3.3l-1.3 1.3M4.6 11.4l-1.3 1.3" />
+          </svg><svg id="themeIconMoon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+            aria-hidden="true" hidden>
+            <path d="M13.2 9.6A5.6 5.6 0 0 1 6.4 2.8a5.6 5.6 0 1 0 6.8 6.8z" />
+          </svg></button><button class="button quiet icon-text" id="refreshButton"><svg viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M14 8a6 6 0 1 1-6-6c1.68 0 3.29.67 4.5 1.83L14 5.33" />
+            <path d="M14 2v3.33h-3.33" />
+          </svg>刷新</button><button class="button quiet icon-text" id="logoutButton"><svg viewBox="0 0 16 16" fill="none"
+            stroke="currentColor" stroke-width="1.4" aria-hidden="true">
+            <path d="M6.5 13.5H3.5a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3" />
+            <path d="M10.5 11l3-3-3-3" />
+            <path d="M13.5 8h-7" />
+          </svg>退出</button></div>
+    </header>
+    <main id="main" tabindex="-1">
+      <div class="page-heading">
+        <div>
+          <div class="eyebrow">CODEARTS CONTROL PANEL</div>
+          <h1 id="pageTitle">账号池</h1>
+          <p id="pageDescription">管理凭据、查看账户状态与额度。</p>
+        </div><span class="service-badge"><span class="dot"></span>自托管网关</span>
       </div>
-    </section>
-    <section class="view" id="view-models" aria-labelledby="modelsTitle" hidden><h2 class="sr-only" id="modelsTitle">模型目录</h2><div class="card"><div class="card-header"><div><h2>可发现的模型 <span class="count" id="modelCount">0</span></h2><p>来自账户目录与服务兜底列表，实际可用性由账户套餐决定。</p></div><button class="button" id="refreshModelsButton">重新获取</button></div><div class="card-toolbar"><input id="modelSearch" class="search" type="search" placeholder="搜索模型名称" aria-label="搜索模型"></div><div class="table-wrap"><table><thead><tr><th>模型 ID</th><th>积分倍率</th><th>通道</th><th>上下文</th><th>最大输出</th><th>操作</th></tr></thead><tbody id="modelsBody"></tbody></table></div><div class="card-footer">复制完整模型 ID，搭配本站 <code>/v1</code> 地址接入 OpenAI 客户端。</div></div></section>
-    <section class="view" id="view-usage" aria-labelledby="usageTitle" hidden><h2 class="sr-only" id="usageTitle">请求用量</h2>
-      <div class="usage-filter"><label class="inline-label" for="usageRange">时间范围<select id="usageRange"><option value="today">今天</option><option value="24h">近 24 小时</option><option value="3d">近 3 天</option><option value="7d">近 7 天</option><option value="30d" selected>近 30 天</option><option value="custom">自定义</option></select></label><span class="inline-label" id="usageCustom" hidden><input id="usageFrom" type="datetime-local" aria-label="开始时间"><span>至</span><input id="usageTo" type="datetime-local" aria-label="结束时间"><button class="button small" type="button" id="usageQuery">查询</button></span></div>
-      <div class="stats-grid usage"><div class="stat"><span>完成请求</span><strong id="usageCompleted">—</strong><small id="usageCompletedNote">当前服务进程累计</small></div><div class="stat"><span>成功率</span><strong class="positive" id="usageSuccess">—</strong><small id="usageOutcomes">等待数据</small></div><div class="stat"><span>平均耗时</span><strong id="usageDuration">—</strong><small>已完成请求平均耗时</small></div><div class="stat"><span>平均首字时间</span><strong id="usageTTFT">—</strong><small>仅统计已返回首字的请求</small></div><div class="stat"><span>平均缓存命中率</span><strong id="usageCacheHit">—</strong><small id="usageCacheNote">上游未上报缓存用量</small></div><div class="stat"><span>输入 Token</span><strong id="usagePromptTokens">—</strong><small>最近记录中的 prompt 用量</small></div><div class="stat"><span>输出 Token</span><strong id="usageCompletionTokens">—</strong><small>最近记录中的 completion 用量</small></div><div class="stat"><span>总计 Token</span><strong id="usageTokens">—</strong><small>上游总量，缺失时按输入 + 输出计</small></div></div>
-      <div class="card"><div class="card-header"><div><h2>近期请求趋势</h2><p id="usageChartNote">按最近请求的时间分布统计，不代表完整历史。</p></div><span class="legend"><i></i>请求数</span></div><div id="usageChart" class="chart" role="img" aria-label="近期请求趋势"></div></div>
-      <div class="card"><div class="card-header"><div><h2 id="usageSummaryTitle">按模型汇总</h2><p id="usageSummaryNote">按当前时间范围聚合。</p></div><label class="inline-label" for="summaryMode">汇总方式<select id="summaryMode"><option value="model" selected>按模型</option><option value="account">按账号</option></select></label></div><div class="table-wrap"><table><thead id="usageSummaryHead"></thead><tbody id="usageModelsBody"></tbody></table></div></div>
-    </section>
-    <section class="view" id="view-config" aria-labelledby="configTitle" hidden><h2 class="sr-only" id="configTitle">服务配置</h2><div class="notice" id="configNotice">配置保存到服务端文件并热生效；标有「需重启」的字段需重启服务。密钥留空会保留当前值。</div><div class="card"><div class="card-header"><div><h2>配置文件</h2><p id="configModeHint">表单覆盖常用字段；其余字段请用 Raw JSON。切换模式会重新读取 config.json，未保存的修改会丢失。</p></div><button class="button primary" id="saveConfigButton">保存配置</button></div><div class="config-body">
-      <div class="segmented" role="tablist" aria-label="配置编辑模式"><button type="button" class="segment active" id="configModeForm" role="tab" aria-selected="true">表单</button><button type="button" class="segment" id="configModeRaw" role="tab" aria-selected="false">Raw JSON</button></div>
-      <div class="field-grid"><div><label for="newAdminKey">替换管理密钥 <span class="muted">（可选，留空保留）</span></label><input id="newAdminKey" type="password" autocomplete="new-password" placeholder="新的控制台管理密钥"></div><div><label for="newAPIKey">替换 API Key <span class="muted">（可选，留空保留）</span></label><input id="newAPIKey" type="password" autocomplete="new-password" placeholder="新的模型调用密钥"></div></div>
-      <div id="configForm">
-        <h3 class="group-title">服务</h3>
-        <div class="field-grid"><div><label for="cfgListen">监听地址 <span class="muted">（需重启）</span></label><input id="cfgListen" autocomplete="off" placeholder=":7866"></div><div><label for="cfgDefaultModel">默认模型</label><input id="cfgDefaultModel" autocomplete="off" placeholder="glm-5.2"></div><div><label for="cfgAuthDir">凭据目录 <span class="muted">（需重启）</span></label><input id="cfgAuthDir" autocomplete="off" placeholder="./auths"></div><div><label for="cfgStateFile">状态文件 <span class="muted">（需重启）</span></label><input id="cfgStateFile" autocomplete="off" placeholder="./data/state.json"></div><div><label for="cfgOAuthCallbackHost">远端回调地址 <span class="muted">（可空）</span></label><input id="cfgOAuthCallbackHost" autocomplete="off" placeholder="https://example.com:443"></div><div><label for="cfgLoginClientID">登录 client_id</label><input id="cfgLoginClientID" autocomplete="off" placeholder="codearts-agent"></div></div>
-        <h3 class="group-title">并发与队列</h3>
-        <div class="field-grid"><div><label for="cfgMaxConcurrent">单账号并发上限</label><input id="cfgMaxConcurrent" type="number" min="1" step="1"></div><div><label for="cfgKeepaliveWindow">保活窗口</label><input id="cfgKeepaliveWindow" autocomplete="off" placeholder="10m"></div><div><label for="cfgQueueRetrySeconds">排队重试间隔（秒） <span class="muted">（上游排队/限流后隔多久重试）</span></label><input id="cfgQueueRetrySeconds" type="number" min="0" step="1" placeholder="10"></div><div><label for="cfgQueueMaxAttempts">排队重试次数 <span class="muted">（单账号最多打几次上游）</span></label><input id="cfgQueueMaxAttempts" type="number" min="0" step="1" placeholder="30"></div></div>
-        <h3 class="group-title">冷却与上游</h3>
-        <div class="field-grid"><div><label for="cfgSoftRate">软限流冷却 <span class="muted">（429 限流时冷却账号）</span></label><input id="cfgSoftRate" autocomplete="off" placeholder="60s"></div><div><label for="cfgErrThreshold">连续错误阈值 <span class="muted">（账号连续错几次才冷却）</span></label><input id="cfgErrThreshold" type="number" min="1" step="1" placeholder="3"></div><div><label for="cfgErrCooldown">错误冷却时长 <span class="muted">（命中阈值后冷却多久）</span></label><input id="cfgErrCooldown" autocomplete="off" placeholder="10m"></div><div><label for="cfgTimeoutSeconds">上游超时（秒） <span class="muted">（需重启）</span></label><input id="cfgTimeoutSeconds" type="number" min="1" step="1"></div></div>
-        <h3 class="group-title">后台任务</h3>
-        <div class="checks"><label class="check" for="cfgWatchEnabled"><input id="cfgWatchEnabled" type="checkbox">后台凭据看护</label><label class="check" for="cfgCreditsAutoClaim"><input id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label></div>
-        <div class="field-grid"><div><label for="cfgPollMinutes">轮询间隔（分钟）</label><input id="cfgPollMinutes" type="number" min="1" step="1"></div><div><label for="cfgRefreshSkew">续期窗口（分钟）</label><input id="cfgRefreshSkew" type="number" min="1" step="1"></div><div><label for="cfgKeepaliveInterval">保活间隔（分钟）</label><input id="cfgKeepaliveInterval" type="number" min="1" step="1"></div><div><label for="cfgCheckinHours">签到时点 <span class="muted">（本地小时，逗号分隔；空=默认 9,21）</span></label><input id="cfgCheckinHours" autocomplete="off" placeholder="9, 21"></div><div><label for="cfgModelRefreshMinutes">目录续期间隔 <span class="muted">（分钟）</span></label><input id="cfgModelRefreshMinutes" type="number" min="1" step="1" placeholder="60"></div></div>
-        <h3 class="group-title">日志与归档</h3>
-        <div class="field-grid"><div><label for="cfgRequestLogRetentionDays">请求归档保留 <span class="muted">（天）</span></label><input id="cfgRequestLogRetentionDays" type="number" min="1" step="1" placeholder="30"></div></div>
-      </div>
-      <div id="configRaw"><label for="configEditor">配置 JSON</label><textarea id="configEditor" class="code-editor" spellcheck="false" aria-describedby="configHelp"></textarea><p class="muted" id="configHelp">请使用合法 JSON。保存不会自动重启服务。</p></div>
-      <div id="envOverrides" class="notice" hidden></div>
-    </div></div></section>
-    <section class="view" id="view-logs" aria-labelledby="logsTitle" hidden><h2 class="sr-only" id="logsTitle">运行日志</h2><div class="card"><div class="card-header"><div><h2>最近请求</h2><p>每 5 秒更新；失败请求显示错误摘要，不记录提示词或模型响应正文。</p></div><label class="inline-label">结果<select id="requestOutcome"><option value="">全部</option><option value="ok">成功</option><option value="fail">失败</option><option value="abnormal">异常</option></select></label></div><div class="table-wrap log-table"><table><thead><tr><th>时间</th><th>模型</th><th>账户</th><th>结果</th><th>尝试次数</th><th>TTFT</th><th>耗时</th><th>缓存</th><th>总Token</th></tr></thead><tbody id="requestLogsBody"></tbody></table></div></div><div class="card"><div class="card-header"><div><h2>服务日志</h2><p>当前进程的有界日志快照。</p></div><label class="inline-label">频道<select id="logChannel"><option value="">全部</option><option value="sys">系统</option><option value="chat">请求</option><option value="task">签到 / 保活</option></select></label></div><div id="runtimeLogs" class="log-box" aria-label="服务日志内容"></div></div></section>
-    <footer class="page-footer"><span>CodeArts2API Panel</span><span>华为云 CodeArts · 独立部署</span></footer>
-  </main>
-</div>
-<dialog id="loginDialog" class="login-dialog" aria-labelledby="loginTitle"><form id="loginForm"><div class="brand-mark">CA</div><div class="eyebrow">WELCOME BACK</div><h2 id="loginTitle">连接控制台</h2><p class="muted">输入服务的管理密钥，管理 CodeArts 账户与模型。</p><label for="loginKey">管理密钥</label><input id="loginKey" type="password" autocomplete="current-password" required placeholder="输入管理密钥"><p id="loginError" class="field-error" role="alert" hidden></p><button class="button primary full-width" type="submit" id="loginSubmit">连接服务</button><small class="muted">密钥只保存在本标签页会话中，通过请求头发送。</small></form></dialog>
-<dialog id="addDialog" aria-labelledby="addTitle"><div class="dialog-header"><div><h2 id="addTitle">添加 CodeArts 账户</h2><p>浏览器授权或导入已有凭据。</p></div><button class="icon-button" data-close="addDialog" aria-label="关闭添加账户">×</button></div><div class="dialog-body"><div class="tabs" role="group" aria-label="添加方式"><button class="tab active" data-add-mode="oauth">浏览器授权</button><button class="tab" data-add-mode="json">导入 JSON</button><button class="tab" data-add-mode="aksk">AK / SK</button></div>
-  <div id="add-oauth">
-    <p class="muted">完成华为云登录后，凭据会保存到服务端并加入账号池。</p>
-    <div class="button-group oauth-actions">
-      <button class="button primary" id="oauthStart">生成授权链接</button>
-      <button class="button" id="oauthCopy" hidden>复制授权链接</button>
-      <a id="oauthLink" class="button" target="_blank" rel="noreferrer noopener" hidden>在新标签页打开授权页</a>
-    </div>
-    <div id="oauthReady" hidden><p id="oauthStatus" role="status">等待授权…</p><button class="button small" id="oauthPoll">我已授权，检查状态</button></div>
-    <div class="oauth-callback">
-      <h3>提交浏览器回调地址</h3>
-      <p class="muted">如果授权后浏览器无法打开 127.0.0.1，请复制完整回调地址并提交。若返回下一步授权链接，请继续在浏览器打开。</p>
-      <label for="callbackURL">回调地址</label><input id="callbackURL" type="url" autocomplete="off" placeholder="http://127.0.0.1:端口/oauth/callback?…"><button class="button small" id="oauthCallback">提交回调</button>
-    </div>
+      <div id="pageError" class="notice error" role="alert" hidden></div>
+      <div id="pageLoading" class="loading-line" role="status" hidden>正在读取服务数据…</div>
+      <section class="view" id="view-accounts" aria-labelledby="accountsTitle">
+        <h2 class="sr-only" id="accountsTitle">账号池</h2>
+        <div class="stats-grid accounts-stats">
+          <div class="stat"><span>账户总数</span><strong id="statTotal">—</strong><small>已保存的 CodeArts 账户</small></div>
+          <div class="stat"><span>可用账户</span><strong class="positive" id="statHealthy">—</strong><small>可参与请求分配</small>
+          </div>
+          <div class="stat"><span>冷却中</span><strong id="statCooling">—</strong><small>暂时等待恢复</small></div>
+          <div class="stat"><span>已禁用</span><strong id="statDisabled">—</strong><small>暂停参与请求分配</small></div>
+          <div class="stat"><span>总套餐积分</span><strong id="statCredits">—</strong><small>已查询账户的积分合计</small></div>
+          <div class="stat"><span>粘性会话</span><strong id="statSticky">—</strong><small>当前绑定的会话数</small></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>账户列表 <span class="count" id="accountCount">0</span></h2>
+              <p>显示账户套餐积分；未查询时显示未知。</p>
+            </div><button class="button primary" id="addAccountButton">＋ 添加账户</button>
+          </div>
+          <div class="card-toolbar"><input class="search" id="accountSearch" type="search" placeholder="搜索名称或 UID"
+              aria-label="搜索账户">
+            <div class="button-group"><button class="button small" data-bulk="credits">刷新额度</button><button
+                class="button small" data-bulk="checkin">全员签到</button><button class="button small"
+                data-bulk="keepalive">全员保活</button><button class="button small" data-bulk="reload">重载凭据</button></div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>账户</th>
+                  <th>状态</th>
+                  <th>套餐积分</th>
+                  <th>凭据有效期</th>
+                  <th>并发</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="accountsBody">
+                <tr>
+                  <td colspan="6" class="empty">连接后显示账户。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card-footer" id="accountNote">仅显示账户元信息，不展示 AK/SK 或 Token。</div>
+        </div>
+      </section>
+      <section class="view" id="view-balance" aria-labelledby="balanceTitle" hidden>
+        <h2 class="sr-only" id="balanceTitle">余额趋势</h2>
+        <div class="usage-filter"><label class="inline-label" for="balanceWindow">时间范围<select id="balanceWindow">
+              <option value="1">近 24 小时</option>
+              <option value="7">近 7 天</option>
+              <option value="30" selected>近 30 天</option>
+            </select></label></div>
+        <div class="stats-grid balance-stats">
+          <div class="stat"><span>有历史账号</span><strong id="balanceAccounts">—</strong><small>窗口内至少一个有效采样点</small></div>
+          <div class="stat"><span>当前余额合计</span><strong id="balanceCurrent">—</strong><small>各账号最新采样值之和</small></div>
+          <div class="stat"><span>窗口净变化</span><strong id="balanceChange">—</strong><small>窗口末值减首值</small></div>
+          <div class="stat"><span>采样点</span><strong id="balanceSamples">—</strong><small>每账号每 5 分钟最多一点</small></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>积分水位</h2>
+              <p id="balanceChartNote">真实查询成功后记录；未查询或查询失败不会补成 0。</p>
+            </div>
+            <div class="legend balance-legend" id="balanceLegend"></div>
+          </div>
+          <div id="balanceChart" class="chart" role="img" aria-label="多账号余额趋势"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>每日变化</h2>
+              <p>绿为净增、红为净减；浅色表示采样不完整。消耗/到账仅为相邻采样差分的下界估算。</p>
+            </div>
+          </div>
+          <div id="balanceDaily" class="chart balance-daily" role="img" aria-label="各账号每日余额变化"></div>
+          <div class="card-footer">同一天有多个账号时，柱子的左右顺序与下方账号表一致。</div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>按账号</h2>
+              <p>今日和昨日按本地自然日取首末采样差值；缺数据时显示未知。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>当前</th>
+                  <th>最低</th>
+                  <th>最高</th>
+                  <th>窗口净变化</th>
+                  <th>今日</th>
+                  <th>昨日</th>
+                  <th>采样点</th>
+                </tr>
+              </thead>
+              <tbody id="balanceBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="view" id="view-models" aria-labelledby="modelsTitle" hidden>
+        <h2 class="sr-only" id="modelsTitle">模型目录</h2>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>可发现的模型 <span class="count" id="modelCount">0</span></h2>
+              <p>来自账户目录与服务兜底列表，实际可用性由账户套餐决定。</p>
+            </div><button class="button" id="refreshModelsButton">重新获取</button>
+          </div>
+          <div class="card-toolbar"><input id="modelSearch" class="search" type="search" placeholder="搜索模型名称"
+              aria-label="搜索模型"></div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>模型 ID</th>
+                  <th>积分倍率</th>
+                  <th>通道</th>
+                  <th>上下文</th>
+                  <th>最大输出</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="modelsBody"></tbody>
+            </table>
+          </div>
+          <div class="card-footer">复制完整模型 ID，搭配本站 <code>/v1</code> 地址接入 OpenAI 客户端。</div>
+        </div>
+      </section>
+      <section class="view" id="view-usage" aria-labelledby="usageTitle" hidden>
+        <h2 class="sr-only" id="usageTitle">请求用量</h2>
+        <div class="usage-filter"><label class="inline-label" for="usageRange">时间范围<select id="usageRange">
+              <option value="today">今天</option>
+              <option value="24h">近 24 小时</option>
+              <option value="3d">近 3 天</option>
+              <option value="7d">近 7 天</option>
+              <option value="30d" selected>近 30 天</option>
+              <option value="custom">自定义</option>
+            </select></label><span class="inline-label" id="usageCustom" hidden><input id="usageFrom"
+              type="datetime-local" aria-label="开始时间"><span>至</span><input id="usageTo" type="datetime-local"
+              aria-label="结束时间"><button class="button small" type="button" id="usageQuery">查询</button></span></div>
+        <div class="stats-grid usage">
+          <div class="stat"><span>完成请求</span><strong id="usageCompleted">—</strong><small
+              id="usageCompletedNote">当前服务进程累计</small></div>
+          <div class="stat"><span>成功率</span><strong class="positive" id="usageSuccess">—</strong><small
+              id="usageOutcomes">等待数据</small></div>
+          <div class="stat"><span>平均耗时</span><strong id="usageDuration">—</strong><small>已完成请求平均耗时</small></div>
+          <div class="stat"><span>平均首字时间</span><strong id="usageTTFT">—</strong><small>仅统计已返回首字的请求</small></div>
+          <div class="stat"><span>平均缓存命中率</span><strong id="usageCacheHit">—</strong><small
+              id="usageCacheNote">上游未上报缓存用量</small></div>
+          <div class="stat"><span>输入 Token</span><strong id="usagePromptTokens">—</strong><small>最近记录中的 prompt
+              用量</small></div>
+          <div class="stat"><span>输出 Token</span><strong id="usageCompletionTokens">—</strong><small>最近记录中的 completion
+              用量</small></div>
+          <div class="stat"><span>总计 Token</span><strong id="usageTokens">—</strong><small>上游总量，缺失时按输入 + 输出计</small>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>近期请求趋势</h2>
+              <p id="usageChartNote">按最近请求的时间分布统计，不代表完整历史。</p>
+            </div><span class="legend"><i></i>请求数</span>
+          </div>
+          <div id="usageChart" class="chart" role="img" aria-label="近期请求趋势"></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 id="usageSummaryTitle">按模型汇总</h2>
+              <p id="usageSummaryNote">按当前时间范围聚合。</p>
+            </div><label class="inline-label" for="summaryMode">汇总方式<select id="summaryMode">
+                <option value="model" selected>按模型</option>
+                <option value="account">按账号</option>
+              </select></label>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead id="usageSummaryHead"></thead>
+              <tbody id="usageModelsBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="view" id="view-config" aria-labelledby="configTitle" hidden>
+        <h2 class="sr-only" id="configTitle">服务配置</h2>
+        <div class="notice" id="configNotice">配置保存到服务端文件并热生效；标有「需重启」的字段需重启服务。密钥留空会保留当前值。</div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>配置文件</h2>
+              <p id="configModeHint">表单覆盖常用字段；其余字段请用 Raw JSON。切换模式会重新读取 config.json，未保存的修改会丢失。</p>
+            </div><button class="button primary" id="saveConfigButton">保存配置</button>
+          </div>
+          <div class="config-body">
+            <div class="segmented" role="tablist" aria-label="配置编辑模式"><button type="button" class="segment active"
+                id="configModeForm" role="tab" aria-selected="true">表单</button><button type="button" class="segment"
+                id="configModeRaw" role="tab" aria-selected="false">Raw JSON</button></div>
+            <div class="field-grid">
+              <div><label for="newAdminKey">替换管理密钥 <span class="muted">（可选，留空保留）</span></label><input id="newAdminKey"
+                  type="password" autocomplete="new-password" placeholder="新的控制台管理密钥"></div>
+              <div><label for="newAPIKey">替换 API Key <span class="muted">（可选，留空保留）</span></label><input id="newAPIKey"
+                  type="password" autocomplete="new-password" placeholder="新的模型调用密钥"></div>
+            </div>
+            <div id="configForm">
+              <h3 class="group-title">服务</h3>
+              <div class="field-grid">
+                <div><label for="cfgListen">监听地址 <span class="muted">（需重启）</span></label><input id="cfgListen"
+                    autocomplete="off" placeholder=":7866"></div>
+                <div><label for="cfgDefaultModel">默认模型</label><input id="cfgDefaultModel" autocomplete="off"
+                    placeholder="glm-5.2"></div>
+                <div><label for="cfgAuthDir">凭据目录 <span class="muted">（需重启）</span></label><input id="cfgAuthDir"
+                    autocomplete="off" placeholder="./auths"></div>
+                <div><label for="cfgStateFile">状态文件 <span class="muted">（需重启）</span></label><input id="cfgStateFile"
+                    autocomplete="off" placeholder="./data/state.json"></div>
+                <div><label for="cfgOAuthCallbackHost">远端回调地址 <span class="muted">（可空）</span></label><input
+                    id="cfgOAuthCallbackHost" autocomplete="off" placeholder="https://example.com:443"></div>
+                <div><label for="cfgLoginClientID">登录 client_id</label><input id="cfgLoginClientID" autocomplete="off"
+                    placeholder="codearts-agent"></div>
+              </div>
+              <h3 class="group-title">并发与队列</h3>
+              <div class="field-grid">
+                <div><label for="cfgAccountStrategy">选号策略 <span class="muted">（粘性会话仍优先；有空闲并发槽位的账号恒优先，策略只决定同档顺序；积分策略读取已缓存余额，不额外查询上游，未知积分排在已知之后。）</span></label><select
+                    id="cfgAccountStrategy">
+                    <option value="first">第一个可用账号</option>
+                    <option value="credits">积分最多的账号</option>
+                    <option value="round_robin">账号池队列轮询</option>
+                  </select>
+
+                </div>
+                <div><label for="cfgMaxConcurrent">单账号并发上限</label><input id="cfgMaxConcurrent" type="number" min="1"
+                    step="1"></div>
+                <div><label for="cfgKeepaliveWindow">保活窗口</label><input id="cfgKeepaliveWindow" autocomplete="off"
+                    placeholder="10m"></div>
+                <div><label for="cfgQueueRetrySeconds">排队重试间隔（秒） <span
+                      class="muted">（上游排队/限流后隔多久重试）</span></label><input id="cfgQueueRetrySeconds" type="number" min="0"
+                    step="1" placeholder="10"></div>
+                <div><label for="cfgQueueMaxAttempts">排队重试次数 <span class="muted">（单账号最多打几次上游）</span></label><input
+                    id="cfgQueueMaxAttempts" type="number" min="0" step="1" placeholder="30"></div>
+              </div>
+              <h3 class="group-title">冷却与上游</h3>
+              <div class="field-grid">
+                <div><label for="cfgSoftRate">软限流冷却 <span class="muted">（429 限流时冷却账号）</span></label><input
+                    id="cfgSoftRate" autocomplete="off" placeholder="60s"></div>
+                <div><label for="cfgErrThreshold">连续错误阈值 <span class="muted">（账号连续错几次才冷却）</span></label><input
+                    id="cfgErrThreshold" type="number" min="1" step="1" placeholder="3"></div>
+                <div><label for="cfgErrCooldown">错误冷却时长 <span class="muted">（命中阈值后冷却多久）</span></label><input
+                    id="cfgErrCooldown" autocomplete="off" placeholder="10m"></div>
+                <div><label for="cfgTimeoutSeconds">上游超时（秒） <span class="muted">（需重启）</span></label><input
+                    id="cfgTimeoutSeconds" type="number" min="1" step="1"></div>
+              </div>
+              <h3 class="group-title">多模态请求</h3>
+              <div class="field-grid">
+                <div><label for="cfgMaxBodyMB">请求体上限（MB） <span class="muted">（凭据导入仍限制为 8MB）</span></label><input
+                    id="cfgMaxBodyMB" type="number" min="1" max="512" step="1" placeholder="32"></div>
+              </div>
+              <h3 class="group-title">图片压缩</h3>
+              <div class="checks"><label class="check" for="cfgImageShrinkEnabled"><input id="cfgImageShrinkEnabled"
+                    type="checkbox">自动压缩内联 PNG / JPEG 图片</label></div>
+              <div class="field-grid">
+                <div><label for="cfgImageShrinkTriggerBodyMB">请求体触发阈值（MB）</label><input id="cfgImageShrinkTriggerBodyMB"
+                    type="number" min="1" step="1" placeholder="4"></div>
+                <div><label for="cfgImageShrinkTargetImageMB">单张图片目标（MB）</label><input id="cfgImageShrinkTargetImageMB"
+                    type="number" min="1" step="1" placeholder="2"></div>
+                <div><label for="cfgImageShrinkTargetTotalMB">图片合计目标（MB）</label><input id="cfgImageShrinkTargetTotalMB"
+                    type="number" min="1" step="1" placeholder="4"></div>
+                <div><label for="cfgImageShrinkMaxDimension">最长边上限（像素）</label><input id="cfgImageShrinkMaxDimension"
+                    type="number" min="1" step="1" placeholder="2048"></div>
+                <div><label for="cfgImageShrinkQuality">JPEG 质量 <span class="muted">（1–100）</span></label><input
+                    id="cfgImageShrinkQuality" type="number" min="1" max="100" step="1" placeholder="85"></div>
+              </div>
+              <h3 class="group-title">视觉转述</h3>
+              <div class="checks"><label class="check" for="cfgVisionBridgeEnabled"><input id="cfgVisionBridgeEnabled"
+                    type="checkbox">为纯文本模型转述内联图片</label></div>
+              <p class="muted">先用视觉模型将图片转为文字，再交给原模型。每张未命中缓存的图片会额外消耗一次视觉模型调用额度，并增加等待时间。</p>
+              <div class="field-grid">
+                <div><label for="cfgVisionBridgeModel">转述模型</label><input id="cfgVisionBridgeModel" autocomplete="off"
+                    placeholder="Qwen3-VL-235B"></div>
+                <div><label for="cfgVisionBridgeMaxImages">最多转述图片（张）</label><input id="cfgVisionBridgeMaxImages"
+                    type="number" min="1" max="32" step="1" placeholder="8"></div>
+                <div><label for="cfgVisionBridgeMaxChars">单张转述字符上限</label><input id="cfgVisionBridgeMaxChars"
+                    type="number" min="1" max="100000" step="1" placeholder="6000"></div>
+                <div><label for="cfgVisionBridgeMaxTokens">单张转述输出 Token 上限</label><input id="cfgVisionBridgeMaxTokens"
+                    type="number" min="1" step="1" placeholder="1500"></div>
+                <div><label for="cfgVisionBridgeTimeoutSeconds">单张转述超时（秒）</label><input
+                    id="cfgVisionBridgeTimeoutSeconds" type="number" min="1" step="1" placeholder="120"></div>
+                <div><label for="cfgVisionBridgeTotalTimeoutSeconds">全部转述总预算（秒）</label><input
+                    id="cfgVisionBridgeTotalTimeoutSeconds" type="number" min="1" step="1" placeholder="90"></div>
+              </div>
+              <label for="cfgVisionBridgePrompt">转述提示词 <span class="muted">（可选，留空使用默认提示词）</span></label><textarea
+                id="cfgVisionBridgePrompt" rows="4" placeholder="概括图片、逐行转写文字并描述关键布局。"></textarea>
+              <h3 class="group-title">后台任务</h3>
+              <div class="checks"><label class="check" for="cfgWatchEnabled"><input id="cfgWatchEnabled"
+                    type="checkbox">后台凭据看护</label><label class="check" for="cfgCreditsAutoClaim"><input
+                    id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label></div>
+              <div class="field-grid">
+                <div><label for="cfgPollMinutes">轮询间隔（分钟）</label><input id="cfgPollMinutes" type="number" min="1"
+                    step="1"></div>
+                <div><label for="cfgRefreshSkew">续期窗口（分钟）</label><input id="cfgRefreshSkew" type="number" min="1"
+                    step="1"></div>
+                <div><label for="cfgKeepaliveInterval">保活间隔（分钟）</label><input id="cfgKeepaliveInterval" type="number"
+                    min="1" step="1"></div>
+                <div><label for="cfgCheckinHours">签到时点 <span class="muted">（本地小时，逗号分隔；空=默认 9,21）</span></label><input
+                    id="cfgCheckinHours" autocomplete="off" placeholder="9, 21"></div>
+                <div><label for="cfgModelRefreshMinutes">目录续期间隔 <span class="muted">（分钟）</span></label><input
+                    id="cfgModelRefreshMinutes" type="number" min="1" step="1" placeholder="60"></div>
+              </div>
+              <h3 class="group-title">日志与归档</h3>
+              <div class="field-grid">
+                <div><label for="cfgRequestLogRetentionDays">请求归档保留 <span class="muted">（天）</span></label><input
+                    id="cfgRequestLogRetentionDays" type="number" min="1" step="1" placeholder="30"></div>
+              </div>
+            </div>
+            <div id="configRaw"><label for="configEditor">配置 JSON</label><textarea id="configEditor" class="code-editor"
+                spellcheck="false" aria-describedby="configHelp"></textarea>
+              <p class="muted" id="configHelp">请使用合法 JSON。保存不会自动重启服务。</p>
+            </div>
+            <div id="envOverrides" class="notice" hidden></div>
+          </div>
+        </div>
+      </section>
+      <section class="view" id="view-logs" aria-labelledby="logsTitle" hidden>
+        <h2 class="sr-only" id="logsTitle">运行日志</h2>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>最近请求</h2>
+              <p>每 5 秒更新；失败请求显示错误摘要，不记录提示词或模型响应正文。</p>
+            </div><label class="inline-label">结果<select id="requestOutcome">
+                <option id="requestOutcomeAll" value="">全部</option>
+                <option id="requestOutcomeOk" value="ok">成功</option>
+                <option id="requestOutcomeFail" value="fail">失败</option>
+                <option id="requestOutcomeAbnormal" value="abnormal">异常</option>
+              </select></label>
+          </div>
+          <div class="table-wrap log-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>模型</th>
+                  <th>账户</th>
+                  <th>结果</th>
+                  <th>尝试次数</th>
+                  <th>TTFT</th>
+                  <th>耗时</th>
+                  <th>缓存</th>
+                  <th>总Token</th>
+                </tr>
+              </thead>
+              <tbody id="requestLogsBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2>服务日志</h2>
+              <p>当前进程的有界日志快照。</p>
+            </div><label class="inline-label">频道<select id="logChannel">
+                <option value="">全部</option>
+                <option value="sys">系统</option>
+                <option value="chat">请求</option>
+                <option value="task">签到 / 保活</option>
+              </select></label>
+          </div>
+          <div id="runtimeLogs" class="log-box" aria-label="服务日志内容"></div>
+        </div>
+      </section>
+      <footer class="page-footer"><span>CodeArts2API Panel</span><span>华为云 CodeArts · 独立部署</span></footer>
+    </main>
   </div>
-  <div id="add-json" hidden><p class="muted">支持单个凭据对象或对象数组。导入后清空输入内容。</p><label for="importFile">选择 JSON 文件</label><input id="importFile" type="file" accept=".json,application/json"><label for="importJSON">凭据 JSON</label><textarea id="importJSON" class="code-editor short" spellcheck="false" placeholder='{"user_id":"账户UID","access_key_id":"AK","secret_access_key":"SK"}'></textarea><button class="button primary" id="importJSONButton">导入凭据</button></div>
-  <form id="akskForm" hidden><div class="field-grid"><label>账户 UID<input name="user_id" required autocomplete="off"></label><label>显示名称<input name="user_name" autocomplete="off"></label></div><label>Access Key<input name="access_key_id" type="password" required autocomplete="off"></label><label>Secret Key<input name="secret_access_key" type="password" required autocomplete="off"></label><label>Security Token <span class="muted">（永久 AK/SK 可留空）</span><input name="cloud_dragon_token" type="password" autocomplete="off"></label><label>到期时间 <span class="muted">（临时凭据，RFC3339 格式）</span><input name="expiration" placeholder="2026-11-01T12:00:00Z" autocomplete="off"></label><button class="button primary" type="submit">保存账户</button></form><p id="addError" class="field-error" role="alert" hidden></p>
-</div></dialog>
-<dialog id="noteDialog" class="confirm-dialog" aria-labelledby="noteTitle"><div class="dialog-header"><div><h2 id="noteTitle">账户备注</h2><p>只保存在本服务的凭据文件里，不发送给上游。</p></div><button class="icon-button" data-close="noteDialog" aria-label="关闭备注">×</button></div><div class="dialog-body"><p class="delete-name" id="noteAccountName"></p><label for="noteInput">备注（留空即清除）</label><input id="noteInput" type="text" maxlength="200" placeholder="例如：注册手机号 138xxxx、备用账户"><p id="noteError" class="field-error" role="alert" hidden></p><div class="dialog-actions"><button class="button" data-close="noteDialog">取消</button><button class="button primary" id="confirmNote">保存备注</button></div></div></dialog>
-<dialog id="deleteDialog" class="confirm-dialog" aria-labelledby="deleteTitle"><div class="dialog-header"><h2 id="deleteTitle">删除账户</h2><button class="icon-button" data-close="deleteDialog" aria-label="取消删除">×</button></div><div class="dialog-body"><p>将从账号池移除以下账户，并删除服务端保存的对应凭据文件。</p><p class="delete-name" id="deleteAccountName"></p><p class="muted">此操作无法撤销。其他账户不受影响。</p><div class="dialog-actions"><button class="button" data-close="deleteDialog">取消</button><button class="button danger" id="confirmDelete">确认删除账户</button></div></div></dialog>
-<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <dialog id="loginDialog" class="login-dialog" aria-labelledby="loginTitle">
+    <form id="loginForm">
+      <div class="brand-mark">CA</div>
+      <div class="eyebrow">WELCOME BACK</div>
+      <h2 id="loginTitle">连接控制台</h2>
+      <p class="muted">输入服务的管理密钥，管理 CodeArts 账户与模型。</p><label for="loginKey">管理密钥</label><input id="loginKey"
+        type="password" autocomplete="current-password" required placeholder="输入管理密钥">
+      <p id="loginError" class="field-error" role="alert" hidden></p><button class="button primary full-width"
+        type="submit" id="loginSubmit">连接服务</button><small class="muted">密钥只保存在本标签页会话中，通过请求头发送。</small>
+    </form>
+  </dialog>
+  <dialog id="addDialog" aria-labelledby="addTitle">
+    <div class="dialog-header">
+      <div>
+        <h2 id="addTitle">添加 CodeArts 账户</h2>
+        <p>浏览器授权或导入已有凭据。</p>
+      </div><button class="icon-button" data-close="addDialog" aria-label="关闭添加账户">×</button>
+    </div>
+    <div class="dialog-body">
+      <div class="tabs" role="group" aria-label="添加方式"><button class="tab active"
+          data-add-mode="oauth">浏览器授权</button><button class="tab" data-add-mode="json">导入 JSON</button><button
+          class="tab" data-add-mode="aksk">AK / SK</button></div>
+      <div id="add-oauth">
+        <p class="muted">完成华为云登录后，凭据会保存到服务端并加入账号池。</p>
+        <div class="button-group oauth-actions">
+          <button class="button primary" id="oauthStart">生成授权链接</button>
+          <button class="button" id="oauthCopy" hidden>复制授权链接</button>
+          <a id="oauthLink" class="button" target="_blank" rel="noreferrer noopener" hidden>在新标签页打开授权页</a>
+        </div>
+        <div id="oauthReady" hidden>
+          <p id="oauthStatus" role="status">等待授权…</p><button class="button small" id="oauthPoll">我已授权，检查状态</button>
+        </div>
+        <div class="oauth-callback">
+          <h3>提交浏览器回调地址</h3>
+          <p class="muted">如果授权后浏览器无法打开 127.0.0.1，请复制完整回调地址并提交。若返回下一步授权链接，请继续在浏览器打开。</p>
+          <label for="callbackURL">回调地址</label><input id="callbackURL" type="url" autocomplete="off"
+            placeholder="http://127.0.0.1:端口/oauth/callback?…"><button class="button small"
+            id="oauthCallback">提交回调</button>
+        </div>
+      </div>
+      <div id="add-json" hidden>
+        <p class="muted">支持单个凭据对象或对象数组。导入后清空输入内容。</p><label for="importFile">选择 JSON 文件</label><input id="importFile"
+          type="file" accept=".json,application/json"><label for="importJSON">凭据 JSON</label><textarea id="importJSON"
+          class="code-editor short" spellcheck="false"
+          placeholder='{"user_id":"账户UID","access_key_id":"AK","secret_access_key":"SK"}'></textarea><button
+          class="button primary" id="importJSONButton">导入凭据</button>
+      </div>
+      <form id="akskForm" hidden>
+        <div class="field-grid"><label>账户 UID<input name="user_id" required autocomplete="off"></label><label>显示名称<input
+              name="user_name" autocomplete="off"></label></div><label>Access Key<input name="access_key_id"
+            type="password" required autocomplete="off"></label><label>Secret Key<input name="secret_access_key"
+            type="password" required autocomplete="off"></label><label>Security Token <span class="muted">（永久 AK/SK
+            可留空）</span><input name="cloud_dragon_token" type="password" autocomplete="off"></label><label>到期时间 <span
+            class="muted">（临时凭据，RFC3339 格式）</span><input name="expiration" placeholder="2026-11-01T12:00:00Z"
+            autocomplete="off"></label><button class="button primary" type="submit">保存账户</button>
+      </form>
+      <p id="addError" class="field-error" role="alert" hidden></p>
+    </div>
+  </dialog>
+  <dialog id="noteDialog" class="confirm-dialog" aria-labelledby="noteTitle">
+    <div class="dialog-header">
+      <div>
+        <h2 id="noteTitle">账户备注</h2>
+        <p>只保存在本服务的凭据文件里，不发送给上游。</p>
+      </div><button class="icon-button" data-close="noteDialog" aria-label="关闭备注">×</button>
+    </div>
+    <div class="dialog-body">
+      <p class="delete-name" id="noteAccountName"></p><label for="noteInput">备注（留空即清除）</label><input id="noteInput"
+        type="text" maxlength="200" placeholder="例如：注册手机号 138xxxx、备用账户">
+      <p id="noteError" class="field-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button class="button" data-close="noteDialog">取消</button><button
+          class="button primary" id="confirmNote">保存备注</button></div>
+    </div>
+  </dialog>
+  <dialog id="deleteDialog" class="confirm-dialog" aria-labelledby="deleteTitle">
+    <div class="dialog-header">
+      <h2 id="deleteTitle">删除账户</h2><button class="icon-button" data-close="deleteDialog" aria-label="取消删除">×</button>
+    </div>
+    <div class="dialog-body">
+      <p>将从账号池移除以下账户，并删除服务端保存的对应凭据文件。</p>
+      <p class="delete-name" id="deleteAccountName"></p>
+      <p class="muted">此操作无法撤销。其他账户不受影响。</p>
+      <div class="dialog-actions"><button class="button" data-close="deleteDialog">取消</button><button
+          class="button danger" id="confirmDelete">确认删除账户</button></div>
+    </div>
+  </dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
+
 </html>

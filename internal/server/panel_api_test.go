@@ -32,7 +32,7 @@ func panelRequest(h http.Handler, method, path, body, key string) *httptest.Resp
 func TestAdminKeySeparatesManagementFromInference(t *testing.T) {
 	p, _ := pool.New(nil, pool.Config{}, "")
 	h := NewHandler(Config{Pool: p, APIKey: "inference-key", AdminKey: "management-key"})
-	for _, path := range []string{"/admin/api/overview", "/admin/api/models", "/admin/api/usage", "/admin/api/logs", "/admin/api/config"} {
+	for _, path := range []string{"/admin/api/overview", "/admin/api/models", "/admin/api/usage", "/admin/api/balance_history", "/admin/api/logs", "/admin/api/config"} {
 		if w := panelRequest(h, "GET", path, "", "inference-key"); w.Code != 401 {
 			t.Fatalf("%s leaked to API key: %d", path, w.Code)
 		}
@@ -45,6 +45,24 @@ func TestAdminKeySeparatesManagementFromInference(t *testing.T) {
 	}
 	if w := panelRequest(h, "GET", "/v1/models", "", "management-key"); w.Code != 401 {
 		t.Fatal("admin key unexpectedly grants inference access")
+	}
+}
+
+func TestAdminOverviewIncludesCreditAndStickyTotals(t *testing.T) {
+	a := auth.New("overview-account", "n", "d", "tok", "ak", "sk", "", "", "")
+	p, _ := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, AdminKey: "admin"})
+	h.convAcct["conversation-1"] = a.UserID
+	h.convAcct["conversation-2"] = a.UserID
+	w := panelRequest(h, "GET", "/admin/api/overview", "", "admin")
+	var body struct {
+		Stats struct {
+			Credits float64 `json:"credits"`
+			Sticky  int     `json:"sticky"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Stats.Sticky != 2 {
+		t.Fatalf("overview stats = %+v, err=%v", body.Stats, err)
 	}
 }
 

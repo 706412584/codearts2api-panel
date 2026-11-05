@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,6 +33,9 @@ func (h *Handler) watchInfo() map[string]any {
 // adminOverview 面板总览。
 func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 	total, healthy, disabled, cooling, credits := h.cfg.Pool.Stats()
+	h.convMu.Lock()
+	sticky := len(h.convAcct)
+	h.convMu.Unlock()
 	models := h.modelList(false)
 	ids := make([]map[string]any, 0, len(models))
 	for _, m := range models {
@@ -49,6 +53,7 @@ func (h *Handler) adminOverview(w http.ResponseWriter, r *http.Request) {
 			"disabled": disabled,
 			"cooling":  cooling,
 			"credits":  credits,
+			"sticky":   sticky,
 		},
 		"accounts": h.cfg.Pool.List(),
 		"models":   ids,
@@ -114,6 +119,37 @@ func (h *Handler) adminCredits(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": ok, "results": results,
+	})
+}
+
+// adminBalanceHistory 返回已采样的真实余额水位；读取历史不会触发上游请求。
+func (h *Handler) adminBalanceHistory(w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Balance == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{"ok": false, "message": "balance recorder not available"})
+		return
+	}
+	days := 30
+	if raw := r.URL.Query().Get("days"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			days = n
+		}
+	}
+	if days > 30 {
+		days = 30
+	}
+	if h.cfg.Pool != nil {
+		for _, account := range h.cfg.Pool.List() {
+			uid, _ := account["uid"].(string)
+			name, _ := account["nickname"].(string)
+			if name == "" {
+				name, _ = account["name"].(string)
+			}
+			h.cfg.Balance.SetName(uid, name)
+		}
+	}
+	series, now := h.cfg.Balance.Snapshot(time.Now().AddDate(0, 0, -days))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "now": now.Format(time.RFC3339), "days": days, "series": series,
 	})
 }
 

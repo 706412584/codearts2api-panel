@@ -110,8 +110,8 @@ func TestImageRequestToTextModelIsRejectedWithoutUpstream(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	h, p := visionTestHandler(t, backend.URL)
-	// 本部署默认 analyze；这个用例测的是 passthrough 的显式拒绝行为。
+	h, p := analyzeVisionTestHandler(t, backend.URL)
+	// passthrough 模式：不替调用方做决策，明确的 400 + 可用视觉模型列表。
 	h.cfg.ImageHandling = "passthrough"
 	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
 		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
@@ -154,7 +154,7 @@ func TestImageRequestWithUndeclaredCapabilityIsPassedThrough(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	h, _ := visionTestHandler(t, backend.URL)
+	h, _ := analyzeVisionTestHandler(t, backend.URL)
 	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
 		{ID: "deepseek-v4.1-flash"}, // SupportsImages 未声明
 		{ID: "Qwen3-VL-235B", SupportsImages: boolPtr(true)},
@@ -189,7 +189,7 @@ func TestTextRequestToTextModelPassesThrough(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	h, _ := visionTestHandler(t, backend.URL)
+	h, _ := analyzeVisionTestHandler(t, backend.URL)
 	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
 		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
 	})
@@ -217,14 +217,22 @@ func TestModelEntriesExposeImageCapability(t *testing.T) {
 		id, _ := e["id"].(string)
 		byID[id] = e
 	}
+	// 声明支持图片的模型：supports_images=true 且 input_modalities 含 image。
 	if v, ok := byID["vision-model"]["supports_images"]; !ok || v != true {
 		t.Errorf("视觉模型应透传 supports_images=true，got=%#v", byID["vision-model"]["supports_images"])
 	}
+	if mods, _ := byID["vision-model"]["input_modalities"].([]string); len(mods) != 2 || mods[1] != "image" {
+		t.Errorf("视觉模型的 input_modalities 应含 image，got=%#v", byID["vision-model"]["input_modalities"])
+	}
+	// 本 fork 透传三态：上游明确声明 false 时也写出 false，客户端不必靠踩 406 才发现。
 	if v, ok := byID["text-model"]["supports_images"]; !ok || v != false {
 		t.Errorf("纯文本模型必须透传 supports_images=false（旧版本静默丢弃），got=%#v", byID["text-model"]["supports_images"])
 	}
 	if _, ok := byID["unknown-model"]["supports_images"]; ok {
 		t.Error("上游未声明时不应凭空写入 supports_images")
+	}
+	if mods, _ := byID["text-model"]["input_modalities"].([]string); len(mods) != 1 || mods[0] != "text" {
+		t.Errorf("纯文本模型只声明 text 模态，got=%#v", byID["text-model"]["input_modalities"])
 	}
 }
 
@@ -237,7 +245,7 @@ func TestNonStreamPromptTooLongReturns400AndKeepsPoolHealthy(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	h, p := visionTestHandler(t, backend.URL)
+	h, p := analyzeVisionTestHandler(t, backend.URL)
 	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)}})
 
 	payload := `{"model":"deepseek-v4.1-flash","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
@@ -251,7 +259,7 @@ func TestNonStreamPromptTooLongReturns400AndKeepsPoolHealthy(t *testing.T) {
 
 func boolPtr(b bool) *bool { return &b }
 
-func visionTestHandler(t *testing.T, endpoint string) (*Handler, *pool.Pool) {
+func analyzeVisionTestHandler(t *testing.T, endpoint string) (*Handler, *pool.Pool) {
 	t.Helper()
 	a := auth.New("vision-a", "tester", "domain", "token", "ak", "sk",
 		time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
