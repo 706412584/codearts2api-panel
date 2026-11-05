@@ -307,7 +307,7 @@
               </div>
               <h3 class="group-title">并发与队列</h3>
               <div class="field-grid">
-                <div><label for="cfgAccountStrategy">选号策略 <span class="muted">（粘性会话仍优先；有空闲并发槽位的账号恒优先，策略只决定同档顺序；积分策略读取已缓存余额，不额外查询上游，未知积分排在已知之后。）</span></label><select
+                <div><label for="cfgAccountStrategy">选号策略 <span class="muted">（粘性会话仍优先；积分策略读取已缓存余额，不额外查询上游；未知积分不参与比较。）</span></label><select
                     id="cfgAccountStrategy">
                     <option value="first">第一个可用账号</option>
                     <option value="credits">积分最多的账号</option>

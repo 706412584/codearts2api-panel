@@ -278,10 +278,6 @@ const (
 // （旧实现死等单个账号 180s）。声明为变量是为了测试能注入短值。
 var slotWaitTimeout = 15 * time.Second
 
-// visionSlotWait 视觉子请求等槽位的时长。比 chat 主路径长一些（主模型的
-// analyze_image 工具调用在等结果，宁可多等一会儿也不要直接失败回灌）。
-const visionSlotWait = 30 * time.Second
-
 // safeLogLabel 把一段外部文本压成单行，并按标签上限截断。
 func safeLogLabel(value string) string { return safeLogText(value, logLabelLimit) }
 
@@ -332,8 +328,8 @@ func (h *Handler) finishRequest(event reqlog.Event, observed *responseObserver, 
 		event.Error = ""
 	}
 	h.cfg.RequestLog.Record(event)
-	// 运行日志里带上首字延迟与排队时长：面板「运行日志」页据此一眼看出
-	// 慢在排队还是慢在模型（ttfb 是客户端可见的首个响应字节时刻）。
+	// 运行日志带上首字延迟、排队时长、尝试次数与账号：面板「运行日志」页据此一眼
+	// 看出慢在排队还是慢在模型、是否换过号（这些字段请求记录里本来就有）。
 	line := fmt.Sprintf("chat request=%s model=%s status=%d ok=%t duration_ms=%d ttfb_ms=%d tokens=%d",
 		event.RequestID, safeLogLabel(event.Model), event.Status, event.OK, event.DurationMs, event.TTFBMs, event.TotalTokens)
 	if event.QueueMs > 0 {

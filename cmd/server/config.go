@@ -33,7 +33,7 @@ type Config struct {
 	AuthDir         string `json:"auth_dir"`
 	StateFile       string `json:"state_file"`
 	DefaultModel    string `json:"default_model"`
-	AccountStrategy string `json:"account_strategy"` // first / credits（本 fork 默认）/ round_robin；只管同档排序，空闲优先恒成立
+	AccountStrategy string `json:"account_strategy"` // first / credits / round_robin
 	// OAuthCallbackHost 可选：远程授权时把回调指向公网地址，让浏览器回调经反向
 	// 代理进入本服务，而不是 127.0.0.1。只有**显式写了端口**才会改写授权链接里的
 	// port 参数（如 https://oneapi.example.com:443/codearts）；不写端口则保持本机
@@ -96,8 +96,8 @@ type Config struct {
 	} `json:"image_shrink"`
 
 	// ImageHandling 带图请求打到纯文本模型时的处理模式：
-	//   "bridge" —— 识图桥接：请求进来先把图转述成文字（见 VisionBridge）；
-	//   ""/"analyze"（本 fork 默认）—— 按需识图：图片换成占位符 + 注入 analyze_image 工具，
+	//   ""/"bridge"（默认）—— 识图桥接：请求进来先把图转述成文字（见 VisionBridge）；
+	//   "analyze"  —— 按需识图：图片换成占位符 + 注入 analyze_image 工具，
 	//                  主模型自己决定何时看、看哪张、问什么（复刻官方 AnalyzeImagePlugin）；
 	//   "passthrough" —— 都不做，原样发上游（上游会回 001001020 非多模态）。
 	ImageHandling string `json:"image_handling"`
@@ -130,7 +130,7 @@ func Default() *Config {
 		AuthDir:         "./auths",
 		StateFile:       "./data/state.json",
 		DefaultModel:    "glm-5.2",
-		AccountStrategy: "credits",
+		AccountStrategy: "first",
 	}
 	c.Cooldown.SoftRate = defaultSoftRate
 	c.Cooldown.ErrThresh = defaultErrThreshold
@@ -442,16 +442,14 @@ func (c *Config) normalize() []string {
 	if c.DefaultModel == "" {
 		c.DefaultModel = "glm-5.2"
 	}
-	// 选号策略只决定「同为空闲/同为满载」账号之间的先后（空闲优先恒成立）。
-	// 本 fork 默认 credits：积分高的多承担流量，与合并前的行为一致。
 	switch c.AccountStrategy {
 	case "", "first", "credits", "round_robin":
 		if c.AccountStrategy == "" {
-			c.AccountStrategy = "credits"
+			c.AccountStrategy = "first"
 		}
 	default:
-		changes = append(changes, fmt.Sprintf("account_strategy=%q → credits", c.AccountStrategy))
-		c.AccountStrategy = "credits"
+		changes = append(changes, fmt.Sprintf("account_strategy=%q → first", c.AccountStrategy))
+		c.AccountStrategy = "first"
 	}
 	if c.Listen == "" {
 		c.Listen = ":7866"
@@ -506,16 +504,15 @@ func (c *Config) normalize() []string {
 	if c.ImageShrink.Quality <= 0 || c.ImageShrink.Quality > 100 {
 		c.ImageShrink.Quality = 85
 	}
-	// 图像处理模式：非法值回写默认。本 fork 默认 analyze（主模型按需调用
-	// analyze_image，上下文不被图片描述挤占、可多轮追问），bridge 需显式配置。
+	// 图像处理模式：非法值回写默认（bridge），与其它字段同一口径。
 	switch c.ImageHandling {
 	case "", "bridge", "analyze", "passthrough":
 		if c.ImageHandling == "" {
-			c.ImageHandling = "analyze"
+			c.ImageHandling = "bridge"
 		}
 	default:
-		changes = append(changes, fmt.Sprintf("image_handling=%q → analyze", c.ImageHandling))
-		c.ImageHandling = "analyze"
+		changes = append(changes, fmt.Sprintf("image_handling=%q → bridge", c.ImageHandling))
+		c.ImageHandling = "bridge"
 	}
 	// 识图桥接：空模型名等于没配，回落默认 VL 模型。
 	if strings.TrimSpace(c.VisionBridge.Model) == "" {

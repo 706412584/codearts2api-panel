@@ -70,7 +70,6 @@ type Config struct {
 	ImageShrink  *imgshrink.Policy
 	VisionBridge *VisionBridgePolicy
 	// ImageHandling 见 cmd/server/config.go 同名配置项（bridge/analyze/passthrough）。
-	// 空值等同 analyze（本 fork 默认；上游默认 bridge）。
 	ImageHandling string
 }
 
@@ -117,7 +116,7 @@ func (h *Handler) liveMultimodal(s livecfg.Snapshot) livecfg.Snapshot {
 		s.ImageHandling = h.cfg.ImageHandling
 	}
 	if s.ImageHandling == "" {
-		s.ImageHandling = "analyze"
+		s.ImageHandling = "bridge"
 	}
 	return s
 }
@@ -128,11 +127,7 @@ func (h *Handler) noteError(name string) {
 	h.cfg.Pool.NoteError(name, s.ErrThreshold, s.ErrCooldown)
 }
 
-// cooldownErr / cooldownSoft 用当前（可热改）冷却时长处罚账号。
-func (h *Handler) cooldownErr(name, reason string) {
-	h.cfg.Pool.Cooldown(name, pool.CoolErr, h.live().ErrCooldown, reason)
-}
-
+// cooldownSoft 用当前（可热改）软限流冷却时长处罚账号。
 func (h *Handler) cooldownSoft(name, reason string) {
 	h.cfg.Pool.Cooldown(name, pool.CoolSoft, h.live().SoftCooldown, reason)
 }
@@ -145,6 +140,9 @@ func (h *Handler) loginConfig() upstream.LoginConfig {
 	}
 	return cfg
 }
+
+// queueReacquireWait 排队重试等完间隔后重新拿回本账号槽位的上限（测试可覆盖）。
+var queueReacquireWait = 30 * time.Second
 
 // errAllBusy 全部账号并发槽位占满（容量问题，不是账号故障）：
 // 收尾时据此返回 429 而非 503，让客户端稍后重试。
@@ -164,9 +162,9 @@ const (
 	modelsFetchFailCooldown = 5 * time.Minute
 )
 
-// defaultMaxBodyBytes 聊天请求体默认上限。旧的硬编码 8MB 太小：一张 2560×1440
-// 的截图 base64 后约 2~5MB，多图或长会话很容易越界，客户端只会拿到 413。
-// 实际上限由 config 的 max_body_mb 决定（默认 32MB）。
+// defaultMaxBodyBytes 聊天请求体默认上限。旧的硬编码 8MB 太小：一张 2560×1440 的截图
+// base64 后约 2~5MB，多图或长会话很容易越界，客户端只会拿到 413 而不是模型回答。
+// 实际上限由 config 的 max_body_mb 决定（默认 32MB），可热改。
 const defaultMaxBodyBytes = 32 << 20
 
 // maxAuthBytes 凭据导入（auth JSON）的上限，与聊天请求体无关。
@@ -542,42 +540,15 @@ func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
 // modelList 动态获取模型列表并包装成 OpenAI 格式。
 func (h *Handler) modelList(force bool) []map[string]any {
 	entries := modelEntries(h.fetchDynamicModels(force))
-	// 过滤掉「已知不可用」的模型：这些条目在客户端点开就是 404，列出来只会误导。必须作用在最终条目上——静态兜底表也会补位，
-	// 只在动态结果上过滤会让被下架的模型又从静态表冒出来。
-	// 未知（还没真实调用出结论）的保留：宁可让用户试，也别把可用模型藏起来。
-	if len(entries) > 0 {
-		kept := make([]map[string]any, 0, len(entries))
-		for _, e := range entries {
-			id, _ := e["id"].(string)
-			if !h.modelKnownUnusable(id) {
-				kept = append(kept, e)
-			}
-		}
-		if len(kept) > 0 {
-			entries = kept
+	// 隐藏「所有健康账号都实测调不通」的模型：客户端点开就是 404，列出来只会误导。
+	// 还没结论的保留：宁可让用户试，也别把可用模型藏起来。
+	kept := entries[:0]
+	for _, e := range entries {
+		if id, _ := e["id"].(string); !h.modelKnownUnusable(id) {
+			kept = append(kept, e)
 		}
 	}
-	return entries
-}
-
-// modelKnownUnusable 报告该模型是否在**所有**健康账号上都被判定为不可用。
-// 只要有一个账号没结论或可用，就返回 false（列表保留该模型）。
-func (h *Handler) modelKnownUnusable(model string) bool {
-	anyKnown, allUnusable := false, true
-	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
-		st, _ := modelAvailability(acct.UID, model)
-		if st == availUnknown {
-			return false // 还没结论，别急着下架
-		}
-		anyKnown = true
-		if st != availUnusable {
-			allUnusable = false
-		}
-	}
-	return anyKnown && allUnusable
+	return kept
 }
 
 // modelEntries 把账号模型目录包装成 OpenAI /v1/models 条目。
@@ -639,9 +610,9 @@ func modelEntries(infos []upstream.ModelInfo) []map[string]any {
 		if mi.DisplayEnabled != nil && !*mi.DisplayEnabled {
 			entry["display_enabled"] = false
 		}
-		// 图片能力三态都要透传：true 让客户端知道可以发图，false 让客户端知道
-		// 必须转文字（上游明确声明 false）。旧版本只透传 true，把「明确不支持」
-		// 静默成「没这个字段」，客户端只能靠踩 502 才发现。
+		// 图片能力三态都透传：true 告诉客户端可以发图，false（上游明确声明不支持）
+		// 告诉客户端必须先转文字；只有上游没表态才不写。只透传 true 会把「明确
+		// 不支持」静默成「没这个字段」，客户端只能靠撞 001001020 才发现。
 		if mi.SupportsImages != nil {
 			entry["supports_images"] = *mi.SupportsImages
 		}
@@ -710,7 +681,7 @@ func (h *Handler) fetchDynamicModels(force bool) []upstream.ModelInfo {
 	return infos
 }
 
-// pickAccount 为一次调用挑账号：优先按策略选目录里登记过该模型、且未实测不可用的
+// pickAccount 为一次调用挑账号：优先按策略选择目录里登记过该模型的
 // 健康账号，都挑不到再退回普通选号。图像分析路径（describeImage）用它，
 // 以免把视觉请求发给不支持视觉的账号白耗一次。
 func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account {
@@ -730,19 +701,7 @@ func (h *Handler) pickAccount(tried map[string]bool, model string) *pool.Account
 	return h.cfg.Pool.PickExcluding(tried, h.live().AccountStrategy)
 }
 
-// accountServesModel 报告该账号的目录是否登记了这个模型（目录未知时放行）。
-func (h *Handler) accountServesModel(acct *pool.Account, model string) bool {
-	if acct == nil {
-		return false
-	}
-	models, known := upstream.AccountModels(acct.UID)
-	if !known {
-		return true // 目录未发现：无依据拒绝，交给上游判定
-	}
-	return catalogHas(models, strings.ToLower(upstream.CanonicalModel(model)))
-}
-
-// pickByCatalog 在目录登记了该模型、且未实测不可用的健康账号中应用当前选号策略。
+// pickByCatalog 在支持该模型的健康账号中应用当前选号策略。
 func (h *Handler) pickByCatalog(tried map[string]bool, wantLower string) *pool.Account {
 	candidates := map[string]bool{}
 	for _, acct := range h.cfg.Pool.Accounts() {
@@ -775,14 +734,36 @@ func (h *Handler) discoverMissingCatalogs(tried map[string]bool) {
 	}
 }
 
-// catalogHas 按小写 ID 在模型目录里查模型。
-func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
-	for _, mi := range models {
-		if strings.ToLower(mi.ID) == wantLower {
-			return true
+// ensureCatalog 在「所有健康账号的目录都还没发现」时补拉一次目录。
+//
+// 只在目录完全未发现时才触发（进程刚启动、或从未查过 /v1/models），且只补一次：
+// 一旦有任一账号目录已发现，后续判断就有依据，不再补。这样：
+//   - 冷启动后第一个带图请求也能正确判定模型图片能力（否则 analyze/bridge 都不
+//     触发，图片原样发上游吃 001001020.406）；
+//   - 目录已就绪时零额外上游调用（这是热路径，不能被每次请求的目录请求拖慢）。
+func (h *Handler) ensureCatalog(tried map[string]bool) {
+	for _, acct := range h.cfg.Pool.Accounts() {
+		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
+			continue
+		}
+		if _, ok := upstream.AccountModels(acct.UID); ok {
+			return // 已有账号目录可用：判断有依据，不再补
 		}
 	}
-	return false
+	// 所有健康账号都还没目录：补一次。
+	h.discoverMissingCatalogs(tried)
+}
+
+// accountServesModel 报告该账号的目录是否登记了这个模型（目录未知时放行）。
+func (h *Handler) accountServesModel(acct *pool.Account, model string) bool {
+	if acct == nil {
+		return false
+	}
+	models, known := upstream.AccountModels(acct.UID)
+	if !known {
+		return true // 目录未发现：无依据拒绝，交给上游判定
+	}
+	return catalogHas(models, strings.ToLower(upstream.CanonicalModel(model)))
 }
 
 // catalogDeclaresNoImages 报告该模型是否被上游**明确声明**为不支持图片输入
@@ -790,10 +771,6 @@ func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
 //
 // 三态严格区分：「未声明」（nil）不算，因为上游没表态时网关没有依据拒绝请求——
 // 那会把「上游只是没写这个字段」误判成「不能收图」，挡住本来可用的模型。
-//
-// 注意：目录是内存态、重启即空，而本判断只看「已发现」的目录。因此调用方在
-// **可能目录未发现**的场景（如冷启动后第一个带图请求）必须先 h.ensureCatalog()，
-// 否则会把「目录还没拉」当成「模型能收图」，把图原样发上游吃到 406。
 func (h *Handler) catalogDeclaresNoImages(model string) bool {
 	want := strings.ToLower(upstream.CanonicalModel(model))
 	for _, acct := range h.cfg.Pool.Accounts() {
@@ -811,28 +788,6 @@ func (h *Handler) catalogDeclaresNoImages(model string) bool {
 		}
 	}
 	return false
-}
-
-// ensureCatalog 在「所有健康账号的目录都还没发现」时补拉一次目录。
-//
-// 只在目录完全未发现时才触发（进程刚启动、或从未查过 /v1/models），且只补一次：
-// 一旦有任一账号目录已发现，后续判断就有依据，不再补。这样：
-//   - 冷启动后第一个「带图打到纯文本模型」的请求也能正确路由到 analyze（否则图
-//     会原样发上游，吃 InferHub.001001020 not multimodal）；
-//   - 目录已就绪时零额外上游调用（这是热路径，不能被每次请求的目录请求拖慢）。
-//
-// 只读已发现状态，不 reset 已有目录；失败留给上游错误路径处理。
-func (h *Handler) ensureCatalog(tried map[string]bool) {
-	for _, acct := range h.cfg.Pool.Accounts() {
-		if acct == nil || !h.cfg.Pool.Healthy(acct.Name) {
-			continue
-		}
-		if _, ok := upstream.AccountModels(acct.UID); ok {
-			return // 已有账号目录可用：判断有依据，不再补
-		}
-	}
-	// 走到这里说明所有健康账号都还没目录：补一次。
-	h.discoverMissingCatalogs(tried)
 }
 
 // visionModelIDs 返回所有账号目录里声明支持图片的模型 ID（去重、排序）。
@@ -860,6 +815,16 @@ func (h *Handler) visionModelIDs() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// catalogHas 按小写 ID 在模型目录里查模型。
+func catalogHas(models []upstream.ModelInfo, wantLower string) bool {
+	for _, mi := range models {
+		if strings.ToLower(mi.ID) == wantLower {
+			return true
+		}
+	}
+	return false
 }
 
 // catalogHasModel 报告该模型是否出现在某个账号已发现的目录里。
@@ -952,17 +917,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	if req.Model != "" && req.Model != "auto" {
 		model = req.Model
 	}
-	// OpenAI 线格式本身不携带会话 ID；conversationIDFor 用首条 user 消息
-	// 为整条 Agent 工具链固定 CodeArts 内置 chat_id 与账号亲和。V2 接口
-	// 不保留语义上下文，所以每轮仍重放完整 OpenAI 历史。
-	explicitChat := validChatID(req.ConversationID)
-	stickyAcct := ""
-	if explicitChat {
-		h.convMu.Lock()
-		stickyAcct = h.convAcct[req.ConversationID]
-		h.convMu.Unlock()
-	}
-
 	event.Model = safeLogLabel(model)
 
 	// analyzeRouted 表示本次请求改写了图片、注入了 analyze_image 工具。
@@ -985,7 +939,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//      超了只能压小再发，否则拿到的是一句 ModelArts.81029；
 	//   ② analyze 模式（image_handling=analyze）：图片换成占位符 + 注入工具，
 	//      主模型按需调用，视觉模型只承担单图分析（复刻官方 AnalyzeImagePlugin）；
-	//   ③ 识图桥接（image_handling=bridge；本 fork 默认 analyze）：目标模型在本上游是纯文本时，先用 VL 模型把图转述成
+	//   ③ 识图桥接（默认）：目标模型在本上游是纯文本时，先用 VL 模型把图转述成
 	//      文字，否则上游直接回 InferHub.001001020.406（非多模态）。
 	multi := h.liveMultimodal(h.live())
 	if multi.ImageShrinkEnabled && hasImageBlocks(req) {
@@ -1010,6 +964,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 与 bridge 互斥——analyze 后请求里已无图片，bridge 分支自然不触发。
 	// 仅对「目录明确声明不支持图片」的模型生效；未声明时无依据，照原样放行。
 	if multi.ImageHandling == "analyze" && hasImageBlocks(req) && h.catalogDeclaresNoImages(model) {
+		// 目录里没有任何视觉模型时改写只会让主模型调一个注定失败的工具：
+		// 明确回 400，与 passthrough 的口径一致。
 		if h.visionModelForAnalyze() == "" {
 			writeOpenAIError(w, http.StatusBadRequest, "model_not_multimodal",
 				"model "+model+" does not accept image input, and no vision model is available for analyze mode")
@@ -1018,6 +974,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if injected := rewriteImagesForAnalyze(req); len(injected) > 0 {
 			req.Tools = append(req.Tools, injected...)
 			analyzeRouted = true
+			// toolsOn 在注入前算过：客户端本来没带工具时它是 false，聚合路径就不会
+			// 走文本协议兜底，模型把 analyze_image 写进正文（而非原生 tool_calls）时
+			// 调用会被当成普通文本返回。注入后必须重算。
 			toolsOn = toolsActive(req)
 			// 工具列表在图片改写之前就已构建，注入 analyze_image 后必须重建，
 			// 否则主模型根本看不到这个工具。
@@ -1059,15 +1018,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OpenAI 线格式本身不携带会话 ID；conversationIDFor 用首条 user 消息
+	// 为整条 Agent 工具链固定 CodeArts 内置 chat_id 与账号亲和。V2 接口
+	// 不保留语义上下文，所以每轮仍重放完整 OpenAI 历史。
+	explicitChat := validChatID(req.ConversationID)
+	stickyAcct := ""
+	if explicitChat {
+		h.convMu.Lock()
+		stickyAcct = h.convAcct[req.ConversationID]
+		h.convMu.Unlock()
+	}
 	msgs := buildUpstreamMessages(req, toolsOn)
 
 	tried := map[string]bool{}
 	var lastErr error
-	// analyze 模式的工具回灌轮数。主模型调用 analyze_image 时，网关内部执行后
-	// 把结果作为 tool 消息回灌，再请求一次；超过上限就停止，避免死循环。
+	// analyze 模式的工具回灌轮数：主模型调用 analyze_image 时，网关内部执行后
+	// 把结果作为 tool 消息回灌、再请求一次；超过上限就停止，避免死循环。
 	analyzeRounds := 0
 	for {
-		// 每轮工具回灌都重新开始一次完整的账号轮转。
 		answered := false
 		for i := 0; i < h.cfg.MaxRotate; i++ {
 			var acct *pool.Account
@@ -1114,13 +1082,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				queueStarted := time.Now()
 				name, ok := h.cfg.Pool.AcquireLockAny(r.Context(), exclude, slotWaitTimeout)
 				waited := time.Since(queueStarted).Milliseconds()
+				event.QueueMs += waited
 				if !ok {
-					event.QueueMs += waited
 					log.Printf("all accounts at concurrent limit after %dms, giving up", waited)
 					lastErr = errAllBusy
 					break
 				}
-				event.QueueMs += waited
 				next := h.cfg.Pool.Get(name)
 				if next == nil {
 					// 排队期间账号被移除：释放并走下一轮。
@@ -1182,8 +1149,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			var rc io.ReadCloser
 			var serr error
 			authRetried := false
-			// lockHeld 跟踪并发槽位是否仍持有：排队重试会「释放→等待→重获」，
-			// 重获失败时不能再统一释放一次（会减掉别的请求的槽位，造成超发）。
+			// lockHeld 跟踪本请求是否仍持有并发槽位：排队重试会「释放→等待→重获」，
+			// 重获失败时不能再走下面的统一释放（计数器是账号级的、不分持有者，
+			// 多减一次就是把别的在跑请求的槽位还掉，账号随即被超发）。
 			lockHeld := true
 			queueAttempts, queueDelay := h.live().QueueMaxAttempts, h.live().QueueRetryDelay
 			if queueAttempts < 1 {
@@ -1232,11 +1200,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 						return
 					}
 					event.QueueMs += time.Since(queueStarted).Milliseconds()
-					if !h.cfg.Pool.AcquireLockWait(acct.Name, 30*time.Second) {
-						// 拿不回槽位就直接换号；此处不持有锁，不能走下面的
-						// 统一释放（会把别的在跑请求的槽位减掉）。
+					if !h.cfg.Pool.AcquireLockWait(acct.Name, queueReacquireWait) {
 						lastErr = errors.New("concurrent limit: could not reacquire lock after wait")
-						lockHeld = false
 						break
 					}
 					lockHeld = true
@@ -1247,17 +1212,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if serr != nil {
 				if lockHeld {
 					h.cfg.Pool.ReleaseLock(acct.Name) // 释放槽位再换号
-					lockHeld = false
 				}
 				if clientGone(r) {
-					// 调用方自己断开了：上游必然报 context canceled / broken pipe，
-					// 不能记在账号头上（会误冷却整池）。
+					// 调用方自己断开了：上游必然报 context canceled / broken pipe。
 					log.Printf("client disconnected before upstream reply account=%s: %v", acct.Name, serr)
 					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
 					return
 				}
-				if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
-					// 请求形状/长度问题：换账号结果相同，冷却账号还会拖垮整池。
+				if isRequestContentError(serr) {
+					// 请求内容问题（参数/多模态/长度）：换账号结果相同，冷却账号还会拖垮整池。
 					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 						"upstream rejected request params: "+truncateMsg(serr.Error(), errorTextLimit))
 					return
@@ -1265,20 +1228,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				lastErr = serr
 				if h.handleUpstreamError(acct, model, serr) {
 					// 模型级错误：换账号也是同样结果，直接给客户端明确答复。
-					// 请求超出模型能力/形状不对都是 400，其余按「模型对该账号不可用」404。
-					status, code := http.StatusNotFound, "model_not_available"
-					if cls := classifyUpstreamError(serr); cls == classBadRequest || cls == classBudget {
-						status, code = http.StatusBadRequest, "invalid_request"
-					}
-					writeOpenAIError(w, status, code,
+					writeOpenAIError(w, http.StatusNotFound, "model_not_available",
 						"model "+model+" is not available: "+truncateMsg(serr.Error(), errorTextLimit))
 					return
 				}
 				continue
 			}
-			// 真实调用成功：记下「这个账号能用这个模型」，供 /v1/models 过滤参考。
+			// 真实调用成功：记下「这个账号能用这个模型」。
 			markUsable(acct.UID, model)
-
 			w.Header().Set("X-Codearts-Chat-Id", chatID)
 
 			storeChat := func() {
@@ -1292,10 +1249,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.convMu.Unlock()
 				h.saveChats()
 			}
-			// 只有真正改写了图片的请求才需要先聚合（才能判断是否回灌工具结果）。
-			// 纯文本请求必须原样直通流式，否则首字要等到模型生成完才返回。
-			streamDirect := req.Stream && !analyzeRouted
-			if streamDirect {
+			// analyze 模式必须走聚合路径：要先拿到主模型的完整回复才能判断它是否
+			// 调用了 analyze_image、是否需要回灌结果。纯文本请求保持原样直通流式，
+			// 否则首字要等到模型生成完才返回（实测 91s 的 TTFB）。
+			if req.Stream && !analyzeRouted {
 				var usage func(*upstream.RawCompletion) map[string]any
 				if req.IncludeUsage {
 					usage = func(comp *upstream.RawCompletion) map[string]any { return usageEstimate(msgs, comp) }
@@ -1309,13 +1266,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				rc.Close()
 				h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 				if werr != nil {
+					lastUpstreamErr = werr
 					event.Outcome = reqlog.OutcomeStreamError
 					event.Error = werr.Error()
 					log.Printf("chat stream account=%s error: %v", acct.Name, werr)
-					// 只有账号侧故障才累计错误；长度/形状/模型级错误换账号也一样，
+					// 只有账号侧故障才累计错误：请求内容/模型级错误换账号也一样，
 					// 客户端自己断开更不是账号的错。
 					if !clientGone(r) && classifyUpstreamError(werr) == classAccountFault {
-						h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+						h.noteError(acct.Name)
 					}
 				} else {
 					event.OK, event.Outcome = true, reqlog.OutcomeSuccess
@@ -1328,21 +1286,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			rc.Close()
 			h.cfg.Pool.ReleaseLock(acct.Name) // 释放锁
 			if aerr != nil {
-				// 非流式路径原本对任何聚合错误都无条件冷却账号——正是它让一个超长
-				// prompt（ModelArts.81001）把健康账号打进 10 分钟冷却。改为与流式路径
-				// 共用同一套归类。
 				lastUpstreamErr = aerr
-				lastErr = aerr
 				if clientGone(r) {
 					log.Printf("client disconnected during aggregate account=%s: %v", acct.Name, aerr)
 					writeOpenAIError(w, http.StatusServiceUnavailable, "client_cancelled", "client disconnected")
 					return
 				}
-				if cls := classifyUpstreamError(aerr); cls == classBadRequest || cls == classBudget {
+				if isRequestContentError(aerr) {
 					writeOpenAIError(w, http.StatusBadRequest, "invalid_request",
 						"upstream rejected request params: "+truncateMsg(aerr.Error(), errorTextLimit))
 					return
 				}
+				lastErr = aerr
+				// 聚合路径原本对任何错误都无条件冷却账号：一个嵌在 200 SSE 里的
+				// not registered 也会把健康账号打进 10 分钟冷却。与 chat 开流前、
+				// 流式两条路径共用 handleUpstreamError 的同一套处置。
 				if h.handleUpstreamError(acct, model, aerr) {
 					writeOpenAIError(w, http.StatusNotFound, "model_not_available",
 						"model "+model+" is not available: "+truncateMsg(aerr.Error(), errorTextLimit))
@@ -1383,9 +1341,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					storeChat()
 					h.cfg.Pool.NoteSuccess(acct.Name)
 					captureUsage(&event, comp.Usage)
+					// 工具结果已回灌：跳出内层轮转，外层 for 重新发起一次完整请求。
+					tried = map[string]bool{}
 					answered = true
-					tried = map[string]bool{} // 新一轮重新轮转全部账号
-					break                     // 跳出内层轮转，外层 for 重新发起一次完整请求
+					break
 				}
 			}
 			storeChat()
@@ -1393,7 +1352,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			captureUsage(&event, comp.Usage)
 			event.OK, event.Outcome = true, reqlog.OutcomeSuccess
 
-			// 带图改写过的请求：响应已被聚合，客户端要流式时按 SSE chunk 补发。
+			// analyze 改写过的请求响应已被聚合：客户端要流式时按 SSE chunk 补发。
 			if req.Stream {
 				writeAggregatedAsStream(w, model, comp, content, calls, finish, chatID, usageEstimate(msgs, comp))
 				return
@@ -1425,8 +1384,76 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", "all accounts unavailable (disabled/cooldown)")
-		return
 	}
+}
+
+// writeAggregatedAsStream 把已聚合的完整响应按 OpenAI 流式格式补发。
+//
+// analyze 模式必须先聚合才能判断是否要回灌工具结果，所以不能直接直通流式。
+// 这里在拿到最终答复后按 chunk 格式回放：先发 reasoning（若有），再发正文或
+// tool_calls，最后 finish_reason + [DONE]。调用方仍按 SSE 消费。
+func writeAggregatedAsStream(w http.ResponseWriter, model string, comp *upstream.RawCompletion,
+	content string, calls []openAIToolCall, finish, chatID string, usage map[string]any) {
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	if chatID != "" {
+		h.Set("X-Codearts-Chat-Id", chatID)
+	}
+	fl, _ := w.(http.Flusher)
+	id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+
+	write := func(v any) {
+		raw, _ := json.Marshal(v)
+		_, _ = io.WriteString(w, "data: "+string(raw)+"\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	chunk := func(delta map[string]any, fin string) {
+		choice := map[string]any{"index": 0, "delta": delta}
+		if fin != "" {
+			choice["finish_reason"] = fin
+		}
+		write(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
+			"model": model, "choices": []any{choice},
+		})
+	}
+
+	if comp.Reasoning != "" {
+		chunk(map[string]any{"reasoning_content": comp.Reasoning}, "")
+	}
+	if len(calls) > 0 {
+		chunk(map[string]any{"tool_calls": toOpenAIToolCalls(calls)}, "")
+	} else if content != "" {
+		chunk(map[string]any{"content": content}, "")
+	}
+	chunk(map[string]any{}, finish)
+	if usage != nil {
+		write(map[string]any{
+			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
+			"model": model, "choices": []any{}, "usage": usage,
+		})
+	}
+	_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	if fl != nil {
+		fl.Flush()
+	}
+}
+
+// hasImageBlocks 报告请求里是否含图片分片。
+// 上游对纯文本模型收到带图请求会回 InferHub.001001020（且被判为 5xx 冷却账号），
+// 因此这是决定是否改派视觉模型的依据。
+func hasImageBlocks(req *chatRequest) bool {
+	for _, m := range req.Messages {
+		if m.HasImages {
+			return true
+		}
+	}
+	return false
 }
 
 // buildUpstreamMessages 把 OpenAI 消息原生映射为 CodeArts V2 chat-completions。
@@ -1605,86 +1632,20 @@ func buildCompletion(model, reasoning, content string, calls []openAIToolCall, f
 	return resp
 }
 
-// writeAggregatedAsStream 把已聚合的完整响应按 OpenAI 流式格式补发。
-//
-// analyze 模式必须先聚合才能判断是否要回灌工具结果，所以不能直接直通流式。
-// 这里在拿到最终答复后按 chunk 格式回放：先发 reasoning（若有），再发正文或
-// tool_calls，最后 finish_reason + [DONE]。调用方仍按 SSE 消费。
-func writeAggregatedAsStream(w http.ResponseWriter, model string, comp *upstream.RawCompletion,
-	content string, calls []openAIToolCall, finish, chatID string, usage map[string]any) {
-	h := w.Header()
-	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
-	h.Set("Connection", "keep-alive")
-	h.Set("X-Accel-Buffering", "no")
-	if chatID != "" {
-		h.Set("X-Codearts-Chat-Id", chatID)
-	}
-	fl, _ := w.(http.Flusher)
-	id := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
-
-	write := func(v any) {
-		raw, _ := json.Marshal(v)
-		_, _ = io.WriteString(w, "data: "+string(raw)+"\n\n")
-		if fl != nil {
-			fl.Flush()
-		}
-	}
-	chunk := func(delta map[string]any, fin string) {
-		choice := map[string]any{"index": 0, "delta": delta}
-		if fin != "" {
-			choice["finish_reason"] = fin
-		}
-		write(map[string]any{
-			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
-			"model": model, "choices": []any{choice},
-		})
-	}
-
-	if comp.Reasoning != "" {
-		chunk(map[string]any{"reasoning_content": comp.Reasoning}, "")
-	}
-	if len(calls) > 0 {
-		chunk(map[string]any{"tool_calls": toOpenAIToolCalls(calls)}, "")
-	} else if content != "" {
-		chunk(map[string]any{"content": content}, "")
-	}
-	chunk(map[string]any{}, finish)
-	if usage != nil {
-		write(map[string]any{
-			"id": id, "object": "chat.completion.chunk", "created": time.Now().Unix(),
-			"model": model, "choices": []any{}, "usage": usage,
-		})
-	}
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
-	if fl != nil {
-		fl.Flush()
-	}
-}
-
-// clientGone 报告「调用方自己走了」（断连/取消）。这类错误必须不记在账号头上：
-// 上游收到的是 context canceled / broken pipe，冷却整池 10 分钟纯属误伤
-// （上游维护者 2026-11-03 线上实测：客户端超时/回压交替把两个账号互相打进冷却）。
-func clientGone(r *http.Request) bool {
-	return r != nil && r.Context().Err() != nil
-}
-
 // handleUpstreamError 记录错误并决定是否处罚账号。
 // 返回 true 表示这是「模型对这个账号不可用」的模型级错误：调用方应立即结束
 // 轮转并向客户端返回明确错误（换账号也是同样的结果）。
 func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err error) bool {
-	// 长度/形状问题（多模态不支持、参数无效、prompt 超长）：换账号结果相同，
-	// 既不冷却也不轮转，调用方据此回 400。刻意**不** markUnusable——这些模型
-	// 处理纯文本完全正常，标为不可用会让它从 /v1/models 消失、连文本也用不了。
-	if cls := classifyUpstreamError(err); cls == classBadRequest || cls == classBudget {
+	switch classifyUpstreamError(err) {
+	case classRequestContent:
 		return false
-	}
-	// 「模型对这个账号不可用」是模型能力问题，不是账号故障，必须在状态码分支
-	// **之前**判断：not registered 会被嵌入错误包装成 5xx，落到下面的
-	// `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测调用一个未注册模型，
-	// 整个账号被冷却，后续正常请求全部失败。放在 errors.As 之外，让流式路径的
-	// UpstreamError 也能命中。
-	if reason := upstreamUnavailableReason(err); reason != "" {
+	case classModelUnusable:
+		// 「模型对这个账号不可用」是账号能力问题，不是账号故障，必须在状态码分支
+		// **之前**判断：not registered 会被嵌入错误包装成 5xx，落到下面的
+		// `ae.Status >= 500` 就把健康账号冷却 10 分钟——实测调用一个未注册模型，
+		// 整个账号被冷却，后续正常请求全部失败。放在 errors.As 之外，
+		// 流式路径的 UpstreamError 与聚合错误也能命中。
+		reason := upstreamUnavailableReason(err)
 		markUnusable(acct.UID, model, reason)
 		log.Printf("model unusable account=%s model=%s: %s", acct.Name, model, reason)
 		return true
@@ -1701,16 +1662,22 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 			// 不冷却账号——池的并发锁已防止过载，冷却反而误伤后续请求。
 			log.Printf("upstream concurrent limit (transient) account=%s msg=%s", acct.Name, truncateMsg(ae.Message, 80))
 		default:
-			// 5xx 也是「累计到阈值才冷却」：实测 ModelArts.81104（Conversion）
-			// 是间歇性的——同一请求重发即成功，若像旧版那样一个 5xx 立刻冷却
-			// 10 分钟，一次抖动就会打瘫整池。真正的账号故障会连续失败，
-			// 照样会被 ErrThreshold 拦下。
-			h.cfg.Pool.NoteError(acct.Name, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+			// 5xx 也是「累计到阈值才冷却」：实测 ModelArts.81104（Conversion failed）
+			// 是间歇性的——同一请求重发即成功。一个 5xx 就冷却 10 分钟的话，
+			// 一次抖动就能打瘫整池；真正的账号故障会连续失败，照样被阈值拦下。
+			h.noteError(acct.Name)
 		}
 		return false
 	}
 	h.noteError(acct.Name)
 	return false
+}
+
+// clientGone 报告「调用方自己走了」（断连/取消）。这类错误必须不记在账号头上：
+// 上游收到的是 context canceled / broken pipe，冷却整池 10 分钟纯属误伤
+// （2026-11-03 线上实测：客户端超时/回压交替把两个账号互相打进冷却）。
+func clientGone(r *http.Request) bool {
+	return r != nil && r.Context().Err() != nil
 }
 
 // isConcurrentLimitError 判断是否为上游并发会话上限错误（瞬时、可重试）。

@@ -37,6 +37,8 @@ const (
 	analyzeMaxRounds = 4
 	// analyzeImageTTL 图片在内存里保留多久。只服务同一次对话的后续轮次。
 	analyzeImageTTL = 30 * time.Minute
+	// visionSlotWait 识图子请求等账号并发槽位的上限。
+	visionSlotWait = 30 * time.Second
 	// analyzeVisionAttempts 单张图片识图的总尝试次数（含 81104 间歇失败与并发排队重试）。
 	analyzeVisionAttempts = 4
 )

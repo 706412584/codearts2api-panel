@@ -291,9 +291,8 @@ func analyzeTestHandler(t *testing.T, endpoint string) (*Handler, *pool.Pool) {
 	}), p
 }
 
-// 识图子请求必须固定复用每账号一个 chat_id：上游按 chat_id 计并发会话（每账号 3 个），
-// 每次工具调用新建 id 会在第 2、3 次就撞满，把并发上限误报成"图片识别失败"。
-// （源自上游 PR #10，适配本 fork。）
+// 识图子请求必须复用固定的会话 id：上游每账号只允许 3 个并发会话，
+// 每次工具调用都新建 chat_id 会很快把槽位占满，之后一律 TM.00001041。
 func TestAnalyzeImageReusesVisionSessionID(t *testing.T) {
 	var mainCalls atomic.Int32
 	var chatIDs []string
@@ -360,10 +359,11 @@ func TestAnalyzeImageReusesVisionSessionID(t *testing.T) {
 }
 
 // 撞上「并发会话数已达上限」时必须**让出槽位、等一下**再重试，而不是立刻盲目重发
-// （上游会话槽位不会因为重发就变空，盲重试只会连续撞墙，把并发上限误报成"图片识别失败"）。
+// （上游的会话槽位不会因为我们重发就变空，盲重试只会连续撞墙，把并发上限误报成
+// "图片识别失败"回灌给主模型）。
 //
-// 只断言"重试后成功了"是假断言——盲目重试也会成功。这里量的是「第一次撞墙」到
-// 「第二次调用」之间的间隔：真的让出并等待，就必须 ≥ 等待时长。（源自上游 PR #10。）
+// 判据要判「机制」：只断言"重试后成功了"是假断言 —— 盲目重试也会成功。
+// 这里量的是「第一次撞墙」到「第二次调用」之间的间隔：真的让出并等待，就必须 ≥ 等待时长。
 func TestAnalyzeImageWaitsAfterConcurrentLimit(t *testing.T) {
 	oldDelay := visionQueueRetryDelay
 	visionQueueRetryDelay = 300 * time.Millisecond
@@ -440,5 +440,77 @@ func TestAnalyzeImageWaitsAfterConcurrentLimit(t *testing.T) {
 		if st["active_concurrent"] != 0 {
 			t.Fatalf("识图结束后槽位没还：%#v", st)
 		}
+	}
+}
+
+// 客户端没带 tools 时，注入 analyze_image 之后 toolsOn 必须重算：否则模型把工具调用
+// 写进正文（```tool_call 围栏，部分模型的常见输出）时，聚合路径不会做文本协议兜底，
+// 调用原样当成答复返回，图片永远看不到。
+func TestAnalyzeModeParsesTextualToolCallWithoutClientTools(t *testing.T) {
+	var mainCalls, visionCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		_ = json.Unmarshal(body, &payload)
+		model, _ := payload["model"].(string)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if strings.Contains(model, "VL") {
+			visionCalls.Add(1)
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		if mainCalls.Add(1) == 1 {
+			args, _ := json.Marshal(map[string]any{"imageId": []string{extractImageID(string(body))}, "task": "颜色"})
+			call, _ := json.Marshal(map[string]any{"name": analyzeImageToolName, "arguments": json.RawMessage(args)})
+			text, _ := json.Marshal("```tool_call\n" + string(call) + "\n```")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":"+string(text)+"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"这是一个红色方块\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	h, _ := analyzeTestHandler(t, backend.URL)
+	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
+		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
+		{ID: "Qwen3-VL-235B", SupportsImages: boolPtr(true)},
+	})
+	payload := `{"model":"deepseek-v4.1-flash","stream":false,"max_tokens":64,
+		"messages":[{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image_url","image_url":{"url":"` + tinyPNG + `"}}]}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+
+	if visionCalls.Load() != 1 || mainCalls.Load() != 2 {
+		t.Fatalf("文本形态的 analyze_image 调用应被执行并回灌：main=%d vision=%d body=%s",
+			mainCalls.Load(), visionCalls.Load(), rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "tool_call") {
+		t.Fatalf("工具调用原文不应作为答复泄漏给客户端：%s", rec.Body.String())
+	}
+}
+
+// 目录里没有任何视觉模型时，analyze 不改写图片（改写只会让主模型调用一个注定失败
+// 的工具），而是明确回 400，且不联系上游。
+func TestAnalyzeModeRejectsWhenNoVisionModel(t *testing.T) {
+	var attempts atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+	}))
+	defer backend.Close()
+
+	h, _ := analyzeTestHandler(t, backend.URL)
+	upstream.SetAccountModels("vision-a", []upstream.ModelInfo{
+		{ID: "deepseek-v4.1-flash", SupportsImages: boolPtr(false)},
+	})
+	payload := `{"model":"deepseek-v4.1-flash","stream":false,"max_tokens":16,
+		"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + tinyPNG + `"}}]}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(payload)))
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "model_not_multimodal") {
+		t.Fatalf("应回 400 model_not_multimodal，got %d %s", rec.Code, rec.Body.String())
+	}
+	if attempts.Load() != 0 {
+		t.Errorf("不应联系上游，实际 %d 次", attempts.Load())
 	}
 }

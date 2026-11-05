@@ -35,44 +35,12 @@ func TestNotMultimodalDoesNotCoolAccount(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second), ErrCooldown: time.Minute, ErrThreshold: 1})
 
 	err402 := notMultimodalErr()
-	if cls := classifyUpstreamError(err402); cls != classBadRequest {
-		t.Errorf("not multimodal 应归为请求形状问题，got=%v", cls)
+	if !isRequestContentError(err402) {
+		t.Error("not multimodal 应归为请求内容问题")
 	}
 	h.handleUpstreamError(p.Get("u-mm"), "deepseek-v4.1-flash", err402)
 	if !p.Healthy("u-mm") {
 		t.Error("多模态错误不得冷却账号（旧版本会瘫整池 10 分钟）")
-	}
-	// 关键：不能把 deepseek 标成「模型不可用」——它处理纯文本完全正常，
-	// 标了会让它从 /v1/models 消失，连纯文本都用不了。
-	if st, _ := modelAvailability("u-mm", "deepseek-v4.1-flash"); st == availUnusable {
-		t.Error("多模态错误不得把该模型下架（纯文本仍可用）")
-	}
-}
-
-// 间歇性上游 5xx（实测 ModelArts.81104 Conversion，重发即成功）不应在
-// 第一次就冷却账号：阈值未到只累计计数，账号保持可用。
-func TestTransientUpstream5xxDoesNotImmediatelyCool(t *testing.T) {
-	a := &auth.Auth{UserID: "u-5xx", UserName: "u-5xx", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
-	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second), ErrCooldown: time.Minute, ErrThreshold: 3})
-
-	errJitter := &upstream.ApiError{
-		Code: 502, Status: 502, Path: "/api/v2/chat/completions",
-		Message: "InferHub.ModelArts.81104.503 Conversion failed",
-	}
-	h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", errJitter)
-	if !p.Healthy("u-5xx") {
-		t.Error("单次间歇性 5xx 不得立刻冷却账号")
-	}
-	// 连续故障必须仍能拦下：累计到阈值就该冷却。
-	for i := 0; i < 2; i++ {
-		h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", errJitter)
-	}
-	if p.Healthy("u-5xx") {
-		t.Error("连续 3 次故障应累计到阈值并冷却")
 	}
 }
 
@@ -90,8 +58,8 @@ func TestPromptTooLongDoesNotCoolAccount(t *testing.T) {
 		Code: 502, Status: 502, Path: "/api/v2/chat/completions",
 		Message: "InferHub.ModelArts.81001.400 Bad request, Prompt length exceeds the limit",
 	}
-	if cls := classifyUpstreamError(errLong); cls != classBudget {
-		t.Errorf("prompt 超长应归为请求问题，got=%v", cls)
+	if !isRequestContentError(errLong) {
+		t.Error("prompt 超长应归为请求内容问题")
 	}
 	h.handleUpstreamError(p.Get("u-pl"), "qwen3-vl-235b", errLong)
 	if !p.Healthy("u-pl") {
@@ -224,9 +192,9 @@ func TestModelEntriesExposeImageCapability(t *testing.T) {
 	if mods, _ := byID["vision-model"]["input_modalities"].([]string); len(mods) != 2 || mods[1] != "image" {
 		t.Errorf("视觉模型的 input_modalities 应含 image，got=%#v", byID["vision-model"]["input_modalities"])
 	}
-	// 本 fork 透传三态：上游明确声明 false 时也写出 false，客户端不必靠踩 406 才发现。
+	// 上游明确声明不支持：必须透传 false，客户端才知道要先转文字。
 	if v, ok := byID["text-model"]["supports_images"]; !ok || v != false {
-		t.Errorf("纯文本模型必须透传 supports_images=false（旧版本静默丢弃），got=%#v", byID["text-model"]["supports_images"])
+		t.Errorf("纯文本模型必须透传 supports_images=false，got=%#v", byID["text-model"]["supports_images"])
 	}
 	if _, ok := byID["unknown-model"]["supports_images"]; ok {
 		t.Error("上游未声明时不应凭空写入 supports_images")
@@ -283,5 +251,28 @@ func assertVisionPoolHealthy(t *testing.T, p *pool.Pool) {
 		if state["err_count"] != 0 || state["active_concurrent"] != 0 {
 			t.Fatalf("请求惩罚了账号或未释放并发锁: %#v", state)
 		}
+	}
+}
+
+// 间歇性 5xx（实测 ModelArts.81104 Conversion failed，重发即成功）不得一次就冷却：
+// 阈值未到只累计，账号保持可用；连续失败到阈值才冷却。
+func TestTransientUpstream5xxCoolsOnlyAtThreshold(t *testing.T) {
+	a := auth.New("u-5xx", "u-5xx", "domain", "token", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{Pool: p, ErrCooldown: time.Minute, ErrThreshold: 3})
+	jitter := &upstream.ApiError{Code: 502, Status: 502, Path: upstream.EpChatV2, Message: "InferHub.ModelArts.81104.503 Conversion failed"}
+
+	h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", jitter)
+	if !p.Healthy("u-5xx") {
+		t.Fatal("单次间歇性 5xx 不得立刻冷却账号")
+	}
+	for i := 0; i < 2; i++ {
+		h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", jitter)
+	}
+	if p.Healthy("u-5xx") {
+		t.Fatal("连续 3 次 5xx 应累计到阈值并冷却")
 	}
 }

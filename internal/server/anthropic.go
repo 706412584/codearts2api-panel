@@ -74,7 +74,7 @@ func writeAnthropicError(w http.ResponseWriter, status int, errType, msg string)
 
 // anthropicMessages POST /v1/messages
 func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
-	limit := h.cfg.MaxBodyBytes
+	limit := h.liveMultimodal(h.live()).MaxBodyBytes
 	if limit <= 0 {
 		limit = defaultMaxBodyBytes
 	}
@@ -270,7 +270,7 @@ func (h *Handler) relayAnthropicStream(w http.ResponseWriter, pr *io.PipeReader,
 // 上游没有 token 计数接口，故本地估算。Claude Code 用它做上下文预算，估值有偏差
 // 可接受，但绝不能报错——该端点失败会让客户端提前压缩上下文。
 func (h *Handler) countTokens(w http.ResponseWriter, r *http.Request) {
-	limit := h.cfg.MaxBodyBytes
+	limit := h.liveMultimodal(h.live()).MaxBodyBytes
 	if limit <= 0 {
 		limit = defaultMaxBodyBytes
 	}

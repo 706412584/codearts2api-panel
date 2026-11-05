@@ -54,18 +54,6 @@ func toolsActive(req *chatRequest) bool {
 	return len(normalizeTools(req.Tools)) > 0 && req.ToolChoice.Mode != "none"
 }
 
-// hasImageBlocks 报告请求里是否含图片分片。
-// 上游对纯文本模型收到带图请求会回 InferHub.001001020（且被判为 5xx 冷却账号），
-// 因此这是决定是否改派视觉模型的依据。
-func hasImageBlocks(req *chatRequest) bool {
-	for _, m := range req.Messages {
-		if m.HasImages {
-			return true
-		}
-	}
-	return false
-}
-
 // buildToolsPrompt 生成注入提示词的工具说明块。
 func buildToolsPrompt(specs []toolSpec, choice toolChoiceOpenAI) string {
 	var sb strings.Builder

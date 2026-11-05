@@ -50,8 +50,8 @@ func TestAccountStrategyConfigAndLiveSnapshot(t *testing.T) {
 	c := Default()
 	c.AccountStrategy = "random"
 	changes := c.normalize()
-	if c.AccountStrategy != "credits" || len(changes) != 1 {
-		t.Fatalf("invalid strategy must normalize to the fork default credits: %q / %v", c.AccountStrategy, changes)
+	if c.AccountStrategy != "first" || len(changes) != 1 {
+		t.Fatalf("invalid strategy must normalize to first: %q / %v", c.AccountStrategy, changes)
 	}
 }
 

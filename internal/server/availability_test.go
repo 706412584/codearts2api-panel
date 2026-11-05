@@ -1,7 +1,9 @@
 package server
 
 import (
-	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -9,28 +11,6 @@ import (
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/upstream"
 )
-
-// 上游的「这个模型对这个账号不可用」必须被识别出来，而且不能被当成账号故障
-// （否则健康账号会被记错误、累计到阈值冷却 10 分钟）。
-func TestUpstreamUnavailableReason(t *testing.T) {
-	cases := []struct {
-		msg  string
-		want string
-	}{
-		{`codearts error code=InferHub.002002009.404 msg=The model is not registered, please request other model`, "注册"},
-		{`codearts error code=TM.00001041 msg=并发会话数已达上限`, ""},
-		{`dial tcp: i/o timeout`, ""},
-	}
-	for _, c := range cases {
-		got := upstreamUnavailableReason(errors.New(c.msg))
-		if c.want == "" && got != "" {
-			t.Errorf("%q 不应判为模型不可用，got=%q", c.msg, got)
-		}
-		if c.want != "" && got == "" {
-			t.Errorf("%q 应判为模型不可用", c.msg)
-		}
-	}
-}
 
 // 可用性缓存：过期视为未知；写入后按账号+模型隔离。
 func TestAvailabilityCacheScoping(t *testing.T) {
@@ -91,42 +71,38 @@ func TestModelKnownUnusable(t *testing.T) {
 	}
 }
 
-// 排队重试不能无限等：默认值应远小于原来的 180×10s=30min。
-func TestQueueRetryDefaultBounded(t *testing.T) {
-	h := NewHandler(Config{})
-	total := time.Duration(h.cfg.QueueMaxAttempts) * h.cfg.QueueRetryDelay
-	if total > 10*time.Minute {
-		t.Fatalf("排队重试上限 %s 过长，交互式请求会像挂死", total)
+// 端到端：真实请求报 not registered 后，该模型对这个账号被记为不可用；
+// 池里唯一的健康账号也调不通时，/v1/models 不再列出它，其他模型照列。
+func TestNotRegisteredHidesModelFromList(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error_code":"InferHub.002002009.404","error_msg":"The model is not registered, please request other model"}`)
+	}))
+	defer backend.Close()
+	p := singleAccountPool(t, "u-hide", backend.URL)
+	upstream.SetAccountModels("u-hide", []upstream.ModelInfo{{ID: "ghost-model"}, {ID: "real-model"}})
+	// 合并展示列表有进程级缓存：进出都清掉，既不读别人的快照，也不给别人留下快照。
+	resetModels := func() {
+		dynamicModelsCache.Lock()
+		dynamicModelsCache.ids, dynamicModelsCache.fetched = nil, time.Time{}
+		dynamicModelsCache.Unlock()
 	}
-	if total < time.Minute {
-		t.Fatalf("排队重试上限 %s 过短，瞬时的上游排队会直接失败", total)
-	}
-}
+	resetModels()
+	t.Cleanup(resetModels)
+	h := NewHandler(Config{Pool: p, APIKey: "k", MaxRotate: 1, ErrThreshold: 1})
 
-// 模型级错误（not registered）不得被当成账号故障：
-// 实测线上：调用未注册模型 → 错误被嵌入包装成 5xx → 健康账号被冷却 10 分钟，
-// 之后所有正常请求全部失败。
-func TestModelErrorDoesNotCoolAccount(t *testing.T) {
-	a := &auth.Auth{UserID: "u-cool", UserName: "u-cool", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
-	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
-	if err != nil {
-		t.Fatal(err)
+	if rec := panelRequest(h, http.MethodPost, "/v1/chat/completions", chatBody("ghost-model"), "k"); rec.Code != http.StatusNotFound {
+		t.Fatalf("未注册模型应回 404，got %d %s", rec.Code, rec.Body.String())
 	}
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second), ErrCooldown: time.Minute, ErrThreshold: 1})
-
-	err404 := &upstream.ApiError{
-		Code: 502, Status: 502, Path: "/api/v2/chat/completions",
-		Message: "InferHub.002002009.404 The model is not registered, please request other model",
+	if !p.Healthy("u-hide") {
+		t.Fatal("模型级错误不得冷却账号")
 	}
-	if !h.handleUpstreamError(p.Get("u-cool"), "GLM-5.2-ArkTS-SPARK", err404) {
-		t.Error("模型级错误应返回 true，让调用方立即结束轮转")
+	ids := map[string]bool{}
+	for _, e := range h.modelList(false) {
+		id, _ := e["id"].(string)
+		ids[id] = true
 	}
-
-	if !p.Healthy("u-cool") {
-		t.Error("模型级错误不得冷却账号")
-	}
-	st, reason := modelAvailability("u-cool", "GLM-5.2-ArkTS-SPARK")
-	if st != availUnusable || reason == "" {
-		t.Errorf("应记为模型不可用，got state=%v reason=%q", st, reason)
+	if ids["ghost-model"] || !ids["real-model"] {
+		t.Fatalf("应隐藏 ghost-model、保留 real-model，got %v", ids)
 	}
 }

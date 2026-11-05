@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -140,5 +141,47 @@ func TestChatSendsAccountCatalogCase(t *testing.T) {
 	mu.Unlock()
 	if got != "case-probe-wire" {
 		t.Fatalf("上游收到的 model = %q，应为该账号注册的 case-probe-wire", got)
+	}
+}
+
+func TestUpstreamUnavailableReason(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want string
+	}{
+		{`codearts error code=InferHub.002002009.404 msg=The model is not registered, please request other model`, "注册"},
+		{`codearts error code=TM.00001041 msg=并发会话数已达上限`, ""},
+		{`dial tcp: i/o timeout`, ""},
+	}
+	for _, c := range cases {
+		got := upstreamUnavailableReason(errors.New(c.msg))
+		if c.want == "" && got != "" {
+			t.Errorf("%q 不应判为模型不可用，got=%q", c.msg, got)
+		}
+		if c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("%q 应判为模型不可用，got=%q", c.msg, got)
+		}
+	}
+}
+
+// 模型级错误（not registered）不得被当成账号故障：
+// 错误可能被上游包装成 5xx，但健康账号不应因此被冷却。
+func TestModelErrorDoesNotCoolAccount(t *testing.T) {
+	a := &auth.Auth{UserID: "u-cool", UserName: "u-cool", AccessKeyID: "AK", SecretAccessKey: "SK", CloudDragonTok: "ST"}
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second), ErrCooldown: time.Minute, ErrThreshold: 1})
+
+	err404 := &upstream.ApiError{
+		Code: 502, Status: 502, Path: "/api/v2/chat/completions",
+		Message: "InferHub.002002009.404 The model is not registered, please request other model",
+	}
+	if !h.handleUpstreamError(p.Get("u-cool"), "GLM-5.2-ArkTS-SPARK", err404) {
+		t.Error("模型级错误应返回 true，让调用方立即结束轮转")
+	}
+	if !p.Healthy("u-cool") {
+		t.Error("模型级错误不得冷却账号")
 	}
 }

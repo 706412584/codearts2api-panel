@@ -117,7 +117,7 @@ func visionTestHandler(t *testing.T, endpoint string, policy *VisionBridgePolicy
 	dynamicModelsCache.Unlock()
 	return NewHandler(Config{
 		Pool: p, DefaultModel: testTextModel, MaxRotate: 2, ErrThreshold: 1,
-		VisionBridge: policy, ImageHandling: "bridge", // 本 fork 默认 analyze，桥接需显式开启
+		VisionBridge: policy,
 	})
 }
 
