@@ -48,6 +48,24 @@ func TestAdminKeySeparatesManagementFromInference(t *testing.T) {
 	}
 }
 
+func TestAdminOverviewIncludesCreditAndStickyTotals(t *testing.T) {
+	a := auth.New("overview-account", "n", "d", "tok", "ak", "sk", "", "", "")
+	p, _ := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	h := NewHandler(Config{Pool: p, AdminKey: "admin"})
+	h.convAcct["conversation-1"] = a.UserID
+	h.convAcct["conversation-2"] = a.UserID
+	w := panelRequest(h, "GET", "/admin/api/overview", "", "admin")
+	var body struct {
+		Stats struct {
+			Credits float64 `json:"credits"`
+			Sticky  int     `json:"sticky"`
+		} `json:"stats"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || body.Stats.Sticky != 2 {
+		t.Fatalf("overview stats = %+v, err=%v", body.Stats, err)
+	}
+}
+
 func TestImportBatchValidationPersistenceAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	p, _ := pool.New(nil, pool.Config{}, "")

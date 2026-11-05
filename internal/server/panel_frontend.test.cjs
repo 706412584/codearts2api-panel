@@ -31,7 +31,7 @@ for (const match of html.matchAll(/<(\/?)([\w-]+)\b([^>]*)>/g)) {
 const selector = s => s === '.view' ? all.filter(e => e.classes.has('view')) : /^\[data-([\w-]+)\]$/.test(s) ? all.filter(e => Object.hasOwn(e.dataset, s.slice(6, -1).replace(/-([a-z])/g, (_, c) => c.toUpperCase()))) : [];
 const storage = () => { const values = new Map(); return { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v), removeItem: k => values.delete(k) }; };
 const account = { uid: 'u1', nickname: '<img src=x onerror=alert(1)>', note: '13800001111 <b>&</b>', credit_balance: null, active_concurrent: 0, max_concurrent: 1, expires_at: '2027-01-01T00:00:00Z' };
-const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0 }, accounts: [account] };
+const overview = { uptime_sec: 9000, started_at: '2026-01-01T00:00:00Z', stats: { total: 1, healthy: 1, cooling: 0, disabled: 0, credits: 1234.5, sticky: 2 }, accounts: [account] };
 const configFixture = {
  listen: ':7866', admin_key: 'server-secret', api_key: 'api-secret', max_body_mb: 48,
  image_shrink: { enabled: true, trigger_body_mb: 6, target_image_mb: 3, target_total_mb: 7, max_dimension: 1600, quality: 78, extension: { preserved: 'image' } },
@@ -67,6 +67,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
  ids.get('loginKey').value = 'test-admin-secret';
  await ids.get('loginForm').onsubmit({ preventDefault() {} }); await tick();
  assert(!ids.get('loginDialog').open); assert.equal(ids.get('loginKey').value, '');
+ assert.equal(ids.get('statCredits').textContent, '1,234.5', '总套餐积分应使用 overview 合计');
+ assert.equal(ids.get('statSticky').textContent, '2', '粘性会话应显示当前绑定数');
  assert(ids.get('accountsBody').innerHTML.includes('&lt;img')); assert(!ids.get('accountsBody').innerHTML.includes('<img')); assert(ids.get('accountsBody').innerHTML.includes('未知'));
  // 备注显示在账户名下，且按 HTML 转义（与昵称同一套 esc）。
  assert(ids.get('accountsBody').innerHTML.includes('account-note'), 'note must render its own line');

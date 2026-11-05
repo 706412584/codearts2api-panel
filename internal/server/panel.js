@@ -119,7 +119,7 @@
     }
     accounts = data.accounts || [];
     const stats = data.stats || {};
-    [['statTotal', 'total'], ['statHealthy', 'healthy'], ['statCooling', 'cooling'], ['statDisabled', 'disabled']].forEach(([id, name]) => { $(id).textContent = number(stats[name]); });
+    [['statTotal', 'total'], ['statHealthy', 'healthy'], ['statCooling', 'cooling'], ['statDisabled', 'disabled'], ['statCredits', 'credits'], ['statSticky', 'sticky']].forEach(([id, name]) => { $(id).textContent = number(stats[name]); });
     $('accountCount').textContent = number(accounts.length);
     $('connection').textContent = stats.healthy > 0 ? '服务正常' : accounts.length ? '暂无可用账户' : '等待添加账户';
     $('connection').classList.add('online');
@@ -665,7 +665,7 @@
     authEpoch++; refreshID++; adminKey = ''; authenticated = false; writeStorage(sessionStorage, KEY_STORAGE, ''); stopOAuth();
     accounts = []; models = []; runtimeLogs = []; serverStartedAt = 0; $('uptime').textContent = '—';
     $('configEditor').value = ''; $('configEditor').dataset.dirty = 'false'; $('newAPIKey').value = ''; $('newAdminKey').value = '';
-    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
+    ['statTotal', 'statHealthy', 'statCooling', 'statDisabled', 'statCredits', 'statSticky', 'usageCompleted', 'usageSuccess', 'usageDuration', 'usageTTFT', 'usageCacheHit', 'usagePromptTokens', 'usageCompletionTokens', 'usageTokens'].forEach(id => { $(id).textContent = '—'; });
     renderAccounts(); renderModels(); renderRuntimeLogs(); renderRequestLogs({}); renderUsage({});
     $('pageLoading').hidden = true; $('pageError').hidden = true; $('refreshButton').disabled = false; showLogin();
   };

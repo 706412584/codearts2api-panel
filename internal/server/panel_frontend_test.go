@@ -47,6 +47,14 @@ func TestPanelEntrypointsAndAssets(t *testing.T) {
 }
 
 func TestPanelMarkupMatchesScriptBindings(t *testing.T) {
+	cards := regexp.MustCompile(`<div class="stat">`).FindAllString(regexp.MustCompile(`(?s)<div class="stats-grid accounts-stats">(.*?)</section>`).FindStringSubmatch(panelHTMLRaw)[1], -1)
+	if len(cards) != 6 {
+		t.Fatalf("account stat cards = %d, want 6", len(cards))
+	}
+	if !strings.Contains(panelCSS, ".accounts-stats{grid-template-columns:repeat(6,minmax(0,1fr))}") ||
+		!strings.Contains(panelCSS, ".stats-grid.usage,.accounts-stats{grid-template-columns:repeat(2,minmax(0,1fr))}") {
+		t.Fatal("account stats must use six columns and fall back to two columns")
+	}
 	ids := make(map[string]bool)
 	for _, m := range regexp.MustCompile(`\bid="([^"]+)"`).FindAllStringSubmatch(panelHTMLRaw, -1) {
 		if ids[m[1]] {
