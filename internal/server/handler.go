@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/balance"
 	"codearts2api-panel/internal/imgshrink"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
@@ -38,6 +39,7 @@ type Config struct {
 	AdminKey     string
 	Settings     SettingsStore
 	RequestLog   *reqlog.Recorder
+	Balance      *balance.Recorder
 	MaxRotate    int
 	SoftCooldown time.Duration
 	ErrThreshold int
@@ -250,6 +252,7 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("GET /admin/api/overview", h.withAdminAuth(h.adminOverview))
 	h.mux.HandleFunc("GET /admin/api/models", h.withAdminAuth(h.models))
 	h.mux.HandleFunc("GET /admin/api/usage", h.withAdminAuth(h.adminUsage))
+	h.mux.HandleFunc("GET /admin/api/balance_history", h.withAdminAuth(h.adminBalanceHistory))
 	h.mux.HandleFunc("GET /admin/api/logs", h.withAdminAuth(h.adminLogs))
 	h.mux.HandleFunc("GET /admin/api/config", h.withAdminAuth(h.adminConfigGet))
 	h.mux.HandleFunc("PUT /admin/api/config", h.withAdminAuth(h.adminConfigPut))

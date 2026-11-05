@@ -32,7 +32,7 @@ func panelRequest(h http.Handler, method, path, body, key string) *httptest.Resp
 func TestAdminKeySeparatesManagementFromInference(t *testing.T) {
 	p, _ := pool.New(nil, pool.Config{}, "")
 	h := NewHandler(Config{Pool: p, APIKey: "inference-key", AdminKey: "management-key"})
-	for _, path := range []string{"/admin/api/overview", "/admin/api/models", "/admin/api/usage", "/admin/api/logs", "/admin/api/config"} {
+	for _, path := range []string{"/admin/api/overview", "/admin/api/models", "/admin/api/usage", "/admin/api/balance_history", "/admin/api/logs", "/admin/api/config"} {
 		if w := panelRequest(h, "GET", path, "", "inference-key"); w.Code != 401 {
 			t.Fatalf("%s leaked to API key: %d", path, w.Code)
 		}

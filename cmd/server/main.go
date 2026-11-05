@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codearts2api-panel/internal/auth"
+	"codearts2api-panel/internal/balance"
 	"codearts2api-panel/internal/livecfg"
 	"codearts2api-panel/internal/pool"
 	"codearts2api-panel/internal/reqlog"
@@ -46,7 +47,14 @@ func main() {
 	if cfg.StateFile != "" {
 		_ = os.MkdirAll(filepath.Dir(cfg.StateFile), 0o700)
 	}
-	p, err := pool.New(auths, cfg.ToPoolConfig(), cfg.StateFile)
+	balPath := filepath.Join(filepath.Dir(cfg.StateFile), "balance_history.json")
+	bal := balance.New(balPath)
+	bal.Start()
+	defer bal.Stop()
+	log.Printf("balance history enabled: %s (one sample per account every %s)", balPath, balance.Interval())
+	poolCfg := cfg.ToPoolConfig()
+	poolCfg.BalanceObserver = bal
+	p, err := pool.New(auths, poolCfg, cfg.StateFile)
 	if err != nil {
 		log.Fatalf("build pool: %v", err)
 	}
@@ -81,6 +89,7 @@ func main() {
 		Settings:     settings,
 		Live:         live,
 		RequestLog:   requestLog,
+		Balance:      bal,
 		MaxRotate:    3,
 		SoftCooldown: cfg.SoftRateDur,
 		ErrThreshold: cfg.Cooldown.ErrThresh,

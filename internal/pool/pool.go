@@ -72,6 +72,7 @@ type Config struct {
 	LoginConfig      upstream.LoginConfig // OAuth/refresh 端点；零值使用生产默认
 	CheckinClient    CheckinClient        // 可选活动客户端；nil 使用账号 Client
 	BalanceClient    BalanceClient
+	BalanceObserver BalanceObserver // 可选余额趋势采样；仅接收成功且非 nil 的结果
 }
 
 // Pool 账号池。

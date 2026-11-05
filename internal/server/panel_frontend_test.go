@@ -67,7 +67,7 @@ func TestPanelMarkupMatchesScriptBindings(t *testing.T) {
 			t.Errorf("script binding has no element: %s", m[1])
 		}
 	}
-	for _, name := range []string{"accounts", "models", "usage", "config", "logs"} {
+	for _, name := range []string{"accounts", "balance", "models", "usage", "config", "logs"} {
 		if !ids["view-"+name] {
 			t.Errorf("missing view: %s", name)
 		}

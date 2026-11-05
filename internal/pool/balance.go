@@ -12,6 +12,11 @@ type BalanceClient interface {
 	FetchAccountInfo(context.Context, upstream.SignCredential) (*upstream.CreditBalance, error)
 }
 
+// BalanceObserver 接收每次真实查询成功的新鲜余额；手动与后台刷新共用此入口。
+type BalanceObserver interface {
+	Add(uid string, credits float64) bool
+}
+
 type BalanceResult struct {
 	UID            string                   `json:"uid"`
 	OK             bool                     `json:"ok"`
@@ -72,6 +77,10 @@ func (p *Pool) RefreshBalance(ctx context.Context, uid string) (BalanceResult, e
 	out := BalanceResult{UID: uid, OK: creditErr == nil, CreditBalance: a.creditBalance, UpdatedAt: optionalTime(a.balanceUpdatedAt), CreditError: a.creditBalanceError}
 	a.mu.Unlock()
 	p.saveState()
+	// nil 余额表示上游没有 CREDIT 指标，是未知而不是 0；失败时 out 里的缓存也不能采样。
+	if creditErr == nil && credit != nil && p.cfg.BalanceObserver != nil {
+		p.cfg.BalanceObserver.Add(uid, credit.Total)
+	}
 	return out, creditErr
 }
 
