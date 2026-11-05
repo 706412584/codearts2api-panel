@@ -253,3 +253,26 @@ func assertVisionPoolHealthy(t *testing.T, p *pool.Pool) {
 		}
 	}
 }
+
+// 间歇性 5xx（实测 ModelArts.81104 Conversion failed，重发即成功）不得一次就冷却：
+// 阈值未到只累计，账号保持可用；连续失败到阈值才冷却。
+func TestTransientUpstream5xxCoolsOnlyAtThreshold(t *testing.T) {
+	a := auth.New("u-5xx", "u-5xx", "domain", "token", "ak", "sk", time.Now().Add(time.Hour).Format(time.RFC3339), "", "")
+	p, err := pool.New([]*auth.Auth{a}, pool.Config{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{Pool: p, ErrCooldown: time.Minute, ErrThreshold: 3})
+	jitter := &upstream.ApiError{Code: 502, Status: 502, Path: upstream.EpChatV2, Message: "InferHub.ModelArts.81104.503 Conversion failed"}
+
+	h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", jitter)
+	if !p.Healthy("u-5xx") {
+		t.Fatal("单次间歇性 5xx 不得立刻冷却账号")
+	}
+	for i := 0; i < 2; i++ {
+		h.handleUpstreamError(p.Get("u-5xx"), "qwen3-vl-235b", jitter)
+	}
+	if p.Healthy("u-5xx") {
+		t.Fatal("连续 3 次 5xx 应累计到阈值并冷却")
+	}
+}

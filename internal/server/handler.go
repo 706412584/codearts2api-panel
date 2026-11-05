@@ -127,11 +127,7 @@ func (h *Handler) noteError(name string) {
 	h.cfg.Pool.NoteError(name, s.ErrThreshold, s.ErrCooldown)
 }
 
-// cooldownErr / cooldownSoft 用当前（可热改）冷却时长处罚账号。
-func (h *Handler) cooldownErr(name, reason string) {
-	h.cfg.Pool.Cooldown(name, pool.CoolErr, h.live().ErrCooldown, reason)
-}
-
+// cooldownSoft 用当前（可热改）软限流冷却时长处罚账号。
 func (h *Handler) cooldownSoft(name, reason string) {
 	h.cfg.Pool.Cooldown(name, pool.CoolSoft, h.live().SoftCooldown, reason)
 }
@@ -1571,9 +1567,10 @@ func (h *Handler) handleUpstreamError(acct *pool.Account, model string, err erro
 			// 并发会话上限（TM.00001041）是瞬时错误：上游会话槽位会被其他请求释放，
 			// 不冷却账号——池的并发锁已防止过载，冷却反而误伤后续请求。
 			log.Printf("upstream concurrent limit (transient) account=%s msg=%s", acct.Name, truncateMsg(ae.Message, 80))
-		case ae.Status >= 500:
-			h.cooldownErr(acct.Name, ae.Error())
 		default:
+			// 5xx 也是「累计到阈值才冷却」：实测 ModelArts.81104（Conversion failed）
+			// 是间歇性的——同一请求重发即成功。一个 5xx 就冷却 10 分钟的话，
+			// 一次抖动就能打瘫整池；真正的账号故障会连续失败，照样被阈值拦下。
 			h.noteError(acct.Name)
 		}
 		return false

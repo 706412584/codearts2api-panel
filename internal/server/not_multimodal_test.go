@@ -72,7 +72,7 @@ func TestChatCompletionsOther502StillCools(t *testing.T) {
 }
 
 // 非流式（聚合）路径：流中途出现的「模型未注册」不得冷却账号，应直接回 404。
-// 原实现对任何聚合错误都无条件 cooldownErr，与开流前/流式路径的处置不一致。
+// 原实现对任何聚合错误都无条件冷却账号，与开流前/流式路径的处置不一致。
 func TestAggregateModelNotRegisteredDoesNotCoolAccount(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
