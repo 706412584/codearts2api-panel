@@ -35,7 +35,7 @@ func TestNotMultimodalDoesNotCoolAccount(t *testing.T) {
 	h := NewHandler(Config{Pool: p, Upstream: upstream.New(time.Second), ErrCooldown: time.Minute, ErrThreshold: 1})
 
 	err402 := notMultimodalErr()
-	if !isParamInvalidError(err402) {
+	if !isRequestContentError(err402) {
 		t.Error("not multimodal 应归为请求内容问题")
 	}
 	h.handleUpstreamError(p.Get("u-mm"), "deepseek-v4.1-flash", err402)
@@ -58,7 +58,7 @@ func TestPromptTooLongDoesNotCoolAccount(t *testing.T) {
 		Code: 502, Status: 502, Path: "/api/v2/chat/completions",
 		Message: "InferHub.ModelArts.81001.400 Bad request, Prompt length exceeds the limit",
 	}
-	if !isParamInvalidError(errLong) {
+	if !isRequestContentError(errLong) {
 		t.Error("prompt 超长应归为请求内容问题")
 	}
 	h.handleUpstreamError(p.Get("u-pl"), "qwen3-vl-235b", errLong)
