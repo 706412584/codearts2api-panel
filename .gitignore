@@ -15,3 +15,18 @@
 .idea/
 .vscode/
 .DS_Store
+
+# --- Android ---
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/captures/
+# 机器相关，各人 SDK 路径不同
+android/local.properties
+# 签名凭据不入库
+android/keystore.properties
+android/*.jks
+android/*.keystore
+# 交叉编译产物：由 Gradle 的 buildGoBinary 每次重建，不入库
+android/app/src/main/jniLibs/**/*.so

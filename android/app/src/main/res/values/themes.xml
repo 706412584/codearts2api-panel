@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 界面全部交给 WebView 里的面板，主题只需一个无 ActionBar 的浅色壳。 -->
+    <style name="Theme.CodeArts" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
