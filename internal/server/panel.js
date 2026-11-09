@@ -102,7 +102,9 @@
   $('navBackdrop').onclick = () => menu(false);
   function navigate() {
     const requested = location.hash.slice(1);
-    currentPage = Object.hasOwn(pages, requested) ? requested : 'accounts';
+    // 用 hasOwnProperty.call 而非 Object.hasOwn：后者是 Chrome 93+，旧 WebView
+    // （Android 10 自带的 Chrome 81）没有，会在导航第一行抛错、整个 navigate 中止。
+    currentPage = Object.prototype.hasOwnProperty.call(pages, requested) ? requested : 'accounts';
     const [title, description] = pages[currentPage];
     $('pageTitle').textContent = title; $('pageDescription').textContent = description; $('breadcrumb').textContent = '工作空间 / ' + title;
     document.querySelectorAll('.view').forEach(el => { el.hidden = el.id !== 'view-' + currentPage; });
