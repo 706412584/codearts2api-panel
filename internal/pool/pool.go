@@ -246,6 +246,9 @@ func (p *Pool) List() []map[string]any {
 			"last_checkin_day":     a.lastCheckinDay,
 			"new_user_settled":     a.newUserSettled,
 			"disabled":             a.disabled,
+			// 禁用原因分类：凭据失效（refresh_token 过期 / 需重新登录）与"上游封禁"
+			// 是两回事——前者同步一次凭据就能救回来，界面不该说成封禁吓人。
+			"disabled_kind":        disabledKind(a.disabled, a.disabledReason, a.lastErr),
 			"cooling":              cooling,
 			"until":                until,
 			"err_count":            a.errCount,
@@ -494,16 +497,12 @@ func (p *Pool) validate(a *Account, forceRefresh bool) (bool, error) {
 			// 未过期时只打告警；到期后由上面的分支明确标记为需重新登录。
 			log.Printf("pool token account=%s expiring soon (remaining=%s) but no refresh_token, re-login required",
 				a.Name, authz.Remaining().Round(time.Minute))
-			a.mu.Lock()
-			a.lastValidated = time.Now()
-			a.mu.Unlock()
+			p.markValidated(a, forceRefresh)
 			return true, nil
 		}
 		if p.cfg.NoTokenRefresh && !forceRefresh {
 			// 只读模式：不轮换 refresh_token，留给手动「保活」。
-			a.mu.Lock()
-			a.lastValidated = time.Now()
-			a.mu.Unlock()
+			p.markValidated(a, false)
 			return true, nil
 		}
 		if err := p.RefreshToken(a.Name); err != nil {
@@ -517,10 +516,53 @@ func (p *Pool) validate(a *Account, forceRefresh bool) (bool, error) {
 			return false, err
 		}
 	}
+	p.markValidated(a, forceRefresh)   // 内部自行加锁，调用方不要再持 a.mu
+	return true, nil
+}
+
+// markValidated 记录一次成功校验。
+//
+// forceRefresh 为真表示这是用户手动「保活」：既然凭据校验通过，就顺手解掉之前的
+// 禁用标记——否则 token 被同步修好之后，账号会一直卡在"已禁用"上：校验报成功、
+// 界面却还是禁用，点「保活」看着也没效果。
+func (p *Pool) markValidated(a *Account, forceRefresh bool) {
 	a.mu.Lock()
 	a.lastValidated = time.Now()
+	cleared := false
+	if forceRefresh && a.disabled {
+		a.disabled = false
+		a.disabledReason = ""
+		a.lastErr = ""
+		cleared = true
+	}
 	a.mu.Unlock()
-	return true, nil
+	if cleared {
+		p.saveState()
+	}
+}
+
+// disabledKind 把「禁用」细化成面板能分辨的类别。
+//
+// 返回 "credential"（凭据失效，同步/重新登录即可恢复）或 "banned"（上游封禁）。
+// 只依据我们自己的失败文本判断，不外呼——真封禁目前只会在请求路径由上游错误带出。
+func disabledKind(disabled bool, texts ...string) string {
+	if !disabled {
+		return ""
+	}
+	for _, t := range texts {
+		low := strings.ToLower(t)
+		switch {
+		case strings.Contains(low, "refresh_token expired"),
+			strings.Contains(low, "token expired"),
+			strings.Contains(low, "re-login"),
+			strings.Contains(low, "relogin"):
+			return "credential"
+		case strings.Contains(low, "ban"), strings.Contains(low, "suspend"),
+			strings.Contains(low, "forbidden"), strings.Contains(low, "封禁"):
+			return "banned"
+		}
+	}
+	return "other"
 }
 
 // Cooldown 冷却账号。

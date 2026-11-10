@@ -303,11 +303,10 @@ func (h *Handler) pickTargets(uid string) []string {
 		}
 		return []string{uid}
 	}
+	// 批量操作要**包含已禁用的账号**：凭据失效的账号会被标记为禁用，而「保活」
+	// 正是把它们救回来的手段。之前跳过 disabled 会让全池失效时批量操作报「无目标」。
 	out := make([]string, 0)
 	for _, st := range h.cfg.Pool.List() {
-		if disabled, _ := st["disabled"].(bool); disabled {
-			continue
-		}
 		if u, ok := st["uid"].(string); ok && u != "" {
 			out = append(out, u)
 		}

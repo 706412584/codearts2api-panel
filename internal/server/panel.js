@@ -137,7 +137,11 @@
     const filtered = accounts.filter(a => [a.nickname, a.user_name, a.note, a.uid, a.name].join(' ').toLowerCase().includes(query));
     $('accountsBody').innerHTML = filtered.map(a => {
       const uid = String(a.uid || a.name || '');
-      const state = a.disabled ? ['bad', '已禁用'] : a.cooling ? ['warn', '冷却中'] : ['ok', '可用'];
+      // 禁用要分清楚：凭据失效（同步/重新登录可恢复）与上游封禁是两回事，
+      // 一律写「已禁用」会让人以为号被封了。
+      const state = a.disabled
+        ? (a.disabled_kind === 'credential' ? ['warn', '凭据失效'] : a.disabled_kind === 'banned' ? ['bad', '已封禁'] : ['bad', '已禁用'])
+        : a.cooling ? ['warn', '冷却中'] : ['ok', '可用'];
       const button = (action, label, danger = false) => '<button class="button small' + (danger ? ' danger' : '') + '" data-account-action="' + action + '" data-uid="' + esc(uid) + '">' + label + '</button>';
       // 签到按自然日只领一次：了结后按钮变「已签」，点击只是回放本地结果，不再打上游。
       const checkinButton = a.checkin_done
