@@ -3,23 +3,21 @@ package com.codearts.panel
 import android.content.Context
 import android.util.Log
 import org.json.JSONObject
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
 
 /**
- * 运行网关子进程（Go 二进制）的进程管理器。
+ * 网关的生命周期与状态管理。
  *
- * 与 loomy2api 的 Python 版不同：这里是 exec 一个 Android arm64 原生二进制，
- * 而不是启动 Chaquopy 解释器，因此没有 Python 的全局状态问题——进程死了重启一个
- * 就是干净的。所有状态都以文件形式落在 [Context.getFilesDir] 下。
+ * 网关以 native 库（`libcodeartsgw.so`，由 `mobile/` 用 `-buildmode=c-shared` 编出）
+ * 的形式**跑在 App 进程内**，不再 exec 子进程。原因见 mobile/jni.go：App 自己 spawn
+ * 的子进程会被 Android 登记为 phantom process，App 一离开前台就被冻结，监听随之失效；
+ * 只有跑在 App 进程里的工作才受前台服务保护（这正是 loomy2api 安卓版靠 Chaquopy 内嵌
+ * Python 拿到的效果）。
  *
- * 二进制放在 APK 的 `jniLibs/arm64-v8a/libcodearts-gw.so`。Android 只允许从
- * `nativeLibraryDir` 执行 App 内的文件（targetSdk 29+ 下 filesDir 受 W^X 限制），
- * 所以必须伪装成 `.so` 并 `useLegacyPackaging = true` 解压安装。
+ * 所有状态仍以文件形式落在 [Context.getFilesDir] 下（config.json / auths / data）。
  */
 object GatewayRunner {
 
@@ -28,17 +26,16 @@ object GatewayRunner {
     /** 移动端默认端口：与桌面网关的 7866 错开，两者可同时运行。 */
     const val DEFAULT_PORT = 17866
 
-    private const val BINARY_NAME = "libcodearts-gw.so"
     private const val CONFIG_NAME = "config.json"
-    private const val LOG_NAME = "gateway.log"
 
     private const val PREFS = "codearts_settings"
     private const val KEY_PORT = "port"
     private const val KEY_ADMIN = "admin_key"
     private const val KEY_API = "api_key"
 
+    /** true 表示本进程内的网关已启动（不代表当前健康，健康看 [probeHealth]）。 */
     @Volatile
-    private var process: Process? = null
+    private var started = false
 
     /** 已生成密钥的内存缓存，避免每次读盘。 */
     @Volatile
@@ -148,35 +145,18 @@ object GatewayRunner {
         return b.joinToString("") { "%02x".format(it) }
     }
 
-    // ------------------------------------------------------------- 进程
+    // ------------------------------------------------------------- 生命周期
 
-    private fun binary(ctx: Context): File? {
-        val f = File(ctx.applicationInfo.nativeLibraryDir, BINARY_NAME)
-        return f.takeIf { it.isFile }
-    }
-
-    @Synchronized
-    fun isRunning(): Boolean = process?.isAlive == true
+    fun isRunning(): Boolean = started
 
     /**
      * 确保网关在跑。幂等：已在运行时直接返回。
      *
-     * @return true 表示进程已启动或已在运行；false 表示二进制缺失等硬失败。
+     * @return true 表示正在监听；false 表示 native 库不可用或启动失败。
      */
     @Synchronized
     fun ensureRunning(ctx: Context): Boolean {
-        if (isRunning()) return true
-        // 端口已被应答说明已有实例在跑（本进程的子进程，或 App 被杀但子进程侥幸存活的
-        // 孤儿）。此时再 spawn 一个会因 bind 失败而 log.Fatalf 退出，形成"起一个死一个"
-        // 的抖动循环。先探一次，健康就直接复用。
-        if (probeHealth()) {
-            Log.i(TAG, "gateway already answering on port=$port; skip spawn")
-            return true
-        }
-        val bin = binary(ctx) ?: run {
-            Log.e(TAG, "gateway binary missing in ${ctx.applicationInfo.nativeLibraryDir}")
-            return false
-        }
+        if (!GatewayNative.ensureLoaded()) return false
         loadPort(ctx)
         try {
             seedConfig(ctx)
@@ -184,35 +164,37 @@ object GatewayRunner {
             Log.e(TAG, "seed config failed", t)
         }
 
+        // start() 是幂等的：已启动时直接返回 0。传绝对路径——网关以 config 所在目录
+        // 解析 ./auths、./data 等相对路径（internal/gateway.resolveDataPaths），
+        // 因此不需要（也不应该）改 App 进程的工作目录。
+        val cfgPath = File(ctx.filesDir, CONFIG_NAME).absolutePath
         return try {
-            val pb = ProcessBuilder(bin.absolutePath, "-config", CONFIG_NAME)
-                .directory(ctx.filesDir)
-                .redirectErrorStream(true)
-            pb.environment()["HOME"] = ctx.filesDir.absolutePath
-            pb.environment()["TMPDIR"] = ctx.cacheDir.absolutePath
-            val p = pb.start()
-            process = p
-            pipeLogs(p, File(ctx.filesDir, LOG_NAME))
-            Log.i(TAG, "gateway started port=$port")
-            true
+            val rc = GatewayNative.start(cfgPath)
+            if (rc == 0) {
+                started = true
+                Log.i(TAG, "gateway started port=$port")
+                true
+            } else {
+                started = false
+                Log.e(TAG, "gateway start failed rc=$rc")
+                false
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "failed to start gateway", t)
             false
         }
     }
 
-    /** 停止网关；先礼貌 destroy，宽限后强杀。 */
+    /** 停止网关。 */
     @Synchronized
     fun stop() {
-        val p = process ?: return
-        process = null
+        if (!started) return
         try {
-            p.destroy()
-            if (!p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)) {
-                p.destroyForcibly()
-            }
+            GatewayNative.stop()
         } catch (t: Throwable) {
             Log.w(TAG, "stop gateway failed", t)
+        } finally {
+            started = false
         }
     }
 
@@ -222,35 +204,6 @@ object GatewayRunner {
         return ensureRunning(ctx)
     }
 
-    private fun pipeLogs(p: Process, logFile: File) {
-        Thread({
-            try {
-                p.inputStream.bufferedReader().use { reader: BufferedReader ->
-                    logFile.outputStream().bufferedWriter().use { out ->
-                        var line = reader.readLine()
-                        while (line != null) {
-                            // 网关往 os.Stderr 的直写不经过它自己的 ring 脱敏器
-                            // （internal/server/observability.go），这里兜一道，避免
-                            // 凭据万一被打出来就落盘到 files/gateway.log。
-                            out.write(redact(line)); out.newLine(); out.flush()
-                            line = reader.readLine()
-                        }
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.w(TAG, "log pump ended: ${t.message}")
-            }
-        }, "gateway-log").apply { isDaemon = true }.start()
-    }
-
-    /** 与网关侧 credentialLogPattern 同口径的兜底脱敏。 */
-    private fun redact(line: String): String =
-        CREDENTIAL_RE.replace(line) { m -> m.groupValues[1] + "\"[REDACTED]\"" }
-
-    private val CREDENTIAL_RE = Regex(
-        """(?i)("?(?:access_key_id|secret_access_key|security_token|cloud_dragon_token|refresh_token|access_token|code_verifier|dpop_private_key|authorization|x-auth-token|api_key|admin_key|secret)"?\s*[:=]\s*)[^\r\n]*"""
-    )
-
     // ------------------------------------------------------------- 健康检查
 
     /**
@@ -258,7 +211,7 @@ object GatewayRunner {
      *
      * 必须显式 Proxy.NO_PROXY：设备设了全局 HTTP 代理（Clash/v2rayNG 等）时，
      * Android 的 HttpURLConnection 会把回环请求也发往代理，代理又够不到手机的
-     * 127.0.0.1，表现为 SocketTimeoutException。网关就在本进程旁，直连即可。
+     * 127.0.0.1，表现为 SocketTimeoutException。网关就在本进程内，直连即可。
      */
     fun probeHealth(timeoutMs: Int = 1500): Boolean = try {
         val conn = URL("http://127.0.0.1:$port/healthz")
@@ -274,6 +227,4 @@ object GatewayRunner {
     }
 
     fun baseUrl(): String = "http://127.0.0.1:$port"
-
-    fun logFile(ctx: Context): File = File(ctx.filesDir, LOG_NAME)
 }

@@ -5,12 +5,29 @@
 
 ## 与 loomy2api 安卓版的区别
 
-参考实现（`../loomy2api/android`）用 **Chaquopy 在 App 内嵌一个 CPython** 跑 Python
-网关。本项目是 **纯 Go**，因此不用解释器：把仓库根目录的 Go 代码交叉编译成一个
-arm64 可执行文件，塞进 APK 的 `jniLibs`，前台服务 exec 它即可。
+参考实现（`../loomy2api/android`）用 **Chaquopy 在 App 内嵌一个 CPython**，网关跑在
+**App 进程内**。本项目网关是 **纯 Go**，但不把这当成「exec 个子进程就行」：和 loomy
+一样，**网关必须跑在 App 进程内**，只是换了实现方式——把 Go 编成 c-shared 库，
+`System.loadLibrary` 加载后经 JNI 调用（见下）。
 
 **不需要 proot 容器**（那是 `JianYunServerPro` 那种「跑完整 Linux 发行版」的方案）：
 网关是单个静态二进制，不依赖发行版文件树。
+
+### 为什么不能 exec 子进程（踩过的坑）
+
+最初的实现是 `ProcessBuilder` exec 一个 android/arm64 可执行文件。构建、运行、
+出站请求全都正常，但**退到后台几十秒后端口就不再响应**。真机诊断（PJA110，
+ColorOS/Android 16；同机对照 loomy 正常）结论：
+
+- 该子进程被 Android 登记为 **PhantomProcessRecord**（`dumpsys activity processes` 可见）；
+- App 一进入 cached 状态，整个 **UID 的 cgroup 被冻结**（`/sys/fs/cgroup/apps/uid_N/cgroup.freeze = 1`）；
+- 此时 Go 进程还在（`S sleeping`）但一个字节都不读，连接挂起、curl 超时；
+- **电池白名单、前台服务通知、PARTIAL_WAKE_LOCK 全都挡不住这层**——通知/前台服务只保护
+  **发它的那个进程**，保护不到 App spawn 出来的子进程。
+
+loomy 不受影响，因为它的 HTTP server 就跑在 App 进程内。因此我们改成同样的形态：
+**c-shared 库 + JNI，网关在 App 进程内启动**（`mobile/jni.go` + `GatewayNative.kt`）。
+实测修复后后台 4 分钟连续探测全部 200。
 
 ## 构建
 
@@ -23,41 +40,43 @@ JAVA_HOME=/path/to/jdk17 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Gradle 任务 `buildGoBinary` 会在 `preBuild` 前自动交叉编译网关到
-`app/src/main/jniLibs/arm64-v8a/libcodearts-gw.so`（该产物 gitignore，每次重建）。
+Gradle 任务 `buildGoBinary` 会在 `preBuild` 前自动把仓库根目录的 `./mobile` 编成
+`app/src/main/jniLibs/arm64-v8a/libcodeartsgw.so`（c-shared 库，gitignore，每次重建）。
 
-### 为什么必须用 NDK（cgo），不能 `CGO_ENABLED=0`
+### 为什么必须走 NDK（cgo）
 
-Android 没有 `/etc/resolv.conf`，而 Go 的纯 Go resolver 恰恰读它。于是
-`CGO_ENABLED=0` 编出来的二进制一做出站请求就失败：
+c-shared 天然要 cgo；而且 DNS 也非它不可：Android 没有 `/etc/resolv.conf`，Go 的纯
+resolver 恰恰读它，`CGO_ENABLED=0` 一做出站请求就失败：
 
 ```
 lookup codearts.cn on [::1]:53: read udp ...: connection refused
 ```
 
 开 cgo 后 Go 改用 bionic 的 `getaddrinfo`，DNS 正常（黑鲨 SKW-A0 真机已实测：
-`codearts.cn → 43.134.62.165`、HTTPS 200）。所以构建固定用
+`codearts.cn → 43.134.62.165`、HTTPS 200）。构建固定用
 `CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=<ndk>/aarch64-linux-android29-clang`。
 
-## 为什么二进制叫 `lib*.so` 放在 `jniLibs`
+### 为什么手写 JNI 而不用 gomobile bind
 
-Android 10+（targetSdk 29+）只允许从 `nativeLibraryDir` 执行 App 内的文件，其它
-目录受 W^X 限制、`execve` 直接被拒。而系统只会把 APK 里 `lib/<abi>/*.so` 解压到
-`nativeLibraryDir`。因此网关被命名成 `libcodearts-gw.so`，并在 `packaging.jniLibs`
-里设 `useLegacyPackaging = true`（否则 `.so` 直接从 APK 映射、不解压，
-`nativeLibraryDir` 为空，`execve` 报 ENOENT）。`keepDebugSymbols` 防止 NDK strip
-破坏 Go 的 build info。
+gomobile bind 支持 Go 1.26 但要求把 `golang.org/x/mobile` 写进 `go.mod`，而本项目
+目前**零依赖**，不值得为一个入口引入一条要持续维护的依赖链。JNI 桥只有两个函数，
+在 `mobile/jni.go` 里用 cgo 直接写即可（注意 `JNIEnv` 的成员是函数指针宏
+`(*env)->GetStringUTFChars`，cgo 取不到，要包一层 C 函数转发）。
 
 ## 运行结构
 
-- `GatewayService`：前台服务，`ProcessBuilder` 在 `nativeLibraryDir` exec 网关，
-  cwd 指向 `filesDir`（config.json / auths / data / gateway.log 都落在这里）。
-  持有 `PARTIAL_WAKE_LOCK`（防息屏冻结）、30s 看门狗探 `/healthz`、`START_STICKY`
-  与 `onTaskRemoved` 保证被划掉/杀掉后自恢复。
+- `GatewayService`：前台服务，调用 `GatewayRunner.ensureRunning` 在 **App 进程内**
+  启动网关；持有 `PARTIAL_WAKE_LOCK`、30s 看门狗探 `/healthz`、`START_STICKY` 与
+  `onTaskRemoved` 保证被划掉/杀掉后自恢复。
+- `GatewayNative`：`System.loadLibrary("codeartsgw")` + `external fun start/stop`，
+  对应 `mobile/jni.go` 的 JNI 导出。
+- `GatewayRunner`：状态与配置管理（端口、密钥、config.json 播种）。网关的
+  config/auths/data 都在 `filesDir` 下；以 config 的**绝对路径**启动，网关自己按该
+  目录解析 `./auths`、`./data`（`internal/gateway.resolveDataPaths`），**不改 App
+  进程的工作目录**。
 - `MainActivity`：WebView 加载网关自带的管理面板 `/panel`。面板已适配窄屏
   （`@media(max-width:760px)`），所以直接复用，不重写原生 UI。启动时从 config.json
   读出 admin_key 注入 `sessionStorage`，用户免登录。
-- `GatewayRunner`：进程与配置管理（端口、密钥、日志脱敏）。
 - `BootReceiver`：开机 / 升级后自启。
 
 WebView 补了两块默认缺失、否则手机上面板不可用的能力：`onShowFileChooser`

@@ -29,4 +29,5 @@ android/keystore.properties
 android/*.jks
 android/*.keystore
 # 交叉编译产物：由 Gradle 的 buildGoBinary 每次重建，不入库
-android/app/src/main/jniLibs/**/*.so
+# （cgo 会同时产出 .so 与配套的 .h）
+android/app/src/main/jniLibs/

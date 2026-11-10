@@ -20,7 +20,7 @@ android {
 
     defaultConfig {
         applicationId = "com.codearts.panel"
-        minSdk = 26          // Android 8.0：nativeLibraryDir 可执行文件 + 前台服务
+        minSdk = 26          // Android 8.0：前台服务 + nativeLibraryDir 里的 c-shared 库
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
@@ -68,25 +68,23 @@ android {
     packaging {
         resources.excludes += setOf("META-INF/*.kotlin_module")
         jniLibs {
-            // 网关是真正的可执行文件伪装成 .so：Android 10+ 只允许从
-            // nativeLibraryDir 执行，且必须解压安装（否则 .so 直接从 APK 映射、
-            // nativeLibraryDir 为空，execve 得到 ENOENT）。
-            useLegacyPackaging = true
-            // NDK strip 会破坏 Go 二进制的 build info。
-            keepDebugSymbols += "**/libcodearts-gw.so"
+            // 网关现在是正常的 JNI 库（System.loadLibrary 加载），不再需要从
+            // nativeLibraryDir 执行、也不再需要 useLegacyPackaging。
+            // NDK strip 会破坏 Go 二进制的 build info，保留符号。
+            keepDebugSymbols += "**/libcodeartsgw.so"
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// 交叉编译 Go 网关为 Android arm64 可执行文件。
+// 交叉编译 Go 网关为 Android arm64 的 **c-shared 库**（跑在 App 进程内）。
 //
-// 必须走 NDK cgo：Android 没有 /etc/resolv.conf，纯 Go resolver（CGO_ENABLED=0）
-// 的 DNS 会失败（lookup xxx on [::1]:53: connection refused）。cgo 后 Go 用 bionic
-// resolver，出站解析正常（黑鲨 SKW-A0 真机已实测）。
+// 为什么是库不是可执行文件：App 自己 exec 的子进程会被 Android 登记为 phantom
+// process，App 一离开前台就整个 UID 被冻结，监听随之失效（真机实测：退后台约
+// 30-60s 后端口不再响应）。跑在 App 进程内的 native 库才受前台服务保护。
 //
-// 产物命名 libcodearts-gw.so 并放 jniLibs：这是 Android 允许执行 App 内文件的
-// 唯一位置（targetSdk 29+ 下 filesDir 受 W^X 限制，execve 会被拒绝）。
+// 必须走 NDK cgo（c-shared 天然要 cgo）：Android 没有 /etc/resolv.conf，纯 Go
+// resolver 的 DNS 会失败。cgo 后 Go 用 bionic 的 getaddrinfo，出站解析正常。
 // ---------------------------------------------------------------------------
 val apiLevel = 29
 
@@ -131,10 +129,10 @@ fun resolveClang(): String {
 
 val buildGoBinary = tasks.register<Exec>("buildGoBinary") {
     group = "build"
-    description = "交叉编译 Go 网关为 Android arm64 可执行文件"
+    description = "交叉编译 Go 网关为 Android arm64 的 c-shared 库"
     workingDir = repoRoot
     val outDir = androidDir.resolve("app/src/main/jniLibs/arm64-v8a")
-    outputs.upToDateWhen { false }   // 网关源码小，每次构建刷新，避免陈旧二进制
+    outputs.upToDateWhen { false }   // 网关源码小，每次构建刷新，避免陈旧库
     doFirst { outDir.mkdirs() }
     environment("CGO_ENABLED", "1")
     environment("GOOS", "android")
@@ -143,10 +141,11 @@ val buildGoBinary = tasks.register<Exec>("buildGoBinary") {
     environment("GOPROXY", "https://goproxy.cn,direct")
     commandLine(
         "go", "build",
+        "-buildmode=c-shared",
         "-trimpath",
         "-ldflags", "-s -w -X codearts2api-panel/internal/server.Version=$gatewayVersion",
-        "-o", "${outDir.absolutePath}/libcodearts-gw.so",
-        "./cmd/server",
+        "-o", "${outDir.absolutePath}/libcodeartsgw.so",
+        "./mobile",
     )
 }
 
