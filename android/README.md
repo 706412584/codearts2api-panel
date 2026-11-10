@@ -111,6 +111,11 @@ WebView 补了两块默认缺失、否则手机上面板不可用的能力：`on
 `BackgroundGuide.open()` 依次尝试 ColorOS 自带页（`com.oplus.battery/…PowerUsageModelActivity`）、
 系统电池优化页、应用详情页；非 OPPO 系机型直接跳过、不弹窗。
 
+> 实测：ColorOS 那个页面**第三方 App 打不开**——`am start` 报
+> `Permission Denial: … requires com.oplus.permission.safe.SETTINGS`（只有 shell/root 能调）。
+> 所以 App 只弹出说明文字（告诉用户点哪一项），实际落地页由系统电池优化页兜底；
+> 上面的厂商 Activity 保留，是因为部分 ROM/版本确实放行，能直达就直达。
+
 ## 端口
 
 默认 **17866**（与桌面网关 7866 错开，可同时运行）。可在配置里改，但 WebView 与

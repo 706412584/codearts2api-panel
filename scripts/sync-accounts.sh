@@ -200,14 +200,22 @@ if [ "$FILES_ONLY" = "1" ]; then
 	exit 0
 fi
 
-pc_key() { python -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8')).get('admin_key',''))" "$ROOT/bin/config.json" 2>/dev/null || true; }
+# 读 admin_key。路径同样要转 Windows 形式，否则 Windows 版 Python 找不到文件、
+# 返回空 key，脚本会误判「PC 网关未运行」而跳过 reload/enable。
+pc_key() { python -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8')).get('admin_key',''))" "$(winpath "$ROOT/bin/config.json")" 2>/dev/null || true; }
 phone_key() { adb -s "$DEV" shell "su -c 'cat $PHONE_FILES/config.json'" 2>/dev/null | python -c "import json,sys;print(json.load(sys.stdin).get('admin_key',''))" 2>/dev/null || true; }
 
 PC_KEY="$(pc_key)"
-if [ -n "$PC_KEY" ] && curl -s -m 3 -o /dev/null "http://127.0.0.1:$PC_PORT/healthz"; then
+# 用 http_code 判断存活，而不是 curl 的退出码——Git-Bash 里的 Windows curl 有时
+# 会为 `-o /dev/null` 报 exit 23（写文件失败），明明端点正常却判成「未运行」。
+# deploy-local.sh 用的也是这个写法。
+pc_up() { [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PC_PORT/healthz" 2>/dev/null)" = "200" ]; }
+if [ -n "$PC_KEY" ] && pc_up; then
 	log "PC 网关重载凭据…"
 	curl -s -m 30 -X POST -H "Authorization: Bearer $PC_KEY" "http://127.0.0.1:$PC_PORT/admin/api/reload" | head -c 200; echo
-	for uid in $(python -c "import json,sys;print('\n'.join(json.load(open(sys.argv[1]))))" "$(winpath "$WORK/uids.json")"); do
+	# tr -d '\r'：Windows 版 python 的 print 输出 CRLF，命令替换只吃掉 LF，
+	# 残留的 \r 会让 uid 变成 "xxx\r"，服务端找不到账号、enable 静默失效。
+	for uid in $(python -c "import json,sys;print('\n'.join(json.load(open(sys.argv[1]))))" "$(winpath "$WORK/uids.json")" | tr -d '\r'); do
 		curl -s -m 10 -X POST -H "Authorization: Bearer $PC_KEY" -H 'Content-Type: application/json' \
 			-d "{\"uid\":\"$uid\"}" "http://127.0.0.1:$PC_PORT/admin/api/accounts/enable" >/dev/null
 	done
@@ -217,10 +225,11 @@ else
 fi
 
 PH_KEY="$(phone_key)"
-if [ -n "$PH_KEY" ] && adb -s "$DEV" shell "curl -s -m 3 -o /dev/null http://127.0.0.1:17866/healthz"; then
+phone_up() { [ "$(adb -s "$DEV" shell "curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:17866/healthz" 2>/dev/null | tr -d '\r')" = "200" ]; }
+if [ -n "$PH_KEY" ] && phone_up; then
 	log "手机网关重载凭据…"
 	adb -s "$DEV" shell "curl -s -m 30 -X POST -H 'Authorization: Bearer $PH_KEY' http://127.0.0.1:17866/admin/api/reload" | head -c 200; echo
-	for uid in $(python -c "import json,sys;print('\n'.join(json.load(open(sys.argv[1]))))" "$(winpath "$WORK/uids.json")"); do
+	for uid in $(python -c "import json,sys;print('\n'.join(json.load(open(sys.argv[1]))))" "$(winpath "$WORK/uids.json")" | tr -d '\r'); do
 		adb -s "$DEV" shell "curl -s -m 10 -X POST -H 'Authorization: Bearer $PH_KEY' -H 'Content-Type: application/json' -d '{\"uid\":\"$uid\"}' http://127.0.0.1:17866/admin/api/accounts/enable" >/dev/null
 	done
 	log "  手机已重载并清除禁用标记"
