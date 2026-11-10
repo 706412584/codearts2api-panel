@@ -89,6 +89,7 @@ func applyHotConfig(c *Config, live *livecfg.Holder, p *pool.Pool, sch *schedule
 	p.SetMaxConcurrentAll(c.MaxConcurrent)
 	p.SetKeepaliveWindow(keepaliveWindow(c))
 	p.SetLoginClientID(c.LoginClientID)
+	p.SetNoTokenRefresh(c.Watch.NoTokenRefresh)
 	// 归档清理在后台每秒一轮，这里只换天数，新值一秒内生效。
 	logs.SetRetentionDays(c.RequestLogRetentionDays)
 	sch.Reconfigure(scheduler.Config{

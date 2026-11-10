@@ -268,6 +268,57 @@ func TestValidateKeepsAccountEnabledAfterRetryableRefreshFailure(t *testing.T) {
 	}
 }
 
+// 只读模式（watch.no_token_refresh）：自动路径（Validate）不轮换 refresh_token——
+// 否则与另一台网关共用账号时会互相作废。手动路径（ValidateForceRefresh）仍要刷新。
+func TestNoTokenRefreshSkipsRotationButManualStillRefreshes(t *testing.T) {
+	var hits int
+	sts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Error(w, "should not be called in read-only auto path unless forced", http.StatusBadGateway)
+	}))
+	defer sts.Close()
+
+	dpopPrivateJWK, err := upstream.NewDPoPPrivateJWK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginCfg := upstream.DefaultLoginConfig()
+	loginCfg.STSHost = sts.URL
+
+	newAcct := func(uid string) *auth.Auth {
+		return auth.New(uid, "user", "domain", "token", "ak", "sk",
+			time.Now().Add(30*time.Minute).Format(time.RFC3339), "refresh", "verifier",
+			map[string]string(dpopPrivateJWK))
+	}
+
+	// 只读 + 临期：不应触碰刷新端点，但仍算可用（不因自动刷新把池子打成封禁）。
+	p, err := New([]*auth.Auth{newAcct("u-ro")},
+		Config{RefreshSkew: time.Hour, LoginConfig: loginCfg, NoTokenRefresh: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, verr := p.Validate(p.Accounts()[0])
+	if !ok || verr != nil {
+		t.Fatalf("只读模式临期账号应视为可用，got ok=%t err=%v", ok, verr)
+	}
+	if hits != 0 {
+		t.Fatalf("只读模式的自动校验不该请求刷新端点，实际 %d 次", hits)
+	}
+
+	// 手动保活：即使只读也放行，会打到刷新端点（这里用 502 验证它确实尝试了）。
+	p2, err := New([]*auth.Auth{newAcct("u-manual")},
+		Config{RefreshSkew: time.Hour, LoginConfig: loginCfg, NoTokenRefresh: true}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p2.ValidateForceRefresh(p2.Accounts()[0]); err == nil {
+		t.Fatal("手动刷新在刷新端点 502 时应返回错误")
+	}
+	if hits == 0 {
+		t.Fatal("手动保活必须真的去刷新，但刷新端点没被调用")
+	}
+}
+
 // watch.refresh_skew_minutes 必须是有效的：此前 pool 硬编码 1 小时阈值，
 // 调度器传进来的 RefreshSkew 只用于日志，配置改了也不生效。
 func TestRefreshSkewControlsThreshold(t *testing.T) {

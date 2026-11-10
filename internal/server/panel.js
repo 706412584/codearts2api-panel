@@ -649,6 +649,7 @@
     ['cfgVisionBridgeTotalTimeoutSeconds', 'vision_bridge.total_timeout_seconds', 'int'],
     ['cfgVisionBridgePrompt', 'vision_bridge.prompt', 'text'],
     ['cfgWatchEnabled', 'watch.enabled', 'bool'],
+    ['cfgNoTokenRefresh', 'watch.no_token_refresh', 'bool'],
     ['cfgCreditsAutoClaim', 'credits_auto_claim', 'bool'],
     ['cfgPollMinutes', 'watch.poll_minutes', 'int'],
     ['cfgRefreshSkew', 'watch.refresh_skew_minutes', 'int'],

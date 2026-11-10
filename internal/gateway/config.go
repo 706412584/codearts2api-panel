@@ -51,6 +51,9 @@ type Config struct {
 		PollMinutes       int  `json:"poll_minutes"`
 		RefreshSkewM      int  `json:"refresh_skew_minutes"`
 		KeepaliveInterval int  `json:"keepalive_interval_minutes"` // 保活心跳间隔（新增）
+		// NoTokenRefresh 只读模式：不主动轮换 refresh_token（只校验），避免与另一台
+		// 网关共用同一批账号时互相顶号。默认 false，即保持原行为。
+		NoTokenRefresh bool `json:"no_token_refresh"`
 	} `json:"watch"`
 
 	MaxConcurrent   int    `json:"max_concurrent"`   // 单账号最大并发数（新增）
@@ -553,5 +556,6 @@ func (c *Config) ToPoolConfig() pool.Config {
 		RefreshSkew:     time.Duration(c.Watch.RefreshSkewM) * time.Minute,
 		MaxConcurrent:   c.MaxConcurrent,
 		KeepaliveWindow: dur,
+		NoTokenRefresh:  c.Watch.NoTokenRefresh,
 	}
 }

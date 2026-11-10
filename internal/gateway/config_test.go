@@ -293,3 +293,21 @@ func TestCheckinHoursConfigAndEnv(t *testing.T) {
 		t.Fatalf("invalid env must keep config value: %v err=%v", cfg.CheckinHours, err)
 	}
 }
+
+// watch.no_token_refresh 必须一路传到 pool.Config，否则面板上的开关是个摆设。
+func TestNoTokenRefreshReachesPoolConfig(t *testing.T) {
+	if got := Default().ToPoolConfig().NoTokenRefresh; got {
+		t.Fatal("默认必须关闭只读模式（保持原行为）")
+	}
+	c := Default()
+	c.Watch.NoTokenRefresh = true
+	if !c.ToPoolConfig().NoTokenRefresh {
+		t.Fatal("watch.no_token_refresh 未传递到 pool.Config")
+	}
+	// 必须能热更新（面板保存即生效），所以不能被列为待重启字段。
+	for _, f := range restartRequiredFields() {
+		if f == "watch.no_token_refresh" {
+			t.Fatal("只读模式不应要求重启")
+		}
+	}
+}

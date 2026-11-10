@@ -74,6 +74,17 @@ type Config struct {
 	CheckinClient   CheckinClient        // 可选活动客户端；nil 使用账号 Client
 	BalanceClient   BalanceClient
 	BalanceObserver BalanceObserver // 可选余额趋势采样；仅接收成功且非 nil 的结果
+	// NoTokenRefresh 关闭「主动刷新 refresh_token」。
+	//
+	// 华为云的 refresh_token 是一次性的：刷新成功即作废旧值，而新值只落在发起刷新的
+	// 这一侧。两个网关（如 PC + 手机）共用同一批账号时，各刷各的就必然互相作废，表现为
+	// 「后刷的一侧把先刷的一侧顶掉、全部显示封禁」。
+	//
+	// 打开这个开关后，只有**手动**操作（面板「保活」按钮）才会刷新，自动路径一律只校验
+	// 不轮换：后台巡检、余额采样、以及服务请求时的兜底校验。
+	//
+	// 代价：token 真正过期后需要手动点一次「保活」。默认 false（保持原行为）。
+	NoTokenRefresh bool
 }
 
 // Pool 账号池。
@@ -445,7 +456,21 @@ func (p *Pool) PickExcludingMatching(tried map[string]bool, strategy string, eli
 }
 
 // Validate 校验并（必要时）自动刷新 token。带 5 分钟缓存。
+//
+// NoTokenRefresh 打开时**不自动轮换 refresh_token**（见 Config.NoTokenRefresh）：主动
+// 刷新会让另一侧网关手里的 refresh_token 作废。此时临期/过期的账号仍算可用——上游
+// 若真的拒绝，请求路径会报错，但不会因为一次自动刷新就把整个池子打成封禁。
 func (p *Pool) Validate(a *Account) (bool, error) {
+	return p.validate(a, false)
+}
+
+// ValidateForceRefresh 与 Validate 相同，但即使配置了 NoTokenRefresh 也允许刷新。
+// 面板的手动「保活」用它——手动点一次是用户明确表达"现在刷"，不受只读模式限制。
+func (p *Pool) ValidateForceRefresh(a *Account) (bool, error) {
+	return p.validate(a, true)
+}
+
+func (p *Pool) validate(a *Account, forceRefresh bool) (bool, error) {
 	a.mu.Lock()
 	if a.removed {
 		a.mu.Unlock()
@@ -469,6 +494,13 @@ func (p *Pool) Validate(a *Account) (bool, error) {
 			// 未过期时只打告警；到期后由上面的分支明确标记为需重新登录。
 			log.Printf("pool token account=%s expiring soon (remaining=%s) but no refresh_token, re-login required",
 				a.Name, authz.Remaining().Round(time.Minute))
+			a.mu.Lock()
+			a.lastValidated = time.Now()
+			a.mu.Unlock()
+			return true, nil
+		}
+		if p.cfg.NoTokenRefresh && !forceRefresh {
+			// 只读模式：不轮换 refresh_token，留给手动「保活」。
 			a.mu.Lock()
 			a.lastValidated = time.Now()
 			a.mu.Unlock()
@@ -1183,6 +1215,13 @@ func (p *Pool) SetLoginClientID(id string) {
 	}
 	p.mu.Lock()
 	p.cfg.LoginConfig.ClientID = id
+	p.mu.Unlock()
+}
+
+// SetNoTokenRefresh 热更新只读模式（面板保存即生效，无需重启）。
+func (p *Pool) SetNoTokenRefresh(v bool) {
+	p.mu.Lock()
+	p.cfg.NoTokenRefresh = v
 	p.mu.Unlock()
 }
 

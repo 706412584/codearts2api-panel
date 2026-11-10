@@ -379,7 +379,11 @@
               <h3 class="group-title">后台任务</h3>
               <div class="checks"><label class="check" for="cfgWatchEnabled"><input id="cfgWatchEnabled"
                     type="checkbox">后台凭据看护</label><label class="check" for="cfgCreditsAutoClaim"><input
-                    id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label></div>
+                    id="cfgCreditsAutoClaim" type="checkbox">定时领取签到积分</label><label class="check"
+                  for="cfgNoTokenRefresh"><input id="cfgNoTokenRefresh" type="checkbox">只读模式（不自动刷新
+                  token）</label></div>
+              <p class="muted">只读模式下不会主动轮换 refresh_token，只有手动点「保活」才刷新。
+                多台网关共用同一批账号时必开，否则会互相顶号（一侧显示全部封禁）。代价：token 过期后需手动保活。</p>
               <div class="field-grid">
                 <div><label for="cfgPollMinutes">轮询间隔（分钟）</label><input id="cfgPollMinutes" type="number" min="1"
                     step="1"></div>

@@ -43,7 +43,8 @@
     "enabled": true,
     "poll_minutes": 30,
     "refresh_skew_minutes": 30,
-    "keepalive_interval_minutes": 15
+    "keepalive_interval_minutes": 15,
+    "no_token_refresh": false
   },
   "upstream": {
     "timeout_seconds": 120

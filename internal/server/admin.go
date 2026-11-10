@@ -197,8 +197,9 @@ func (h *Handler) adminKeepalive(w http.ResponseWriter, r *http.Request) {
 			results = append(results, res)
 			continue
 		}
-		// Validate 内部会在临近过期时自动 Refresh
-		ok, verr := h.cfg.Pool.Validate(acct)
+		// 手动保活：即使用户开了只读模式（watch.no_token_refresh）也允许刷新——
+		// 点这个按钮本身就是「现在刷一次」的明确意图，不该受自动路径的限制。
+		ok, verr := h.cfg.Pool.ValidateForceRefresh(acct)
 		if verr != nil {
 			res.Message = verr.Error()
 		} else if !ok {
