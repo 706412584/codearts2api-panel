@@ -97,6 +97,20 @@ WebView 补了两块默认缺失、否则手机上面板不可用的能力：`on
 
 改面板 CSS/JS 时留意别再引入只有新浏览器才认的写法，否则老 WebView 上会整块失效。
 
+## ColorOS / MIUI 的额外一步：允许后台运行
+
+跑在 App 进程内 + 前台服务仍然不够：ColorOS 实测会在退到后台约 20s 后冻结整个 UID
+的 cgroup（`/sys/fs/cgroup/apps/uid_N/cgroup.freeze = 1`），此时 Go 进程还在但一字节
+都不读，网关静默。**电池白名单、前台服务通知、WAKE_LOCK 都挡不住**——它们保护的是
+「发通知的那个进程」，保护不到 ROM 层的冻结。
+
+唯一有效的是系统的「允许后台运行」开关，而它**按设计无法由 App 运行时自授**（否则任何
+恶意软件都能把自己设成永不冻结）。因此 `BackgroundGuide` 只做引导：ColorOS 上首次
+启动弹一次对话框，跳转到 **设置 → 电池 → 应用耗电管理 → CodeArts2API → 完全允许后台行为**。
+
+`BackgroundGuide.open()` 依次尝试 ColorOS 自带页（`com.oplus.battery/…PowerUsageModelActivity`）、
+系统电池优化页、应用详情页；非 OPPO 系机型直接跳过、不弹窗。
+
 ## 端口
 
 默认 **17866**（与桌面网关 7866 错开，可同时运行）。可在配置里改，但 WebView 与

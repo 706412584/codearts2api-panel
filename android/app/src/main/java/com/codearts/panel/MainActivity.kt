@@ -2,6 +2,7 @@ package com.codearts.panel
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -144,9 +145,29 @@ class MainActivity : Activity() {
 
         requestNotificationPermission()
         requestBatteryExemption()
+        maybeGuideBackground()
         GatewayService.start(this)
         showBooting()
         waitThenLoadPanel()
+    }
+
+    /**
+     * ColorOS 等国产 ROM 的额外保活引导。
+     *
+     * 标准电池优化白名单挡不住 ROM 自己的后台冻结（实测：白名单已加、前台服务在跑，
+     * 退到后台 20s 后整 UID 的 cgroup 仍被冻结，网关静默）。只有「允许后台运行」
+     * 开关有效，而它无法由 App 运行时自授，只能引导用户去点。只提示一次。
+     */
+    private fun maybeGuideBackground() {
+        if (BackgroundGuide.alreadyAsked(this)) return
+        if (!BackgroundGuide.isColorOS(this)) return
+        BackgroundGuide.markAsked(this)
+        AlertDialog.Builder(this)
+            .setTitle("还需要一步：允许后台运行")
+            .setMessage(BackgroundGuide.instruction(this))
+            .setPositiveButton("去设置") { _, _ -> BackgroundGuide.open(this) }
+            .setNegativeButton("以后再说", null)
+            .show()
     }
 
     /**
