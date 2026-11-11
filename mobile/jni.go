@@ -1,3 +1,5 @@
+//go:build android
+
 // Package mobile 是 Android 版的入口。
 //
 // 编译方式：`go build -buildmode=c-shared`，产出一个真正的 .so，APK 用
